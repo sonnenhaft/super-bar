@@ -117,7 +117,7 @@ private final class MenuPanel: NSPanel {
         case .tcl:
             let ac = fields.device(in: tcl)
             let visible = Set(ac.map { fields.ordered($0.id) } ?? (tcl.devices.isEmpty ? [.icon] : []))
-            let energy = visible.contains(.energy) ? ac.flatMap { tcl.history.barEnergy(for: $0.name)?.text } : nil
+            let energy = visible.contains(.energy) ? ac.flatMap { tcl.history.cardEnergy[$0.name] } : nil
             let dark = button.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
             let readout = MenuReadout(size: CGFloat(state.size), textColor: state.color, ac: ac,
                                      visible: visible, energyText: energy)
@@ -159,7 +159,7 @@ private final class MenuPanel: NSPanel {
                     case .target: value = ac.acTemperature
                     case .power: value = ac.status
                     case .fan: value = ac.fan
-                    case .energy: value = tcl.history.barEnergy(for: ac.name)?.text ?? "—"
+                    case .energy: value = tcl.history.cardEnergy[ac.name] ?? "—"
                     case .eco: value = ac.code("ECO") == 1 ? "Eco" : "—"
                     case .vertical: value = ac.vane(true)
                     case .horizontal: value = ac.vane(false)
@@ -199,7 +199,12 @@ private final class MenuPanel: NSPanel {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.panelUpdateQueued = false
-            if let brand = self.activePanel, brand != .tcl { self.updatePanel(brand); self.syncVisibleHeader() }
+            switch self.activePanel {
+            case .lg: self.lg.objectWillChange.send()
+            case .bluetti: self.updatePanel(.bluetti)
+            default: return
+            }
+            self.syncVisibleHeader()
         }
     }
 
@@ -259,18 +264,7 @@ private final class MenuPanel: NSPanel {
         case .tcl:
             host.rootView = AnyView(ClimatePanel(store: tcl, history: tcl.history, preferences: fields, height: cachedHeight))
         case .lg:
-            host.rootView = AnyView(DevicePanel(brand: .lg, sections: lg.panelSections) {
-                if !self.lg.devices.isEmpty {
-                    SectionName("Air conditioners", "air.conditioner.horizontal")
-                    ForEach(self.lg.devices, id: \.id) { self.lg.deviceCard($0) }
-                    CoolingPresetRow(enabled: { self.lg.connected && self.lg.presetAllowed(Double($0.degrees), $0.speed) },
-                        selected: { preset in
-                            self.lg.powerIsOn && self.lg.displayValue("airConJobMode", "currentJobMode") as? String == "COOL"
-                                && self.lg.displayValue("airFlow", self.lg.windKey) as? String == preset.speed
-                                && lgNumber(self.lg.displayValue("temperature", "targetTemperature")) == Double(preset.degrees)
-                        }, apply: { self.lg.preset(Double($0.degrees), $0.speed) })
-                }
-            })
+            host.rootView = AnyView(LGPanel(model: lg))
         case .bluetti:
             let sections = [DeviceSection(title: "Batteries", symbol: MenuPresentation.batterySymbol(percent: blue.lastGood?.percent ?? 0), items: [blue.emptyRefreshItem] + blue.stationRows.flatMap { $0.details.items }),
                             DeviceSection(title: "Load history", symbol: "chart.xyaxis.line", items: [blue.loadGraphItem]),

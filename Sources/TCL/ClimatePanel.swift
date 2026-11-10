@@ -50,7 +50,7 @@ struct ClimatePanel: View {
                     LazyVStack(alignment: .leading, spacing: 5) {
                         SectionName("Air conditioners", "air.conditioner.horizontal")
                         ForEach(store.devices) { device in deviceCard(device, active: device.id == ac.id) }
-                        controls(ac).id(ac.id)
+                        controls(ac)
                             .disabled(ac.online != true || ac.failed)
                         Card {
                             DisclosureGroup(isExpanded: $energyExpanded) {
@@ -102,7 +102,7 @@ struct ClimatePanel: View {
     }
     private func deviceCard(_ ac: Aircon, active: Bool) -> some View {
         let pins = preferences.ordered(ac.id)
-        let energy = history.barEnergy(for: ac.name)?.text
+        let energy = history.cardEnergy[ac.name]
         let choices: [(ReadoutField, String, String)] = [
             (.target, "AC", ac.acTemperature), (.indoor, "Room", tempText(ac.indoor)),
             (.fan, "Fan", ac.fan), (.energy, "Energy", energy ?? "—")

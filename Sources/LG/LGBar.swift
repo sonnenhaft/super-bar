@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import ServiceManagement
 
 let intervals: [Double] = [1, 5, 30, 60, 300, 600]
@@ -8,7 +9,7 @@ func ago(_ date: Date?) -> String {
   let s = max(0, Int(Date().timeIntervalSince(d)))
   return s < 60 ? "\(s)s ago" : s < 3600 ? "\(s/60)m ago" : "\(s/3600)h ago"
 }
-@MainActor final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
+@MainActor final class App: NSObject, ObservableObject, NSApplicationDelegate, NSMenuDelegate {
   let readout = NSButton()
   var didRender: (() -> Void)?
   var panelChanged: (() -> Void)?
@@ -28,10 +29,10 @@ func ago(_ date: Date?) -> String {
   private var profiles: [String: [String: Any]] = [:]
   private lazy var launchAtLogin = SMAppService.mainApp.status == .enabled
   var connected = false
-  var selected: String {
-    get { defaults.string(forKey: "selected") ?? "" }
-    set { defaults.set(newValue, forKey: "selected") }
+  @Published var selected = defaults.string(forKey: "selected") ?? "" {
+    didSet { if oldValue != selected { defaults.set(selected, forKey: "selected") } }
   }
+  var snapshots: [String: [String: Any]] = [:]
   var polling = false { didSet { updateHeader() } }
   var sending = false { didSet { updateHeader() } }
   var generation = 0
@@ -449,6 +450,8 @@ func ago(_ date: Date?) -> String {
     guard id != selected, devices.contains(where: { $0.id == id }) else { return }
     reset()
     selected = id
+    state = snapshots[id] ?? [:]
+    lastRead = snapshots[id] == nil ? nil : checked[id]
     profile = profiles[id] ?? [:]
     menuDeviceID = nil
     panelSections.removeAll { $0.title == "Energy" }
@@ -529,7 +532,7 @@ func ago(_ date: Date?) -> String {
         let changed = !connected || !(state as NSDictionary).isEqual(to: snapshot)
         if changed { state = snapshot }
         connected = true
-        samples[id] = LGSample(snapshot)
+        saveSnapshot(snapshot, for: id)
         checked[id] = Date()
         refreshOtherCards()
         lastRead = Date()
@@ -680,7 +683,9 @@ func ago(_ date: Date?) -> String {
     let fresh = try await api.request("devices/\(id)/state")
     try Task.checkCancellation()
     state = object(fresh)
-    lastRead = Date()
+    saveSnapshot(state, for: id)
+    checked[id] = Date()
+    lastRead = checked[id]
     connected = true
     let confirmed = selections.unconfirmed.filter { change in
       reported(change.0, change.1).map { equal($0, change.2) } ?? false
@@ -903,6 +908,7 @@ func ago(_ date: Date?) -> String {
     api = API()
     devices = []
     profiles.removeAll()
+    snapshots.removeAll()
     samples.removeAll()
     checked.removeAll()
     settings?.close()

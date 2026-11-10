@@ -43,6 +43,17 @@ final class EnergyHistory: ObservableObject {
     @Published private var samples: [String: [WattSample]] = [:]
     private var ids: [String: String] = [:]
 
+    @Published private(set) var cardEnergy: [String: String] = [:]
+
+    private func updateCardEnergy() {
+        let names = Set(ids.keys).union(cloud.map(\.name)).union(samples.keys)
+        let now = Date()
+        let values = names.reduce(into: [String: String]()) { result, name in
+            result[name] = barEnergy(for: name, now: now)?.text
+        }
+        if values != cardEnergy { cardEnergy = values }
+    }
+
     private var restoring = true
     private var pendingIngest: [([[String: Any]], Date)] = []
 
@@ -56,6 +67,7 @@ final class EnergyHistory: ObservableObject {
                 self.restoring = false
                 for (devices, now) in self.pendingIngest { self.ingest(devices, now: now) }
                 self.pendingIngest.removeAll()
+                self.updateCardEnergy()
             }
         }
         loadCloud()
@@ -68,6 +80,7 @@ final class EnergyHistory: ObservableObject {
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.cloud != cache.devices else { return }
                 self.cloud = cache.devices
+                self.updateCardEnergy()
             }
         }
     }
@@ -130,6 +143,7 @@ final class EnergyHistory: ObservableObject {
                 try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: wattFile.path)
             }
         }
+        updateCardEnergy()
         loadCloud()
     }
 

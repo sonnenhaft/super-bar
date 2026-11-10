@@ -36,6 +36,52 @@ struct DeviceMetric: Identifiable {
     let toggle: () -> Void
 }
 
+private struct CardSelectionButton: NSViewRepresentable {
+    let name: String
+    let selected: Bool
+    let select: () -> Void
+
+    final class Control: NSButton {
+        var selectDevice: (() -> Void)?
+        var active = false
+        var selectionStarted: TimeInterval?
+        @objc func choose() {
+            guard !active else { return }
+            selectionStarted = ProcessInfo.processInfo.systemUptime
+            selectDevice?()
+        }
+        override func draw(_ dirtyRect: NSRect) {
+            super.draw(dirtyRect)
+            if active, let start = selectionStarted {
+                selectionStarted = nil
+                let ms = (ProcessInfo.processInfo.systemUptime - start) * 1000
+                DispatchQueue.main.async { UserDefaults.standard.set(ms, forKey: "lastDeviceSelectionDrawMilliseconds") }
+            }
+        }
+        override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    }
+
+    func makeNSView(context: Context) -> Control {
+        let button = Control()
+        button.isBordered = false
+        button.alignment = .left
+        button.lineBreakMode = .byTruncatingTail
+        button.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        button.sendAction(on: [.leftMouseDown])
+        button.target = button
+        button.action = #selector(Control.choose)
+        return button
+    }
+    func updateNSView(_ button: Control, context: Context) {
+        button.selectDevice = select
+        button.active = selected
+        button.title = name
+        button.font = .systemFont(ofSize: 13, weight: selected ? .bold : .regular)
+        button.contentTintColor = .white
+        button.setAccessibilityValue(selected ? "Selected" : "Not selected")
+    }
+}
+
 struct ClimateDeviceCard<Controls: View>: View {
     let brand: Brand
     let iconVisible: Bool
@@ -64,13 +110,9 @@ struct ClimateDeviceCard<Controls: View>: View {
                     .accessibilityLabel(brand.rawValue + " icon")
                     .accessibilityValue(iconVisible ? "Visible in menu bar" : "Hidden from menu bar")
                     .help((iconVisible ? "Hide " : "Show ") + brand.rawValue + " icon in menu bar")
-                Button(action: select) {
-                    HStack {
-                        Text(verbatim: name).fontWeight(selected ? .bold : .regular).lineLimit(1)
-                        Spacer()
-                        if !["ON", "OFF", "Connected"].contains(status) { Text(status).font(.caption.bold()) }
-                    }.contentShape(Rectangle())
-                }.buttonStyle(.plain).accessibilityValue(selected ? "Selected" : "Not selected")
+                CardSelectionButton(name: name, selected: selected, select: select)
+                    .frame(maxWidth: .infinity, minHeight: 20)
+                if !["ON", "OFF", "Connected"].contains(status) { Text(status).font(.caption.bold()) }
             }
             HStack(alignment: .top, spacing: 10) { metricButtons }
             controls()

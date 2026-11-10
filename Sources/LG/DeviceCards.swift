@@ -59,10 +59,11 @@ extension App {
                 if self.selected == id { self.manualRefresh() } else { self.selectDevice(id) }
             }, select: { self.selectDevice(id) }) {
                 let limits = self.bounds()
+                let hasProfile = active && !self.profile.isEmpty
                 let degrees = (16...26).filter { degree in
-                    !active || (Double(degree) >= limits.0 && Double(degree) <= limits.1 && self.allowed("temperature", "targetTemperature", Double(degree)))
+                    !hasProfile || (Double(degree) >= limits.0 && Double(degree) <= limits.1 && self.allowed("temperature", "targetTemperature", Double(degree)))
                 }
-                let options = self.speeds.filter { !active || self.allowed("airFlow", self.windKey, $0) }
+                let options = self.speeds.filter { !hasProfile || self.allowed("airFlow", self.windKey, $0) }
                 let speed = active ? self.displayValue("airFlow", self.windKey) as? String : sample?.fan?.uppercased()
                 let target = sample?.value("current") ?? "—"
                 CardMenus(degrees: degrees, target: target,
@@ -74,8 +75,13 @@ extension App {
                     ForEach(options, id: \.self) { speed in
                         Button(speed.capitalized) { self.useCard(id) { self.send([("airFlow", self.windKey, speed)]) } }
                     }
-                }.disabled(active && !self.connected)
+                }.disabled(active && !self.connected && self.profile.isEmpty && !self.polling)
             }
+    }
+
+    func saveSnapshot(_ snapshot: [String: Any], for id: String) {
+        snapshots[id] = snapshot
+        samples[id] = LGSample(snapshot)
     }
 
     func rememberField(_ key: String) {
@@ -93,7 +99,7 @@ extension App {
                 let result = try? await api.request("devices/\(id)/state")
                 guard !Task.isCancelled else { return }
                 checked[id] = Date()
-                samples[id] = result.map { LGSample(object($0)) }
+                if let result { saveSnapshot(object(result), for: id) } else { samples[id] = nil; snapshots[id] = nil }
                 panelChanged?()
             }
             if !Task.isCancelled { summaryTask = nil }
@@ -102,5 +108,23 @@ extension App {
     func cancelOtherCards() {
         summaryTask?.cancel()
         summaryTask = nil
+    }
+}
+
+@MainActor struct LGPanel: View {
+    @ObservedObject var model: App
+    var body: some View {
+        DevicePanel(brand: .lg, sections: model.panelSections) {
+                if !model.devices.isEmpty {
+                    SectionName("Air conditioners", "air.conditioner.horizontal")
+                    ForEach(model.devices, id: \.id) { model.deviceCard($0) }
+                    CoolingPresetRow(enabled: { model.connected && model.presetAllowed(Double($0.degrees), $0.speed) },
+                        selected: { preset in
+                            model.powerIsOn && model.displayValue("airConJobMode", "currentJobMode") as? String == "COOL"
+                                && model.displayValue("airFlow", model.windKey) as? String == preset.speed
+                                && lgNumber(model.displayValue("temperature", "targetTemperature")) == Double(preset.degrees)
+                        }, apply: { model.preset(Double($0.degrees), $0.speed) })
+                }
+            }
     }
 }
