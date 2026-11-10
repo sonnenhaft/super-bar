@@ -1,0 +1,11 @@
+.DS_Store
+.build/
+dist/
+token.txt
+.env
+.env.*
+envs/
+generated/
+legacy/
+*.zip
+Промт Super Bar.txt

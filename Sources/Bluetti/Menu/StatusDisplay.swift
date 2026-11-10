@@ -1,0 +1,78 @@
+import AppKit
+
+extension BlueBarDelegate {
+    private func scheduleMenuAgeUpdate(at date: Date?) {
+        lastReadTimer?.invalidate()
+        lastReadTimer = nil
+        guard mainMenuIsOpen, let date else { return }
+        let timer = Timer(fire: date, interval: 0, repeats: false) { [weak self] _ in
+            guard let self, self.mainMenuIsOpen else { return }
+            self.scheduleMenuAgeUpdate(at: self.nextStationAgeUpdate(now: Date()))
+        }
+        lastReadTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    func render() {
+        var displayChanged = false
+        defer { if displayChanged { didRender?() } }
+        let reading = lastGood
+        let now = Date()
+        let stale = reading.map { now.timeIntervalSince($0.measuredAt) >= maximumAge } ?? false
+        let offline = sleeping || hasConnectionFailure || stale
+        if offline || reading?.runtimeCarriedForward == true { freezeRuntime() }
+        let displayTime = runtimeFrozenAt ?? now
+        let visibility = self.visibility
+        let fields = visibility.visibleFields(for: reading)
+        let title = reading.map { StatusVisibility.title(for: $0, fields: fields, at: displayTime) } ?? ""
+        let font = NSFont.monospacedDigitSystemFont(ofSize: statusFontSize, weight: .regular)
+        var attributes: [NSAttributedString.Key: Any] = [.font: font]
+        if let custom = customStatusTextColor { attributes[.foregroundColor] = custom }
+        let styledTitle = NSAttributedString(string: title, attributes: attributes)
+        if !readout.attributedTitle.isEqual(to: styledTitle) {
+            readout.attributedTitle = styledTitle
+            displayChanged = true
+        }
+        let showInitialLoading = awaitingFirstRead && isLoadingReading
+        let image = statusIcons.image(
+            battery: fields.contains(.battery) ? reading?.percent : nil,
+            brand: fields.contains(.brand) ? brandBadge : nil,
+            hasReading: reading != nil, loading: showInitialLoading, offline: offline,
+            fontSize: statusFontSize, customColor: customStatusTextColor,
+            appearance: readout.effectiveAppearance)
+        let displayImage = image ?? (title.isEmpty ? brandBadge : nil)
+        if readout.image !== displayImage {
+            readout.image = displayImage
+            displayChanged = true
+        }
+        let position: NSControl.ImagePosition = displayImage == nil ? .noImage : .imageLeft
+        if readout.imagePosition != position { readout.imagePosition = position; displayChanged = true }
+        if readout.imageScaling != .scaleNone { readout.imageScaling = .scaleNone; displayChanged = true }
+        readout.setAccessibilityLabel((demo ? "DEMO, " : "") + "BLUETTI, " + title
+            + (showInitialLoading ? ", reading station" : (offline ? ", offline" : "")))
+        let detail = lastError ?? (stale ? "Waiting for a fresh Bluetooth reading." : "")
+        let lastRead = reading.map { shortDate($0.measuredAt) }
+        readout.toolTip = (demo ? "DEMO\n" : "") + stationDisplayName
+            + (lastRead.map { "\n" + $0 } ?? "")
+            + (detail.isEmpty ? "" : "\n" + detail)
+        guard mainMenuIsOpen else { return }
+        defer { panelChanged?() }
+        let nextAgeUpdate = rebuildStationMenu(now: now)
+        scheduleMenuAgeUpdate(at: nextAgeUpdate)
+        emptyRefreshItem.isHidden = hasStationRows
+        let status = refreshState == .idle ? "Not connected" : refreshState.rawValue
+        refreshRow.update(status: status, loading: !hasStationRows && isLoadingReading, enabled: !sleeping && !quitting)
+        loadGraphItem.isHidden = reading == nil
+        graphBottomSeparator.isHidden = loadGraphItem.isHidden
+        if reading != nil { loadGraph.update(points: loadHistory.visiblePoints(at: now), now: now) }
+        iconVisibilityItem.state = fields.contains(.brand) ? .on : .off
+        percentVisibilityItem.state = fields.contains(.percentage) ? .on : .off
+        percentVisibilityItem.title = reading?.percentText ?? "%"
+        percentVisibilityItem.isEnabled = reading != nil
+        outputVisibilityItem.state = (fields.contains(.output) || visibility.selected.contains(.output)) ? .on : .off
+        outputVisibilityItem.title = reading?.outputText.map { "⚡" + $0 } ?? "⚡"
+        timeVisibilityItem.state = visibility.selected.contains(.runtime) ? .on : .off
+        setTimeVisibilityHidden((reading?.acInput ?? 0) <= 0 && (reading?.dcInput ?? 0) <= 0)
+        timeVisibilityItem.title = reading?.compactRuntime(at: displayTime).map { "⏱" + $0 } ?? "⏱"
+    }
+}
