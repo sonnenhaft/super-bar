@@ -64,7 +64,7 @@ struct ReadoutSettings: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Text("Show in menu bar").font(.headline).padding(.bottom, 10)
-            ForEach(ReadoutField.allCases, id: \.self) { field in
+            ForEach([ReadoutField.power, .vertical, .horizontal, .eco], id: \.self) { field in
                 Toggle(isOn: Binding(get: { preferences.ordered(id).contains(field) },
                                      set: { preferences.set(field, for: id, visible: $0) })) {
                     Label(field.label, systemImage: field.symbol)

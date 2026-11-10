@@ -9,10 +9,10 @@ struct MenuReadout: View {
     let energyText: String?
     var body: some View {
         HStack(spacing: 4) {
-            if visible.contains(.icon) {
+            if visible.contains(.icon) || ac?.power == false {
                 TCLLogo().frame(width: 30, height: 15)
             }
-            if let ac {
+            if let ac, ac.power != false {
                 if visible.contains(.target) {
                     Text(ac.acTemperature).fontWeight(ac.acTemperature == "OFF" ? .bold : .semibold)
                 }

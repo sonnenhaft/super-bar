@@ -65,14 +65,5 @@ extension BlueBarDelegate {
         loadGraphItem.isHidden = reading == nil
         graphBottomSeparator.isHidden = loadGraphItem.isHidden
         if reading != nil { loadGraph.update(points: loadHistory.visiblePoints(at: now), now: now) }
-        iconVisibilityItem.state = fields.contains(.brand) ? .on : .off
-        percentVisibilityItem.state = fields.contains(.percentage) ? .on : .off
-        percentVisibilityItem.title = reading?.percentText ?? "%"
-        percentVisibilityItem.isEnabled = reading != nil
-        outputVisibilityItem.state = (fields.contains(.output) || visibility.selected.contains(.output)) ? .on : .off
-        outputVisibilityItem.title = reading?.outputText.map { "⚡" + $0 } ?? "⚡"
-        timeVisibilityItem.state = visibility.selected.contains(.runtime) ? .on : .off
-        setTimeVisibilityHidden((reading?.acInput ?? 0) <= 0 && (reading?.dcInput ?? 0) <= 0)
-        timeVisibilityItem.title = reading?.compactRuntime(at: displayTime).map { "⏱" + $0 } ?? "⏱"
     }
 }

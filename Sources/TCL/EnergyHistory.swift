@@ -43,12 +43,20 @@ final class EnergyHistory: ObservableObject {
     @Published private var samples: [String: [WattSample]] = [:]
     private var ids: [String: String] = [:]
 
+    private var restoring = true
+    private var pendingIngest: [([[String: Any]], Date)] = []
+
     init(directory: URL) {
         self.directory = directory
         self.wattFile = directory.appendingPathComponent("watts.json")
-        if let data = try? Data(contentsOf: wattFile),
-           let saved = try? JSONDecoder().decode([String: [WattSample]].self, from: data) {
-            samples = saved
+        files.async { [wattFile] in
+            let saved = (try? Data(contentsOf: wattFile)).flatMap { try? JSONDecoder().decode([String: [WattSample]].self, from: $0) }
+            DispatchQueue.main.async {
+                if let saved { self.samples = saved }
+                self.restoring = false
+                for (devices, now) in self.pendingIngest { self.ingest(devices, now: now) }
+                self.pendingIngest.removeAll()
+            }
         }
         loadCloud()
     }
@@ -76,7 +84,8 @@ final class EnergyHistory: ObservableObject {
     }
 
     func barEnergy(for device: String, now: Date = Date()) -> (text: String, detail: String)? {
-        if let latest = watts(for: device, now: now).last, now.timeIntervalSince1970 - latest.timestamp <= 300 {
+        let key = ids[device] ?? report(for: device)?.id ?? device
+        if let latest = samples[key]?.last(where: { $0.timestamp <= now.timeIntervalSince1970 }), now.timeIntervalSince1970 - latest.timestamp <= 300 {
             let time = EnergyPeriod.formatter("HH:mm").string(from: Date(timeIntervalSince1970: latest.timestamp))
             return (EnergyPeriod.pretty(latest.watts) + " W", "Power measured at " + time + " Manila time.")
         }
@@ -87,6 +96,7 @@ final class EnergyHistory: ObservableObject {
     // Keep a point only at the device's own measurement time. An unchanged
     // shadow can be read repeatedly, even while the air conditioner is offline.
     func ingest(_ devices: [[String: Any]], now: Date = Date()) {
+        if restoring { pendingIngest.append((devices, now)); return }
         let cutoff = now.timeIntervalSince1970 - 86400
         var retained = samples.mapValues { $0.filter { $0.timestamp >= cutoff && $0.timestamp <= now.timeIntervalSince1970 } }
                               .filter { !$0.value.isEmpty }

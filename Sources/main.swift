@@ -9,7 +9,9 @@ private final class MenuPanel: NSPanel {
 
 @MainActor final class SuperBar: NSObject, NSApplicationDelegate, NSWindowDelegate {
     let state = BarSelection.shared
-    let lg = App(), blue = BlueBarDelegate(), tcl = ClimateStore()
+    lazy var lg = App()
+    lazy var blue = BlueBarDelegate()
+    lazy var tcl = ClimateStore()
     let fields = ReadoutPreferences()
     private var item: NSStatusItem!
     private let panel = MenuPanel(contentRect: .zero, styleMask: [.borderless], backing: .buffered, defer: true)
@@ -36,6 +38,9 @@ private final class MenuPanel: NSPanel {
         appearanceObservation = b.observe(\.effectiveAppearance, options: [.new]) { [weak self] _, _ in
             DispatchQueue.main.async { self?.schedule(.tcl) }
         }
+        DispatchQueue.main.async { self.startServices(n) }
+    }
+    private func startServices(_ n: Notification) {
         blue.panelChanged = { [weak self] in self?.scheduleContent(.bluetti) }
         lg.panelChanged = { [weak self] in self?.scheduleContent(.lg) }
         panel.delegate = self
@@ -120,9 +125,10 @@ private final class MenuPanel: NSPanel {
         switch brand {
         case .lg:
             let name = lg.devices.first { $0.id == lg.selected }?.name ?? ""
-            return BrandReading(value: lg.summaryValue(for: lg.selected), name: name)
+            return BrandReading(value: !lg.devices.isEmpty && lg.devices.allSatisfy({ lg.sample(for: $0.id)?.power == "POWER_OFF" && Date().timeIntervalSince(lg.checked[$0.id] ?? .distantPast) < 130 }) ? "All off" : lg.summaryValue(for: lg.selected), name: name)
         case .tcl:
             guard let ac = fields.device(in: tcl) else { return BrandReading() }
+            if !tcl.offline && tcl.devices.allSatisfy({ $0.online == true && !$0.failed && $0.power == false }) { return BrandReading(value: "All off", name: ac.name) }
             var value = "—"
             if !tcl.offline && ac.online == true && !ac.failed {
                 for field in fields.ordered(ac.id) {
@@ -217,17 +223,17 @@ private final class MenuPanel: NSPanel {
         case .tcl:
             host.rootView = AnyView(ClimatePanel(store: tcl, history: tcl.history, preferences: fields, height: cachedHeight))
         case .lg:
-            host.rootView = AnyView(DevicePanel(brand: .lg, sections: lg.panelSections, refresh: lg.manualRefresh) {
+            host.rootView = AnyView(DevicePanel(brand: .lg, sections: lg.panelSections) {
                 if !self.lg.devices.isEmpty {
                     SectionName("Air conditioners", "air.conditioner.horizontal")
                     ForEach(self.lg.devices, id: \.id) { self.lg.deviceCard($0) }
                 }
             })
         case .bluetti:
-            let sections = [DeviceSection(title: "Batteries", symbol: "battery.75", items: [blue.emptyRefreshItem] + blue.stationRows.flatMap { $0.details.items }),
+            let sections = [DeviceSection(title: "Batteries", symbol: MenuPresentation.batterySymbol(percent: blue.lastGood?.percent ?? 0), items: [blue.emptyRefreshItem] + blue.stationRows.flatMap { $0.details.items }),
                             DeviceSection(title: "Load history", symbol: "chart.xyaxis.line", items: [blue.loadGraphItem]),
                             DeviceSection(title: "Settings", symbol: "gearshape", items: blue.panelSettings)]
-            host.rootView = AnyView(DevicePanel(brand: .bluetti, sections: sections, refresh: blue.refreshClicked) { EmptyView() })
+            host.rootView = AnyView(DevicePanel(brand: .bluetti, sections: sections, toggleBattery: { self.blue.toggleMenuBarField(.battery) }) { EmptyView() })
         }
     }
 

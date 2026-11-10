@@ -85,7 +85,6 @@ func ago(_ date: Date?) -> String {
   }
   var temperatures: [String: Any] { celsius(find("temperature", in: state) ?? [:]) }
   var windKey = "windStrength"
-  var ecoRow: ActionRow?
   var tokenSecure = NSSecureTextField()
   var tokenPlain = NSTextField()
   var eye = NSButton()
@@ -205,7 +204,7 @@ func ago(_ date: Date?) -> String {
     return true
   }
   private var priorEcoMode: String?
-  private var ecoChoice: EcoChoice {
+  var ecoChoice: EcoChoice {
     let flag = capability("powerSave", "powerSaveEnabled")
     let mode = capability("airConJobMode", "currentJobMode")
     let writable = canWrite("powerSave", "powerSaveEnabled")
@@ -217,7 +216,7 @@ func ago(_ date: Date?) -> String {
       writableFlag: writable, mode: displayValue("airConJobMode", "currentJobMode") as? String,
       modes: modes, returnMode: priorEcoMode)
   }
-  private func toggleEco() {
+  func toggleEco() {
     let choice = ecoChoice
     guard let change = choice.change else {
       message = "Eco control unavailable for this device"
@@ -263,7 +262,8 @@ func ago(_ date: Date?) -> String {
     var displayChanged = false
     defer { if displayChanged { didRender?() } }
     let button = readout
-    let icon = shown("icon", for: selected) ? emblem : nil
+    if isReportedOff { readings.removeAll() }
+    let icon = isReportedOff || shown("icon", for: selected) ? emblem : nil
     if button.image !== icon { button.image = icon; displayChanged = true }
     if button.imagePosition != .imageLeading { button.imagePosition = .imageLeading; displayChanged = true }
     var attrs: [NSAttributedString.Key: Any] = [
@@ -297,25 +297,13 @@ func ago(_ date: Date?) -> String {
     if !button.attributedTitle.isEqual(to: title) { button.attributedTitle = title; displayChanged = true }
     guard menuVisible else { return }
     updateHeader()
-    ecoRow?.right.stringValue = eco.map { $0 ? "✓ ON" : "OFF" } ?? ""
-    ecoRow?.right.font = .boldSystemFont(ofSize: 13)
     powerRow?.button.font = .boldSystemFont(ofSize: 13)
-    ecoRow?.right.textColor = eco == true ? .systemGreen : .systemRed
     powerRow?.button.title = powerIsOn ? "Turn OFF" : "Turn ON"
     for (t, r) in presetRows {
       let match =
         powerIsOn && displayValue("airConJobMode", "currentJobMode") as? String == "COOL"
         && speed == (t == 16 ? "HIGH" : "LOW") && set == t
       r.right.stringValue = match ? "✓" : ""
-    }
-    for (key, row) in displayRows {
-      let value = key == "sensor" ? sensor : key == "current" ? set : nil
-      let title = Self.visibilityLabels[key] ?? key
-      row.button.title =
-        (shown(key, for: selected) ? "Hide " : "Show ") + title
-      let showOff = key == "current" && isReportedOff
-      row.right.font = showOff ? .boldSystemFont(ofSize: 13) : .menuFont(ofSize: 13)
-      row.right.stringValue = showOff ? "OFF" : value.map { degree($0) } ?? ""
     }
     updateEnergyRows()
   }
@@ -339,7 +327,6 @@ func ago(_ date: Date?) -> String {
       start = menu.numberOfItems
     }
     powerRow = nil
-    ecoRow = nil
     presetRows = [:]
     displayRows = [:]
     if !profile.isEmpty {
@@ -353,9 +340,6 @@ func ago(_ date: Date?) -> String {
         powerRow?.button.image = NSImage(systemSymbolName: "power", accessibilityDescription: nil)
         powerRow?.button.imagePosition = .imageLeading
       }
-    }
-    if !selected.isEmpty {
-      ecoRow = row(ecoSymbol + " Eco") { [weak self] in self?.toggleEco() }
     }
     if !profile.isEmpty {
       for (t, speed, title) in [
@@ -379,18 +363,10 @@ func ago(_ date: Date?) -> String {
     refreshRow?.button.imagePosition = .imageLeading
     menu.addItem(.separator())
     finish("Connection", "antenna.radiowaves.left.and.right")
-    for key in ["icon", "current", "sensor", "fanIndicator", "ecoIndicator"] {
-      let r = row("") { [weak self] in self?.toggleVisibility(key) }
-      if key == "icon" {
-        r.button.image = emblem
-        r.button.imagePosition = .imageLeading
-      }
-      displayRows[key] = r
-    }
     if let name = locationWeather.name {
       let visible = defaults.bool(forKey: "locationWeather")
       let location = row(
-        "\(visible ? "Hide" : "Show") current location (\(name))",
+        "Local weather · " + (visible ? "ON" : "OFF"),
         degree(locationWeather.temperature)
       ) { [weak self] in
         defaults.set(!defaults.bool(forKey: "locationWeather"), forKey: "locationWeather")
@@ -479,8 +455,13 @@ func ago(_ date: Date?) -> String {
     buildMenu()
   }
   @objc func quit() { NSApp.terminate(nil) }
+  private var manualReadPending = false
+  private func drainManualRead() {
+    if manualReadPending && !sending && !polling { manualReadPending = false; manualRefresh() }
+  }
   func manualRefresh() {
     autoRetry = AutoRetry()
+    if polling || sending { manualReadPending = true; return }
     historyFailures = 0
     message = ""
     startTimer()
@@ -497,6 +478,7 @@ func ago(_ date: Date?) -> String {
     updateStatus()
   }
   func reset() {
+    manualReadPending = false
     cancelOtherCards()
     lastCommandResult = "None sent"
     lastReadResult = "No response yet"
@@ -530,7 +512,7 @@ func ago(_ date: Date?) -> String {
     polling = true
     let gen = generation
     pollTask = Task {
-      defer { if gen == generation && !Task.isCancelled { polling = false } }
+      defer { if gen == generation && !Task.isCancelled { polling = false; drainManualRead() } }
       do {
         let api = self.api
         if devices.isEmpty {
@@ -635,6 +617,7 @@ func ago(_ date: Date?) -> String {
       defer {
         if gen == generation {
           sending = false
+          drainManualRead()
           updateStatus()
         }
       }

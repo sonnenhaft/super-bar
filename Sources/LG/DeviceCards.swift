@@ -4,11 +4,14 @@ import SwiftUI
 struct LGSample {
     var room: Double?
     var target: Double?
+    var fan: String?
     var power: String?
     init(_ snapshot: [String: Any]) {
         let temperature = celsius(find("temperature", in: snapshot) ?? [:])
         room = lgNumber(temperature["currentTemperature"] ?? temperature["currentTemperatureC"])
         target = lgNumber(temperature["targetTemperature"] ?? temperature["targetTemperatureC"])
+        let flow = find("airFlow", in: snapshot) ?? [:]
+        fan = ((find("windStrengthDetail", in: flow) ?? find("windStrength", in: flow)) as? String)?.capitalized
         power = find("airConOperationMode", in: find("operation", in: snapshot) ?? [:]) as? String
     }
     var status: String { power == "POWER_OFF" ? "OFF" : power == "POWER_ON" ? "ON" : "Connected" }
@@ -47,9 +50,11 @@ extension App {
         return ClimateDeviceCard(brand: .lg, iconVisible: active && shown("icon", for: id),
             toggleIcon: { choose("icon") }, name: device.name, selected: active,
             status: active && !connected && sample != nil ? "Saved · " + status : status,
-            metrics: [("current", "AC", "scope"), ("sensor", "Room", "thermometer.medium")].map { key, label, symbol in
-                DeviceMetric(id: key, label: label, symbol: symbol, value: sample?.value(key) ?? "—",
+            metrics: [("current", "AC", "scope"), ("sensor", "Room", "thermometer.medium"), ("fanIndicator", "Fan", "fanblades"), ("ecoIndicator", "Eco", "leaf")].map { key, label, symbol in
+                DeviceMetric(id: key, label: label, symbol: symbol, value: key == "fanIndicator" ? (sample?.fan ?? "—") : key == "ecoIndicator" ? (active ? self.ecoChoice.enabled.map { $0 ? "ON" : "OFF" } ?? "—" : "—") : sample?.value(key) ?? "—",
                              visible: active && shown(key, for: id), toggle: { choose(key) })
+            }, reading: active && polling, readAt: active ? lastRead : (sample == nil ? nil : checked[id]), refresh: {
+                if self.selected == id { self.manualRefresh() } else { self.selectDevice(id) }
             }, select: { self.selectDevice(id) }) {
                 let limits = self.bounds()
                 let degrees = (16...26).filter {
@@ -57,11 +62,12 @@ extension App {
                     return n >= limits.0 && n <= limits.1 && self.allowed("temperature", "targetTemperature", n)
                 }
                 let options = self.speeds.filter { self.allowed("airFlow", self.windKey, $0) }
-                CardMenus(degrees: degrees, target: degree(lgNumber(self.displayValue("temperature", "targetTemperature"))),
+                CardMenus(degrees: degrees, target: self.isReportedOff ? "OFF" : degree(lgNumber(self.displayValue("temperature", "targetTemperature"))),
+                          off: self.allowed("operation", "airConOperationMode", "POWER_OFF") ? { self.send([("operation", "airConOperationMode", "POWER_OFF")]) } : nil, eco: self.ecoChoice.change == nil ? nil : self.ecoChoice.enabled, toggleEco: self.toggleEco,
                           change: { if self.selected == id { self.setDegrees(Double($0)) } },
-                          fan: options.isEmpty ? "" : (self.displayValue("airFlow", self.windKey) as? String ?? "Fan").capitalized) {
+                          fan: options.isEmpty ? "" : (self.displayValue("airFlow", self.windKey) as? String).map { $0.capitalized + " " + String(repeating: "•", count: FanIndicator.count(for: $0)) } ?? "Fan") {
                     ForEach(options, id: \.self) { speed in
-                        Button(speed.capitalized) { if self.selected == id { self.send([("airFlow", self.windKey, speed)]) } }
+                        Button(speed.capitalized + " " + String(repeating: "•", count: FanIndicator.count(for: speed))) { if self.selected == id { self.send([("airFlow", self.windKey, speed)]) } }
                     }
                 }.disabled(!self.connected)
             }

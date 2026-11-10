@@ -23,7 +23,7 @@ private struct PanelControl: NSViewRepresentable {
 struct DevicePanel<Devices: View>: View {
     let brand: Brand
     let sections: [DeviceSection]
-    let refresh: () -> Void
+    var toggleBattery: (() -> Void)? = nil
     @ViewBuilder let devices: () -> Devices
 
     private func perform(_ item: NSMenuItem) {
@@ -31,15 +31,6 @@ struct DevicePanel<Devices: View>: View {
     }
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 9) {
-                if brand == .lg { Image(nsImage: lgIcon()).accessibilityLabel("LG") }
-                else { Image("bluetti-icon").resizable().scaledToFit().frame(width: 24, height: 24).accessibilityLabel("BLUETTI") }
-                Text(brand == .lg ? "Climate" : "Power station").font(.system(size: 17, weight: .semibold))
-                Spacer()
-                Button(action: refresh) { Image(systemName: "arrow.clockwise") }
-                    .buttonStyle(.borderless).help("Refresh readings").accessibilityLabel("Refresh")
-            }.padding(.horizontal, 16).padding(.vertical, 12)
-            Divider()
             ScrollView {
                 VStack(alignment: .leading, spacing: 5) {
                     devices()
@@ -47,7 +38,10 @@ struct DevicePanel<Devices: View>: View {
                         let visible = section.items.filter { !$0.isHidden && !$0.isSeparatorItem }
                         if !visible.isEmpty {
                             Card {
-                                SectionName(section.title, section.symbol)
+                                if section.title == "Batteries", let toggleBattery {
+                                    Button(action: toggleBattery) { SectionName(section.title, section.symbol) }
+                                        .buttonStyle(.plain).help("Toggle battery icon in menu bar")
+                                } else { SectionName(section.title, section.symbol) }
                                 ForEach(visible, id: \.self) { item in row(item) }
                             }
                         }

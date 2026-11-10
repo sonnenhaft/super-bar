@@ -44,6 +44,9 @@ struct ClimateDeviceCard<Controls: View>: View {
     let selected: Bool
     let status: String
     let metrics: [DeviceMetric]
+    let reading: Bool
+    let readAt: Date?
+    let refresh: () -> Void
     let select: () -> Void
     @ViewBuilder let controls: () -> Controls
 
@@ -71,6 +74,15 @@ struct ClimateDeviceCard<Controls: View>: View {
             }
             HStack(alignment: .top, spacing: 10) { metricButtons }
             if selected { controls() }
+            HStack {
+                Text(reading ? "Reading…" : readAt.map { "Last read " + $0.formatted(date: .omitted, time: .standard) } ?? "No reading yet")
+                    .font(.caption).monospacedDigit().foregroundStyle(.secondary)
+                Spacer()
+                Button(action: refresh) {
+                    if reading { ProgressView().controlSize(.small) }
+                    else { Image(systemName: "arrow.clockwise") }
+                }.buttonStyle(.plain).frame(width: 26, height: 22).accessibilityLabel("Refresh " + name)
+            }
         }.overviewSurface(selected: selected)
     }
 
@@ -103,6 +115,9 @@ struct TCLLogo: View {
 struct CardMenus<Fan: View>: View {
     let degrees: [Int]
     let target: String
+    let off: (() -> Void)?
+    let eco: Bool?
+    let toggleEco: () -> Void
     let change: (Int) -> Void
     let fan: String
     @ViewBuilder let fanOptions: () -> Fan
@@ -110,6 +125,7 @@ struct CardMenus<Fan: View>: View {
         HStack(spacing: 10) {
             if !degrees.isEmpty {
                 Menu {
+                    if let off { Button("OFF", action: off); Divider() }
                     ForEach(degrees, id: \.self) { degree in
                         Button(String(degree) + "°") { change(degree) }
                     }
@@ -120,6 +136,7 @@ struct CardMenus<Fan: View>: View {
                 Menu(content: fanOptions) { Label(fan, systemImage: "fanblades") }
                     .accessibilityLabel("Set fan speed").accessibilityValue(fan)
             }
+            if let eco { Button("Eco " + (eco ? "ON" : "OFF"), action: toggleEco).buttonStyle(.bordered).fontWeight(.bold).foregroundStyle(eco ? Color.green : Color.secondary) }
         }.menuStyle(.borderedButton).controlSize(.small).fixedSize()
     }
 }

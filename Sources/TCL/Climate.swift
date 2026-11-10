@@ -334,6 +334,7 @@ final class ClimateStore: ObservableObject {
             self?.advance()
         }
     }
+    func manualRefresh() { refreshRequested = true; advance() }
     func refresh() {
         if refreshing { return } // The current read already covers this request.
         refreshRequested = true

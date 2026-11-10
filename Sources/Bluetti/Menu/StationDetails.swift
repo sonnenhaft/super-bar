@@ -8,7 +8,7 @@ final class StationDetails {
     private let ageLabel = NSTextField(labelWithString: "")
     private var measuredAt: Date?
 
-    var items: [NSMenuItem] { [cardItem, statusItem] }
+    var items: [NSMenuItem] { [cardItem] }
 
     init() {
         card.autoresizingMask = [.width]
@@ -17,10 +17,10 @@ final class StationDetails {
         ageLabel.font = .systemFont(ofSize: 10)
         ageLabel.textColor = .secondaryLabelColor
         ageLabel.alignment = .right
-        ageLabel.frame = NSRect(x: 136, y: 3, width: 116, height: 14)
+        ageLabel.frame = NSRect(x: 98, y: 3, width: 155, height: 14)
         ageLabel.autoresizingMask = [.minXMargin]
         statusButton.addSubview(ageLabel)
-        statusItem.view = statusButton
+        card.addSubview(statusButton)
     }
 
     func update(reading: Reading?, asOf: Date, power: MenuPowerRow, status: String,
@@ -36,9 +36,9 @@ final class StationDetails {
 
     func updateAge(now: Date) -> Date? {
         guard let measuredAt else { return nil }
-        let age = MenuPresentation.lastRead(measuredAt, now: now)
-        if ageLabel.stringValue != age.title { ageLabel.stringValue = age.title }
-        return age.nextUpdate
+        let text = "Last read " + measuredAt.formatted(date: Calendar.current.isDateInToday(measuredAt) ? .omitted : .abbreviated, time: .standard)
+        ageLabel.stringValue = text
+        return nil
     }
 }
 

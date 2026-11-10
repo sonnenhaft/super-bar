@@ -8,20 +8,19 @@ final class BatteryCard: NSView {
 
     private let nameLabel = NSTextField(labelWithString: "")
     private var selected = false
-    private(set) var contentHeight: CGFloat = 86
+    private(set) var contentHeight: CGFloat = 112
     private let eye = NSImageView()
     private weak var editor: BlueBarAliasEditor?
     private var connected = false
     private var percent: Int?
 
     private let percentage = BatteryCardButton(.percentage, name: "Battery percentage")
-    private let battery = BatteryCardButton(.battery, name: "Battery icon")
     private let brand = BatteryCardButton(.brand, name: "BLUETTI logo")
     private let input = BatteryCardButton(.input, name: "Input power")
     private let output = BatteryCardButton(.output, name: "Output power")
     private let charge = BatteryCardButton(.chargeTime, name: "Time to full charge")
     private let runtime = BatteryCardButton(.runtime, name: "Battery runtime")
-    private var buttons: [BatteryCardButton] { [percentage, battery, brand, input, output, charge, runtime] }
+    private var buttons: [BatteryCardButton] { [percentage, brand, input, output, charge, runtime] }
     override var isFlipped: Bool { true }
 
     override init(frame: NSRect) {
@@ -60,9 +59,6 @@ final class BatteryCard: NSView {
             button.onHover = { [weak self] shown in self?.eye.isHidden = !shown }
             addSubview(button)
         }
-        battery.imagePosition = .imageOnly
-        battery.imageScaling = .scaleNone
-        battery.contentTintColor = .white
         brand.imagePosition = .imageOnly
         brand.imageScaling = .scaleProportionallyUpOrDown
         for button in [percentage, input, output, charge, runtime] {
@@ -111,18 +107,12 @@ final class BatteryCard: NSView {
     }
 
     func update(readingPercent: Int?, power: MenuPowerRow, chargeTime: String, batteryTime: String) {
-        if percent != readingPercent, let value = readingPercent {
-            battery.image = NSImage(systemSymbolName: MenuPresentation.batterySymbol(percent: value),
-                                    accessibilityDescription: nil)?
-                .withSymbolConfiguration(.init(pointSize: 15, weight: .medium))
-        }
         percent = readingPercent
         for (button, text) in [(percentage, readingPercent.map { "\($0)%" } ?? ""),
                                (input, power.input), (output, power.output),
                                (charge, chargeTime), (runtime, batteryTime)] {
             updateText(button, text)
         }
-        battery.isHidden = readingPercent == nil
         brand.isHidden = readingPercent == nil || brand.image == nil
         output.helpDetail = power.toolTip
         arrangeContents()
@@ -166,8 +156,7 @@ final class BatteryCard: NSView {
         let percentWidth = ceil(percentage.attributedTitle.size().width) + 4
         let leftWidth = max(64, percentWidth)
         percentage.frame = NSRect(x: left, y: bodyY, width: leftWidth, height: 31)
-        battery.frame = NSRect(x: left, y: bodyY + 31, width: 29, height: 21)
-        brand.frame = NSRect(x: battery.frame.maxX + 3, y: battery.frame.minY + 1, width: 20, height: 19)
+        brand.frame = NSRect(x: left, y: bodyY + 32, width: 20, height: 19)
 
         // Power and time share a right edge for each direction. For unusually
         // long dual AC/DC readings, stack the pairs rather than cutting off watts.
@@ -195,7 +184,10 @@ final class BatteryCard: NSView {
     }
 
     private func setHeight(_ height: CGFloat) {
-        contentHeight = height
+        contentHeight = max(112, height + 24)
+        if let footer = subviews.last as? RefreshRowButton, footer !== refreshButton {
+            footer.frame = NSRect(x: 6, y: contentHeight - 23, width: max(0, bounds.width - 12), height: 20)
+        }
     }
 
     override func draw(_ dirtyRect: NSRect) {

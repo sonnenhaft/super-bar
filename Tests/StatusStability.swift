@@ -111,15 +111,14 @@ import AppKit
         lg.state = ["operation": ["airConOperationMode": "POWER_OFF"],
                     "temperature": ["currentTemperature": 28, "targetTemperature": 22]]
         lg.updateStatus()
-        precondition(lg.readout.attributedTitle.string == "OFF / 28°")
-        lg.toggleVisibility("icon")
-        precondition(lg.readout.image == nil && lg.readout.attributedTitle.string == "OFF / 28°")
-        lg.toggleVisibility("sensor")
-        precondition(lg.readout.attributedTitle.string == "OFF")
+        for key in ["icon", "sensor", "current"] {
+            precondition(lg.readout.image != nil && lg.readout.attributedTitle.string.isEmpty)
+            lg.toggleVisibility(key)
+        }
+        precondition(lg.sample(for: testID)?.value("sensor") == "28°")
+        lg.state["operation"] = ["airConOperationMode": "POWER_ON"]
         lg.toggleVisibility("current")
-        precondition(lg.readout.image == nil && lg.readout.attributedTitle.string.isEmpty)
-        lg.toggleVisibility("current")
-        precondition(lg.readout.attributedTitle.string == "OFF", "Final hidden field must be selectable again")
+        precondition(lg.readout.image == nil && lg.readout.attributedTitle.string == "22°")
         print("Status readout: stable on repeated updates, changes still propagate.")
     }
 }

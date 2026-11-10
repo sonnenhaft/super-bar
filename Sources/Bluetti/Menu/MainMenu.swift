@@ -17,7 +17,6 @@ extension BlueBarDelegate {
         addControl(sectionHeader("Settings"))
         let start = menu.numberOfItems
         addControl(intervalControl())
-        addVisibilityItems(to: menu)
         panelSettings = Array(menu.items.dropFirst(start))
         menu.addItem(.separator())
         loadGraphItem.view = loadGraph

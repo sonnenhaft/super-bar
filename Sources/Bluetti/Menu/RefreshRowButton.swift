@@ -4,31 +4,7 @@ final class RefreshRowButton: NSButton {
     enum Style { case statusAndIcon, iconOnly, textOnly }
     private let style: Style
 
-    private static let loadingCursor: NSCursor = {
-        let hand = NSCursor.pointingHand
-        let hasHandImage = hand.image.size.width > 0 && hand.image.size.height > 0
-        let pointer = hasHandImage ? hand.image : NSImage(systemSymbolName: "hand.point.up.left.fill", accessibilityDescription: nil)
-        let handSize = hasHandImage ? hand.image.size : NSSize(width: 20, height: 20)
-        let size = NSSize(width: handSize.width + 4, height: handSize.height)
-        let image = NSImage(size: size, flipped: false) { _ in
-            pointer?.draw(in: NSRect(origin: .zero, size: handSize))
-            let badge = NSBezierPath(ovalIn: NSRect(x: size.width - 11, y: 1, width: 10, height: 10))
-            NSColor.black.setFill()
-            badge.fill()
-            NSColor.white.setStroke()
-            badge.lineWidth = 1.2
-            badge.stroke()
-            let hands = NSBezierPath()
-            hands.move(to: NSPoint(x: size.width - 6, y: 9))
-            hands.line(to: NSPoint(x: size.width - 6, y: 6))
-            hands.line(to: NSPoint(x: size.width - 4, y: 5))
-            hands.lineWidth = 1.2
-            hands.stroke()
-            return true
-        }
-        return NSCursor(image: image, hotSpot: hasHandImage ? hand.hotSpot : NSPoint(x: 3, y: 2))
-    }()
-
+    private let spinner = NSProgressIndicator()
     private let statusLabel = NSTextField(labelWithString: "")
     private let arrow = NSImageView()
     var iconTint: NSColor? {
@@ -39,7 +15,7 @@ final class RefreshRowButton: NSButton {
     private var hovered = false { didSet { needsDisplay = true } }
     private var rowCursor: NSCursor {
         guard isEnabled else { return .arrow }
-        return loading ? Self.loadingCursor : .pointingHand
+        return .pointingHand
     }
 
     override convenience init(frame: NSRect) {
@@ -60,7 +36,10 @@ final class RefreshRowButton: NSButton {
         arrow.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 12, weight: .regular)
         arrow.imageScaling = .scaleNone
         arrow.isHidden = style == .textOnly
-        for view in [statusLabel, arrow] as [NSView] {
+        spinner.style = .spinning
+        spinner.controlSize = .small
+        spinner.isDisplayedWhenStopped = false
+        for view in [statusLabel, arrow, spinner] as [NSView] {
             addSubview(view)
             view.setAccessibilityElement(false)
         }
@@ -75,6 +54,7 @@ final class RefreshRowButton: NSButton {
     override func layout() {
         super.layout()
         let icon = NSRect(x: style == .iconOnly ? bounds.midX - 8 : bounds.maxX - 23, y: bounds.midY - 8, width: 16, height: 16)
+        spinner.frame = icon
         arrow.frame = icon
         let labelEnd = style == .textOnly ? bounds.maxX : icon.minX
         statusLabel.frame = NSRect(x: 12, y: bounds.midY - 8, width: max(0, labelEnd - 16), height: 16)
@@ -89,7 +69,8 @@ final class RefreshRowButton: NSButton {
         if isEnabled != enabled { isEnabled = enabled }
         if self.loading != loading {
             self.loading = loading
-            arrow.image = NSImage(systemSymbolName: loading ? "hourglass" : "arrow.clockwise", accessibilityDescription: nil)
+            arrow.isHidden = loading || style == .textOnly
+            if loading && style != .textOnly { spinner.startAnimation(nil) } else { spinner.stopAnimation(nil) }
         }
         if cursorChanged, let window = window {
             window.invalidateCursorRects(for: self)

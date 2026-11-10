@@ -6,11 +6,11 @@ struct ClimatePanel: View {
     @ObservedObject var history: EnergyHistory
     @ObservedObject var preferences: ReadoutPreferences
     let height: CGFloat
+    @State private var energyExpanded = false
     @State private var email = ""
     @State private var password = ""
     @State private var signingIn = false
     @State private var loginError: String?
-    @State private var details = false
     @State private var showingSettings = false
     var body: some View {
         VStack(spacing: 0) {
@@ -47,16 +47,15 @@ struct ClimatePanel: View {
                 }.frame(maxHeight: .infinity)
             } else if let ac = store.selected {
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 5) {
+                    LazyVStack(alignment: .leading, spacing: 5) {
                         SectionName("Air conditioners", "air.conditioner.horizontal")
                         ForEach(store.devices) { device in deviceCard(device, active: device.id == ac.id) }
                         controls(ac).id(ac.id)
                             .disabled(ac.online != true || ac.failed)
-                        Card { EnergyChartView(history: history, device: ac.name) }
                         Card {
-                            DisclosureGroup(isExpanded: $details) {
-                                RawReport(ac: store.reportedDevice(id: ac.id) ?? ac)
-                            } label: { SectionName("Device report", "list.bullet") }
+                            DisclosureGroup(isExpanded: $energyExpanded) {
+                                if energyExpanded { EnergyChartView(history: history, device: ac.name) }
+                            } label: { SectionName("Energy history", "chart.xyaxis.line") }
                         }
                     }.padding(.horizontal, 10).padding(.vertical, 7)
                 }
@@ -77,7 +76,6 @@ struct ClimatePanel: View {
         .background(Color(nsColor: BarTheme.background))
         .environment(\.locale, Locale(identifier: "en_US"))
         .onDisappear { password = "" }
-        .onChange(of: store.selection) { details = false }
     }
     private var header: some View {
         HStack(spacing: 9) {
@@ -90,19 +88,13 @@ struct ClimatePanel: View {
             Text(showingSettings ? "Menu bar" : "Climate").font(.system(size: 17, weight: .semibold))
             Spacer()
             if !showingSettings {
-                if store.command != nil || store.refreshing {
-                    Image(systemName: "hourglass").foregroundStyle(cobalt).frame(width: 20).accessibilityLabel("Refreshing")
-                }
-                Button { store.refresh() } label: { Image(systemName: "arrow.clockwise") }
-                    .buttonStyle(.borderless)
-                    .keyboardShortcut("r").help("Refresh readings").accessibilityLabel("Refresh")
                 Button { showingSettings = true } label: { Image(systemName: "gearshape") }
                     .buttonStyle(.borderless).keyboardShortcut(",")
                     .help("Menu bar settings").accessibilityLabel("Menu bar settings")
             }
             Menu {
                 Text("Super Bar " + (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""))
-                Button("Refresh readings") { store.refresh() }
+                Button("Refresh readings") { store.manualRefresh() }
             } label: { Image(systemName: "ellipsis.circle") }
                 .fixedSize().menuStyle(.borderlessButton).menuIndicator(.hidden)
                 .accessibilityLabel("App menu")
@@ -127,9 +119,9 @@ struct ClimatePanel: View {
                     if !active { store.select(ac) }
                     preferences.set(field, for: ac.id, visible: !displayed || !visible)
                 }
-            }, select: { if !active { store.select(ac) } }) {
+            }, reading: store.refreshing, readAt: store.statusDate, refresh: store.manualRefresh, select: { if !active { store.select(ac) } }) {
                 CardMenus(degrees: ac.setpoints.filter { (16...26).contains($0) && ac.target != nil },
-                          target: tempText(ac.target),
+                          target: ac.acTemperature, off: ac.power == nil ? nil : { store.set(ac, "powerSwitch", 0, "Power") }, eco: ac.has("ECO") ? ac.code("ECO") == 1 : nil, toggleEco: { store.set(ac, "ECO", ac.code("ECO") == 1 ? 0 : 1, "Eco") },
                           change: { store.set(ac, "targetTemperature", $0, "Temperature") },
                           fan: ac.has(ac.fanField) ? ac.fan : "") {
                     Button("Auto") { store.autoFan(ac, enabled: true) }
@@ -205,12 +197,12 @@ struct ClimatePanel: View {
     @ViewBuilder private func vane(_ ac: Aircon, _ vertical: Bool) -> some View {
         let prefix = vertical ? "vertical" : "horizontal"
         let field = prefix + "Direction", toggle = prefix + "Switch"
-        let label = vertical ? "Vertical ↕" : "Horizontal ↔"
+        let label = vertical ? "Vertical" : "Horizontal"
         let stops = vertical ? verticalStops : horizontalStops
         if ac.has(field) {
             let direction = ac.code(field)
             let motor = ac.code(toggle)
-            let angles = vertical ? ["↑","↗","→","↘","↓"] : ["←","↖","↑","↗","→"]
+            let angles = ["↑","↗","→","↘","↓"]
             let ranges = vertical ? ["Full", "Upper", "Lower"] : ["Full", "Left", "Center", "Right"]
             HStack {
                 Text(label).font(.system(size: 12, weight: .medium))
@@ -219,7 +211,7 @@ struct ClimatePanel: View {
             }
             HStack(spacing: 4) {
                 ForEach(0..<5) { i in
-                    vaneButton(angles[i], hint: stops[i], selected: direction == i+9) {
+                    vaneButton(angles[i], hint: stops[i], selected: direction == i+9, horizontalStop: vertical ? nil : i) {
                         store.set(ac, field, i+9, label)
                     }
                 }
@@ -246,9 +238,21 @@ struct ClimatePanel: View {
             HStack { Text(label); Spacer(); Text("No data").foregroundStyle(.secondary) }.font(.caption)
         }
     }
-    private func vaneButton(_ title: String, hint: String, selected: Bool, action: @escaping () -> Void) -> some View {
+    private func vaneButton(_ title: String, hint: String, selected: Bool, horizontalStop: Int? = nil, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Text(verbatim: title).font(.system(size: 12, weight: .medium))
+            Group {
+                if let stop = horizontalStop {
+                    Canvas { ctx, size in
+                        let offset = CGFloat(stop - 2) * 2.4
+                        var path = Path()
+                        for x in [size.width/2 - 7, size.width/2, size.width/2 + 7] {
+                            path.move(to: CGPoint(x: x - offset/2, y: 2))
+                            path.addLine(to: CGPoint(x: x + offset/2, y: 12))
+                        }
+                        ctx.stroke(path, with: .foreground, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                    }.frame(width: 30, height: 14)
+                } else { Text(verbatim: title) }
+            }.font(.system(size: 12, weight: .medium))
                 .frame(maxWidth: .infinity, minHeight: 23)
                 .foregroundStyle(selected ? Color.white : Color.primary)
                 .background(selected ? cobalt : Color.secondary.opacity(0.12), in: RoundedRectangle(cornerRadius: 5))
@@ -275,32 +279,5 @@ struct ClimatePanel: View {
                 Text("TCL Home")
             }.font(.system(size: 10)).foregroundStyle(.secondary)
         }.padding(.horizontal, 16).padding(.vertical, 8)
-    }
-}
-private struct RawReport: View {
-    let ac: Aircon
-    private func safeKeys() -> [String] {
-        ac.report.keys.filter { key in
-            !["password","token","ssid","credential","wifipwd","macaddress","secret"].contains(where: { key.lowercased().contains($0) })
-        }.sorted()
-    }
-    private func render(_ item: Any?) -> String {
-        if item is NSNull || item == nil { return "—" }
-        if let s = item as? String { return s }
-        if let n = item as? NSNumber { return n.stringValue }
-        if let item = item, JSONSerialization.isValidJSONObject(item),
-           let d = try? JSONSerialization.data(withJSONObject: item, options: [.sortedKeys]) { return String(decoding: d, as: UTF8.self) }
-        return "—"
-    }
-    var body: some View {
-        Grid(alignment: .leading, horizontalSpacing: 8, verticalSpacing: 4) {
-            GridRow { Text("Connection"); Text(ac.online.map { $0 ? "Online" : "Offline" } ?? "—") }
-            if let sensorTime = ac.sensorTime {
-                GridRow { Text("Sensor reading"); Text(sensorTime.formatted(date: .numeric, time: .shortened)) }
-            }
-            ForEach(safeKeys(), id: \.self) { key in
-                GridRow { Text(verbatim: key); Text(verbatim: render(ac.report[key])).textSelection(.enabled) }
-            }
-        }.frame(maxWidth: .infinity, alignment: .leading).font(.caption).padding(.top, 6)
     }
 }
