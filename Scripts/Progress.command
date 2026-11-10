@@ -10,7 +10,7 @@ step() {
     while kill -0 "$worker" 2>/dev/null; do
       sleep 5
       kill -0 "$worker" 2>/dev/null || break
-      printf '  … %s — %s с\n' "$label" "$((SECONDS - started))"
+      printf '  … %s — %s s\n' "$label" "$((SECONDS - started))"
     done
   ) &
   ticker=$!
@@ -18,9 +18,9 @@ step() {
   kill "$ticker" 2>/dev/null || true
   wait "$ticker" 2>/dev/null || true
   if [[ "$result" == 0 ]]; then
-    printf '✓ %s — %s с\n' "$label" "$((SECONDS - started))"
+    printf '✓ %s — %s s\n' "$label" "$((SECONDS - started))"
   else
-    printf '✗ %s — ошибка %s, %s с\n' "$label" "$result" "$((SECONDS - started))" >&2
+    printf '✗ %s — error %s, %s s\n' "$label" "$result" "$((SECONDS - started))" >&2
   fi
   return "$result"
 }

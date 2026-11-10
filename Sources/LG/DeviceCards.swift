@@ -35,6 +35,7 @@ extension App {
     }
     func summaryValue(for id: String) -> String {
         guard let sample = sample(for: id) else { return "—" }
+        if sample.power == "POWER_OFF" { return "OFF" + (sample.room.map { " / " + degree($0) } ?? "") }
         let preferred = defaults.string(forKey: "lg.lastField." + id)
         let keys = [preferred, "current", "sensor"].compactMap { $0 }
         return keys.first(where: { shown($0, for: id) && sample.value($0) != "—" }).map(sample.value) ?? "—"
@@ -53,11 +54,15 @@ extension App {
             toggleIcon: { choose("icon") }, name: device.name, selected: active,
             status: active && !connected && sample != nil ? "Saved · " + status : status,
             metrics: [("current", "AC", "scope"), ("sensor", "Room", "thermometer.medium"), ("fanIndicator", "Fan", "fanblades"), ("ecoIndicator", "Eco", "leaf")].map { key, label, symbol in
-                DeviceMetric(id: key, label: label, symbol: symbol, value: key == "fanIndicator" ? (sample?.fan ?? "—") : key == "ecoIndicator" ? (active ? self.ecoChoice.enabled.map { $0 ? "ON" : "OFF" } ?? "—" : "—") : sample?.value(key) ?? "—",
+                DeviceMetric(id: key, label: label, symbol: symbol, value: key == "fanIndicator" ? (sample?.fan ?? "—") : key == "ecoIndicator" ? (active ? self.ecoChoice.enabled.map { $0 ? "ON" : "OFF" } ?? "—" : "—") : key == "current" ? degree(sample?.target) : sample?.value(key) ?? "—",
                              visible: active && shown(key, for: id), toggle: { choose(key) })
             }, reading: active && polling, readAt: active ? lastRead : (sample == nil ? nil : checked[id]), refresh: {
                 if self.selected == id { self.manualRefresh() } else { self.selectDevice(id) }
-            }, select: { self.selectDevice(id) }) {
+            }, select: { self.selectDevice(id) }, powerOn:sample?.power == nil ? nil : sample?.power == "POWER_ON",
+            temperatureOptions:Array(16...26).filter { !active || profile.isEmpty || (Double($0) >= bounds().0 && Double($0) <= bounds().1 && allowed("temperature","targetTemperature",Double($0))) },
+            changeTemperature:{ degree in self.useCard(id) { self.setDegrees(Double(degree)) } },
+            turnOff:{ self.useCard(id) { self.send([("operation","airConOperationMode","POWER_OFF")]) } },
+            livePower: (active && connected ? liveWatts(state) : snapshots[id].flatMap(liveWatts)).map(DisplayUnits.power), reorderID:id, knownIDs:devices.map(\.id)) {
                 let limits = self.bounds()
                 let hasProfile = active && !self.profile.isEmpty
                 let degrees = (16...26).filter { degree in
@@ -71,7 +76,7 @@ extension App {
                           eco: active ? self.ecoChoice.enabled : sample?.eco,
                           toggleEco: { self.useCard(id) { self.toggleEco() } },
                           change: { degrees in self.useCard(id) { self.setDegrees(Double(degrees)) } },
-                          fan: options.isEmpty ? "" : (speed?.capitalized ?? "Fan") + String(repeating: "•", count: FanIndicator.count(for: speed))) {
+                          fan: options.isEmpty ? "" : (speed?.capitalized ?? "Fan"), fanLevel: FanIndicator.count(for: speed)) {
                     ForEach(options, id: \.self) { speed in
                         Button(speed.capitalized) { self.useCard(id) { self.send([("airFlow", self.windKey, speed)]) } }
                     }
@@ -82,6 +87,7 @@ extension App {
     func saveSnapshot(_ snapshot: [String: Any], for id: String) {
         snapshots[id] = snapshot
         samples[id] = LGSample(snapshot)
+        recordPower(liveWatts(snapshot), for:id)
     }
 
     func rememberField(_ key: String) {
@@ -113,17 +119,28 @@ extension App {
 
 @MainActor struct LGPanel: View {
     @ObservedObject var model: App
+    @ObservedObject private var order = CardOrder.shared
+    var contentHeight: (CGFloat) -> Void = { _ in }
     var body: some View {
-        DevicePanel(brand: .lg, sections: model.panelSections) {
+        DevicePanel(brand: .lg, sections: model.panelSections.filter { !["Energy","Settings"].contains($0.title) }, contentHeight:contentHeight) {
+                if !model.message.isEmpty {
+                    Label(model.message, systemImage:"exclamationmark.circle").font(.caption).foregroundStyle(.orange)
+                }
                 if !model.devices.isEmpty {
-                    SectionName("Air conditioners", "air.conditioner.horizontal")
-                    ForEach(model.devices, id: \.id) { model.deviceCard($0) }
+                    ForEach(order.sorted(model.devices,group:Brand.lg.rawValue,id:{$0.id}), id: \.id) { model.deviceCard($0) }
                     CoolingPresetRow(enabled: { model.connected && model.presetAllowed(Double($0.degrees), $0.speed) },
                         selected: { preset in
                             model.powerIsOn && model.displayValue("airConJobMode", "currentJobMode") as? String == "COOL"
                                 && model.displayValue("airFlow", model.windKey) as? String == preset.speed
                                 && lgNumber(model.displayValue("temperature", "targetTemperature")) == Double(preset.degrees)
                         }, apply: { model.preset(Double($0.degrees), $0.speed) })
+                    if model.weekBars.contains(where: { $0.wh != nil }) || !(model.powerSamples[model.selected] ?? []).isEmpty {
+                    Card {
+                        EnergyCharts(days:Array(model.weekBars.suffix(7)).map {
+                            EnergyDayPoint(key:$0.day,label:$0.label,wattHours:$0.wh)
+                        },power:(model.powerSamples[model.selected] ?? []).filter { Date().timeIntervalSince($0.time) <= 86400 })
+                    }
+                    }
                 }
             }
     }

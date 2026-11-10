@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 
 struct DeviceSection: Identifiable {
     let title: String
@@ -21,8 +22,10 @@ private struct PanelControl: NSViewRepresentable {
 }
 
 struct DevicePanel<Devices: View>: View {
+    @ObservedObject private var order = CardOrder.shared
     let brand: Brand
     let sections: [DeviceSection]
+    var contentHeight: (CGFloat) -> Void = { _ in }
     var toggleBattery: (() -> Void)? = nil
     @ViewBuilder let devices: () -> Devices
 
@@ -32,23 +35,26 @@ struct DevicePanel<Devices: View>: View {
     var body: some View {
         VStack(spacing: 0) {
             ScrollView {
-                VStack(alignment: .leading, spacing: 5) {
+                VStack(alignment: .leading, spacing: 8) {
                     devices()
                     ForEach(sections) { section in
-                        let visible = section.items.filter { !$0.isHidden && !$0.isSeparatorItem }
+                        let visible = order.sorted(section.items.filter { !$0.isHidden && !$0.isSeparatorItem },group:brand.rawValue) {
+                            ($0.view as? BatteryCard)?.selectButton.dragID ?? $0.title
+                        }
                         if !visible.isEmpty {
-                            Card {
-                                if section.title == "Batteries", let toggleBattery {
-                                    Button(action: toggleBattery) { SectionName(section.title, section.symbol) }
-                                        .buttonStyle(.plain).help("Toggle battery icon in menu bar")
-                                } else { SectionName(section.title, section.symbol) }
-                                ForEach(visible, id: \.self) { item in row(item) }
+                            if section.title == "Batteries" {
+                                ForEach(visible,id: \.self) { item in row(item) }
+                            } else {
+                                Card {
+                                    SectionName(section.title,section.symbol)
+                                    ForEach(visible,id: \.self) { item in row(item) }
+                                }
                             }
                         }
                     }
-                }.padding(.horizontal, 10).padding(.vertical, 7)
+                }.padding(8).reportContentHeight(contentHeight)
             }
-        }.tint(cobalt).background(Color(nsColor: BarTheme.background))
+        }.tint(cobalt).background(Color.clear)
     }
 
     @ViewBuilder private func row(_ item: NSMenuItem) -> some View {
@@ -65,6 +71,9 @@ struct DevicePanel<Devices: View>: View {
         } else if let control = item.view {
             PanelControl(control: control).id(ObjectIdentifier(control))
                 .frame(height: max(16, (control as? BatteryCard)?.contentHeight ?? control.frame.height))
+                .onDrop(of:[UTType.utf8PlainText.identifier],delegate:CardDrop(group:brand.rawValue,
+                    target:(control as? BatteryCard)?.selectButton.dragID ?? "",
+                    known:sections.flatMap(\.items).compactMap { ($0.view as? BatteryCard)?.selectButton.dragID }))
         } else if item.isEnabled, item.action != nil {
             Button { perform(item) } label: {
                 HStack {

@@ -14,7 +14,7 @@ enum MenuPresentation {
         return "battery.\(level)"
     }
 
-    static func watts(_ value: Double) -> String { String(format: "%gw", value) }
+    static func watts(_ value: Double) -> String { DisplayUnits.power(value) }
 
     static func lastRead(_ date: Date, now: Date) -> (title: String, nextUpdate: Date) {
         let age = max(0, now.timeIntervalSince(date))

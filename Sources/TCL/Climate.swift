@@ -129,6 +129,8 @@ enum CoolingPreset: CaseIterable, Hashable {
         guard ac.has(ac.fanField) else { return nil }
         let level = self == .high ? 6 : 2
         fields += ac.fanChanges(level)
+        guard ac.has("verticalDirection"), ac.has("horizontalDirection") else { return nil }
+        fields += self == .high ? [("verticalDirection",13),("horizontalDirection",11)] : [("verticalDirection",2),("horizontalDirection",1)]
         return fields
     }
     func isSelected(on ac: Aircon) -> Bool {
@@ -232,10 +234,20 @@ final class ClimateStore: ObservableObject {
         selection = ac.id
         UserDefaults.standard.set(ac.id, forKey: "selectedAirconID")
     }
-    func start() {
-        refresh()
-        timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in self?.refresh() }
+    var refreshInterval: TimeInterval {
+        let saved = UserDefaults.standard.double(forKey:"tcl.refreshInterval")
+        return saved >= 1 ? saved : 60
     }
+    func setRefreshInterval(_ seconds:Int) {
+        UserDefaults.standard.set(seconds,forKey:"tcl.refreshInterval")
+        restartTimer()
+    }
+    private func restartTimer() {
+        timer?.invalidate()
+        timer = Timer.scheduledTimer(withTimeInterval:refreshInterval,repeats:true) { [weak self] _ in self?.refresh() }
+        timer?.tolerance = min(2,refreshInterval*0.1)
+    }
+    func start() { refresh(); restartTimer() }
     func reportedDevice(id: String) -> Aircon? {
         confirmedRows.first { Self.id(of: $0) == id }.flatMap(Aircon.init)
     }

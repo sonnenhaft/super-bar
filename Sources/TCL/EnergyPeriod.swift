@@ -43,15 +43,12 @@ enum EnergyPeriod {
         let at: TimeInterval
         let source: String
         var text: String {
-            if upper == .infinity { return "≥" + EnergyPeriod.pretty(floor((lower + 1e-9) * 100) / 100) + " kWh" }
-            if upper - lower < 0.00001 { return EnergyPeriod.pretty(lower) + " kWh" }
-            // Round interval endpoints outwards so rounding never narrows the true range.
-            let low = floor((lower + 1e-9) * 100) / 100
-            let high = ceil((upper - 1e-9) * 100) / 100
-            return (low == 0 ? "≤" + EnergyPeriod.pretty(high) : EnergyPeriod.pretty(low) + "–" + EnergyPeriod.pretty(high)) + " kWh"
+            if upper == .infinity { return "≥" + DisplayUnits.energy(floor((lower + 1e-9) * 100) * 10) }
+            if upper - lower < 0.00001 { return DisplayUnits.energy(lower * 1000) }
+            return DisplayUnits.energy((lower + (upper - lower) / 2) * 1000)
         }
         var detail: String {
-            "From 09:00 Manila time to " + EnergyPeriod.formatter("dd.MM HH:mm").string(from: Date(timeIntervalSince1970: at)) + ". " + source
+            (upper.isFinite && upper - lower >= 0.00001 ? "Estimated midpoint of available consumption bounds. " : "") + "From 9am to " + EnergyPeriod.formatter("dd.MM HH:mm").string(from: Date(timeIntervalSince1970: at)) + ". " + source
         }
     }
 
@@ -83,7 +80,7 @@ enum EnergyPeriod {
                     let lo = max(0, endTotal - upper), hi = max(lo, endTotal - lowerAtNine)
                     results.append(Reading(lower: lo, upper: hi, at: meter.at,
                                            source: hi - lo < 0.00001 ? "From TCL readings." :
-                                              "Estimate from the daily meter. No reading at 09:00."))
+                                              "Estimate from the daily meter. No reading at 9am."))
                 }
             }
         }

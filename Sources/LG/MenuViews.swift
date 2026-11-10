@@ -141,8 +141,8 @@ func lgIcon() -> NSImage { lgEmblem }
 func temperatureStack(room: String, outside: String, fontSize: CGFloat, color: NSColor) -> NSAttributedString {
   let font = NSFont.monospacedDigitSystemFont(ofSize: fontSize * 0.7, weight: .medium)
   let attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: color]
-  let top = NSAttributedString(string: room, attributes: attributes)
-  let bottom = NSAttributedString(string: outside, attributes: attributes)
+  let top = TemperatureStyle.attributed(NSAttributedString(string: room, attributes: attributes), menuBar: true)
+  let bottom = TemperatureStyle.attributed(NSAttributedString(string: outside, attributes: attributes), menuBar: true)
   let lineHeight = ceil(max(top.size().height, bottom.size().height))
   let size = NSSize(width: ceil(max(top.size().width, bottom.size().width)), height: lineHeight * 2)
   let image = NSImage(size: size, flipped: false) { _ in
@@ -178,8 +178,8 @@ final class FanIndicator {
     let count = Self.count(for: speed)
     guard count > 0 else { return nil }
     if count == cachedCount, fontSize == cachedSize, color == cachedColor { return cached }
-    let diameter = fontSize * 0.245
-    let gap = fontSize * 0.09
+    let diameter = fontSize * 0.28
+    let gap = fontSize * 0.05
     let size = NSSize(width: ceil(diameter + 2.5), height: fontSize)
     let image = NSImage(size: size, flipped: false) { rect in
       color.setFill()

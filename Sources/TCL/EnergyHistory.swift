@@ -100,7 +100,7 @@ final class EnergyHistory: ObservableObject {
         let key = ids[device] ?? report(for: device)?.id ?? device
         if let latest = samples[key]?.last(where: { $0.timestamp <= now.timeIntervalSince1970 }), now.timeIntervalSince1970 - latest.timestamp <= 300 {
             let time = EnergyPeriod.formatter("HH:mm").string(from: Date(timeIntervalSince1970: latest.timestamp))
-            return (EnergyPeriod.pretty(latest.watts) + " W", "Power measured at " + time + " Manila time.")
+            return (DisplayUnits.power(latest.watts), "Power measured at " + time + ".")
         }
         guard let report = report(for: device), let result = EnergyPeriod.reading(report, now: now) else { return nil }
         return (result.text, result.detail)
@@ -170,152 +170,32 @@ final class EnergyHistory: ObservableObject {
 struct EnergyChartView: View {
     @ObservedObject var history: EnergyHistory
     let device: String
-    @State private var tab = 0
-
-    private struct DaySlot: Identifiable {
-        let date: String
-        let label: String
-        let value: Double?
-        var id: String { date }
-    }
-    // TCL groups readings by calendar day in the AC's Philippines time zone.
-    private static let zone = TimeZone(identifier: "Asia/Manila")!
-    private func week(_ report: DailyEnergyReport?, now: Date) -> [DaySlot] {
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = Self.zone
-        let iso = DateFormatter()
-        iso.calendar = calendar
-        iso.locale = Locale(identifier: "en_US_POSIX")
-        iso.timeZone = Self.zone
-        iso.dateFormat = "yyyy-MM-dd"
-        let values = Dictionary((report?.days ?? []).map { ($0.day, $0.kwh) }, uniquingKeysWith: { _, newest in newest })
-        return (-6...0).compactMap { offset in
-            guard let date = calendar.date(byAdding: .day, value: offset, to: now) else { return nil }
-            let key = iso.string(from: date)
-            return DaySlot(date: key, label: offset == 0 ? "Today" : String(calendar.component(.day, from: date)), value: values[key])
-        }
-    }
-
     var body: some View {
+        let now = Date()
+        let report = history.report(for: device)
+        let period = report.flatMap { EnergyPeriod.reading($0, now: now) }
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Label("Energy", systemImage: "bolt.fill").font(.headline)
-                Spacer(minLength: 6)
-                Picker("Period", selection: $tab) {
-                    Text("7 days").tag(0)
-                    Text("24 hours").tag(1)
-                }
-                .pickerStyle(.segmented).labelsHidden().fixedSize()
-            }
-            let now = Date()
-            let period = history.report(for: device).flatMap { EnergyPeriod.reading($0, now: now) }
-            HStack {
-                Label("Since 09:00 Manila time", systemImage: "bolt.fill").foregroundStyle(.secondary)
+                Label { Text("Since 9am").foregroundStyle(.secondary) } icon: { Image(systemName:"bolt.fill").foregroundStyle(Color(nsColor:BarTheme.energy)) }
                 Spacer()
                 Text(period?.text ?? "—").fontWeight(.semibold).monospacedDigit()
-            }.font(.callout)
-             .help(period?.detail ?? "Waiting for hourly readings or the TCL daily meter.")
-            if let energy = history.barEnergy(for: device, now: now), energy.text.hasSuffix(" W") {
-                Text("Now " + energy.text).font(.caption).help(energy.detail)
-            }
-            if tab == 0 { dailyBody }
-            else { wattBody }
+            }.font(.callout).help(period?.detail ?? "Waiting for meter readings")
+            EnergyCharts(days: days(report, now: now),
+                         power: history.watts(for:device,now:now).map { PowerPoint(time:Date(timeIntervalSince1970:$0.timestamp),watts:$0.watts) })
         }
     }
-
-    private var dailyBody: some View {
-        let report = history.report(for: device)
-        let slots = week(report, now: Date())
-        let values = slots.compactMap(\.value)
-        return VStack(alignment: .leading, spacing: 6) {
-            if !values.isEmpty {
-                HStack(alignment: .lastTextBaseline) {
-                    Text("Daily energy since midnight, kWh").foregroundStyle(.secondary)
-                    Spacer()
-                }.font(.caption)
-                HStack(alignment: .bottom, spacing: 4) {
-                    ForEach(slots) { slot in
-                        VStack(spacing: 3) {
-                            Text(slot.value.map(Self.n) ?? "—")
-                                .font(.system(size: 9, weight: .medium)).monospacedDigit()
-                                .foregroundStyle(slot.value == nil ? Color.secondary : Color.primary)
-                                .lineLimit(1).minimumScaleFactor(0.6)
-                            if let value = slot.value {
-                                RoundedRectangle(cornerRadius: 2)
-                                    .fill(slot.date == slots.last?.date ? Color.accentColor : Color.accentColor.opacity(0.56))
-                                    .frame(maxWidth: 23)
-                                    .frame(height: max(2, 43 * CGFloat(value / max(0.01, values.max() ?? 0))))
-                            }
-                        }
-                        .frame(maxWidth: .infinity, alignment: .bottom)
-                        .help("\(slot.date) · " + (slot.value.map { "\(Self.n($0)) kWh" } ?? "no data"))
-                        .accessibilityElement(children: .ignore)
-                        .accessibilityLabel("\(slot.date), " + (slot.value.map { "\(Self.n($0)) kilowatt-hours" } ?? "no data"))
-                    }
-                }.frame(height: 59, alignment: .bottom)
-                Divider()
-                HStack(spacing: 4) {
-                    ForEach(slots) { slot in
-                        Text(slot.label).font(.caption2).foregroundStyle(.secondary).frame(maxWidth: .infinity)
-                    }
-                }.accessibilityHidden(true)
-            }
-            if values.isEmpty || report?.state == "error" || report?.state == "empty" {
-                let message: String = {
-                    switch report?.state {
-                    case "error": return values.isEmpty ? "TCL returned no energy readings." : "Could not refresh TCL readings."
-                    case "empty", "ok": return values.isEmpty ? "No readings for this period." : "Waiting for new TCL readings."
-                    default: return "Waiting for energy readings."
-                    }
-                }()
-                Text(message).font(.caption).foregroundStyle(.secondary)
-            }
+    private func days(_ report: DailyEnergyReport?, now: Date) -> [EnergyDayPoint] {
+        var calendar = Calendar(identifier:.gregorian)
+        calendar.timeZone = TimeZone(identifier:"Asia/Manila")!
+        let formatter = DateFormatter()
+        formatter.calendar = calendar; formatter.timeZone = calendar.timeZone
+        formatter.locale = Locale(identifier:"en_US_POSIX"); formatter.dateFormat = "yyyy-MM-dd"
+        let values = Dictionary((report?.days ?? []).map { ($0.day,$0.kwh) },uniquingKeysWith:{ _,last in last })
+        return (-6...0).compactMap { offset in
+            guard let date = calendar.date(byAdding:.day,value:offset,to:now) else { return nil }
+            let key = formatter.string(from:date)
+            return EnergyDayPoint(key:key,label:offset == 0 ? "Today" : String(calendar.component(.day,from:date)),
+                                  wattHours:values[key].map { $0 * 1000 })
         }
-    }
-
-    private struct PowerPoint: Identifiable {
-        let sample: WattSample
-        let group: Int
-        var id: TimeInterval { sample.timestamp }
-        var date: Date { Date(timeIntervalSince1970: sample.timestamp) }
-    }
-    private var wattBody: some View {
-        let now = Date()
-        let samples = history.watts(for: device, now: now)
-        var previous: TimeInterval?
-        var group = 0
-        let points: [PowerPoint] = samples.map { sample in
-            if let previous, sample.timestamp - previous > 600 { group += 1 }
-            previous = sample.timestamp
-            return PowerPoint(sample: sample, group: group)
-        }
-        return VStack(alignment: .leading, spacing: 6) {
-            if let last = points.last {
-                HStack {
-                    Text("Power, W").foregroundStyle(.secondary)
-                    Spacer()
-                    Text("\(Self.n(last.sample.watts)) W · \(last.date.formatted(date: .omitted, time: .shortened))")
-                        .monospacedDigit()
-                }.font(.caption)
-                Chart(points) { point in
-                    LineMark(x: .value("Time", point.date), y: .value("W", point.sample.watts),
-                             series: .value("Series", point.group))
-                        .foregroundStyle(Color.accentColor)
-                    PointMark(x: .value("Time", point.date), y: .value("W", point.sample.watts))
-                        .symbolSize(6).foregroundStyle(Color.accentColor)
-                }
-                .chartXScale(domain: now.addingTimeInterval(-86400)...now)
-                .chartXAxis { AxisMarks(values: .automatic(desiredCount: 4)) { AxisTick(); AxisValueLabel(format: .dateTime.hour()) } }
-                .chartYAxis { AxisMarks(position: .leading, values: .automatic(desiredCount: 3)) }
-                .frame(height: 69)
-            } else {
-                Text("No power readings in the past 24 hours.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-        }
-    }
-
-    private static func n(_ number: Double) -> String {
-        number.formatted(.number.locale(Locale(identifier: "ru_RU")).precision(.fractionLength(0...2)))
     }
 }

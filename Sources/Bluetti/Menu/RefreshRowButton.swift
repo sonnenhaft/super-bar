@@ -28,7 +28,7 @@ final class RefreshRowButton: NSButton {
         title = ""
         isBordered = false
         setAccessibilityLabel("Refresh")
-        statusLabel.font = .systemFont(ofSize: 10)
+        statusLabel.font = .systemFont(ofSize: 12)
         statusLabel.isHidden = style == .iconOnly
         statusLabel.textColor = .secondaryLabelColor
         statusLabel.lineBreakMode = .byTruncatingTail
@@ -57,7 +57,7 @@ final class RefreshRowButton: NSButton {
         spinner.frame = icon.insetBy(dx: 2, dy: 2)
         arrow.frame = icon
         let labelEnd = style == .textOnly ? bounds.maxX : icon.minX
-        statusLabel.frame = NSRect(x: 12, y: bounds.midY - 8, width: max(0, labelEnd - 16), height: 16)
+        statusLabel.frame = NSRect(x: 8, y: bounds.midY - 8, width: max(0, labelEnd - 16), height: 16)
     }
 
     func update(status: String, loading: Bool, enabled: Bool) {

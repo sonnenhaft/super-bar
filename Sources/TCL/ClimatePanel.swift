@@ -5,18 +5,18 @@ struct ClimatePanel: View {
     @ObservedObject var store: ClimateStore
     @ObservedObject var history: EnergyHistory
     @ObservedObject var preferences: ReadoutPreferences
+    var contentHeight: (CGFloat) -> Void = { _ in }
+    @ObservedObject private var order = CardOrder.shared
     let height: CGFloat
-    @State private var energyExpanded = false
     @State private var email = ""
     @State private var password = ""
     @State private var signingIn = false
     @State private var loginError: String?
-    @State private var showingSettings = false
+    @State private var horizontalPicker = false
+    @State private var verticalPicker = false
     var body: some View {
         VStack(spacing: 0) {
-            header
-            Divider()
-            if store.needsSignIn && !showingSettings {
+            if store.needsSignIn {
                 VStack {
                     Card {
                         SectionName("Sign in to TCL Home", "person.crop.circle")
@@ -39,72 +39,38 @@ struct ClimatePanel: View {
                     }.textFieldStyle(.roundedBorder).disabled(signingIn)
                     Spacer()
                 }.padding(14)
-            } else if showingSettings {
-                ScrollView {
-                    ReadoutSettings(preferences: preferences, id: store.selected?.id ?? "")
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(16)
-                }.frame(maxHeight: .infinity)
             } else if let ac = store.selected {
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 5) {
-                        SectionName("Air conditioners", "air.conditioner.horizontal")
-                        ForEach(store.devices) { device in deviceCard(device, active: device.id == ac.id) }
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(order.sorted(store.devices,group:Brand.tcl.rawValue,id:{$0.id})) { device in deviceCard(device, active: device.id == ac.id) }
                         controls(ac)
                             .disabled(ac.online != true || ac.failed)
-                        Card {
-                            DisclosureGroup(isExpanded: $energyExpanded) {
-                                if energyExpanded { EnergyChartView(history: history, device: ac.name) }
-                            } label: { SectionName("Energy history", "chart.xyaxis.line") }
+                        if history.report(for:ac.name)?.days.isEmpty == false || !history.watts(for:ac.name).isEmpty {
+                            Card { EnergyChartView(history:history,device:ac.name) }
                         }
-                    }.padding(.horizontal, 10).padding(.vertical, 7)
+                    }.padding(8).reportContentHeight { contentHeight($0 + ((store.problem != nil || store.command != nil) ? 38 : 0)) }
                 }
             } else {
-                Spacer()
-                Image(systemName: "air.conditioner.horizontal").font(.largeTitle).foregroundStyle(.secondary)
-                Text(store.refreshing ? "Loading air conditioners…" : (store.didRead ? "No air conditioners found" : "No TCL readings yet"))
-                    .padding(.top, 5)
-                Spacer()
+                VStack(spacing:8) {
+                    Image(systemName:"air.conditioner.horizontal").font(.largeTitle).foregroundStyle(.secondary)
+                    Text(store.refreshing ? "Loading air conditioners…" : (store.didRead ? "No air conditioners found" : "No TCL readings yet"))
+                }.frame(maxWidth:.infinity).padding(16).reportContentHeight(contentHeight)
             }
-            if !showingSettings && !store.needsSignIn {
-                Divider()
+            if !store.needsSignIn && (store.problem != nil || store.command != nil) {
                 footer
             }
         }
-        .frame(width: 390, height: height)
+        .frame(width: 390).frame(maxHeight: .infinity)
         .tint(cobalt)
-        .background(Color(nsColor: BarTheme.background))
+        .background(Color.clear)
         .environment(\.locale, Locale(identifier: "en_US"))
         .onDisappear { password = "" }
-    }
-    private var header: some View {
-        HStack(spacing: 9) {
-            if showingSettings {
-                Button { showingSettings = false } label: { Image(systemName: "chevron.left") }
-                    .buttonStyle(.borderless)
-                    .help("Back to devices").accessibilityLabel("Back to devices")
-            }
-            TCLLogo().frame(width: 41, height: 17)
-            Text(showingSettings ? "Menu bar" : "Climate").font(.system(size: 17, weight: .semibold))
-            Spacer()
-            if !showingSettings {
-                Button { showingSettings = true } label: { Image(systemName: "gearshape") }
-                    .buttonStyle(.borderless).keyboardShortcut(",")
-                    .help("Menu bar settings").accessibilityLabel("Menu bar settings")
-            }
-            Menu {
-                Text("Super Bar " + (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""))
-                Button("Refresh readings") { store.manualRefresh() }
-            } label: { Image(systemName: "ellipsis.circle") }
-                .fixedSize().menuStyle(.borderlessButton).menuIndicator(.hidden)
-                .accessibilityLabel("App menu")
-        }.padding(.horizontal, 16).padding(.vertical, 12)
     }
     private func deviceCard(_ ac: Aircon, active: Bool) -> some View {
         let pins = preferences.ordered(ac.id)
         let energy = history.cardEnergy[ac.name]
         let choices: [(ReadoutField, String, String)] = [
-            (.target, "AC", ac.acTemperature), (.indoor, "Room", tempText(ac.indoor)),
+            (.target, "AC", tempText(ac.target)), (.indoor, "Room", tempText(ac.indoor)),
             (.fan, "Fan", ac.fan), (.energy, "Energy", energy ?? "—")
         ]
         let displayed = preferences.device(in: store)?.id == ac.id
@@ -119,8 +85,12 @@ struct ClimatePanel: View {
                     if !active { store.select(ac) }
                     preferences.set(field, for: ac.id, visible: !displayed || !visible)
                 }
-            }, reading: store.refreshing, readAt: store.statusDate, refresh: store.manualRefresh, select: { if !active { store.select(ac) } },
-            directions: AnyView(HStack(spacing: 5) {
+            }, reading: store.refreshing, readAt: store.statusDate, refresh: store.manualRefresh, select: { if !active { store.select(ac) } }, powerOn:ac.power,
+            temperatureOptions:ac.setpoints.filter { (16...26).contains($0) },
+            changeTemperature:{ store.setTemperature(ac,$0) },
+            turnOff:ac.power == nil ? nil : { store.set(ac,"powerSwitch",0,"Power") },
+            reorderID:ac.id, knownIDs:store.devices.map(\.id),
+            directions: AnyView(HStack(spacing: 8) {
                 vane(ac, true)
                 vane(ac, false)
             }.disabled(store.offline || ac.online != true || ac.failed))) {
@@ -151,40 +121,62 @@ struct ClimatePanel: View {
         let stopped = ac.code(motor) == 0
         let selected = hasDirection ? (stopped && !(9...13).contains(code ?? -1) ? 8 : code) : ac.code(motor)
         let value = selected == (hasDirection ? 8 : 0) ? "Stopped" : ac.vane(vertical)
-        func option(_ label: String, _ value: Int, icon: Bool = true) -> some View {
-            Button {
-                store.set(ac, hasDirection ? direction : motor, value, title)
-            } label: {
-                if icon, let image = TCLAirflowArtwork.image("TCL-" + axis + "-" + String(value)) {
-                    Label { Text(label) } icon: { Image(nsImage: image).renderingMode(.template) }
-                } else { Text(label) }
-            }
-        }
-        return Menu {
-                if hasDirection {
-                    ForEach(stops.indices, id: \.self) { i in option(stops[i], i + 9) }
-                    Divider()
-                    ForEach(swings.indices, id: \.self) { i in option(swings[i], i + 1) }
-                    option("Stop", 8, icon: false)
-                } else {
-                    option("Swing", 1, icon: false)
-                    option("Stop", 0, icon: false)
-                }
-            } label: {
-                Label {
-                    Text(title + " · " + value)
-                } icon: {
-                    if hasDirection, let selected, let image = TCLAirflowArtwork.image("TCL-" + axis + "-" + String(selected)) {
-                        Image(nsImage: image).renderingMode(.template)
-                    } else {
-                        Image(systemName: "wind")
+        return Group {
+            if ac.power != false, hasDirection, let selected,
+               TCLAirflowArtwork.image("TCL-" + axis + "-" + String(selected)) != nil {
+            HStack(spacing:0) {
+            Button { if vertical { verticalPicker.toggle() } else { horizontalPicker.toggle() } } label: {
+                HStack(spacing:1) {
+                    if let image = TCLAirflowArtwork.image("TCL-" + axis + "-" + String(selected)) {
+                        Image(nsImage:image).renderingMode(.template).resizable().scaledToFit().frame(width:28,height:28)
                     }
+                    Image(systemName:"chevron.down").font(.system(size:7,weight:.semibold))
+                }.foregroundStyle(ice).contentShape(Rectangle())
+            }.buttonStyle(.plain).help(title + ": " + value)
+                .popover(isPresented: Binding(get:{vertical ? verticalPicker : horizontalPicker},set:{if vertical { verticalPicker = $0 } else { horizontalPicker = $0 }}), arrowEdge: .bottom) {
+                    let options = hasDirection ? Array(9...13) + Array(1...(vertical ? 3 : 4)) + [8] : [1, 0]
+                    VStack(spacing: 8) {
+                        ForEach(0..<2) { row in
+                            HStack(spacing: 8) {
+                                let split = (options.count + 1) / 2
+                                ForEach(Array(options.dropFirst(row * split).prefix(split)), id: \.self) { option in
+                                    let label = option == (hasDirection ? 8 : 0) ? "Stop" :
+                                        ((9...13).contains(option) ? stops[option - 9] :
+                                        (swings.indices.contains(option - 1) ? swings[option - 1] : "Swing"))
+                                    Button {
+                                        store.set(ac, hasDirection ? direction : motor, option, title)
+                                        if vertical { verticalPicker = false } else { horizontalPicker = false }
+                                    } label: {
+                                        ZStack(alignment: .topTrailing) {
+                                            airflowIcon(axis:axis, option:option)
+                                                .frame(width:32,height:32).padding(8)
+                                            if selected == option {
+                                                Image(systemName:"checkmark.circle.fill").foregroundStyle(.white, cobalt).font(.system(size:13))
+                                            }
+                                        }.background(selected == option ? cobalt.opacity(0.7) : Color(nsColor:BarTheme.panel),
+                                                     in: RoundedRectangle(cornerRadius:4))
+                                            .overlay(RoundedRectangle(cornerRadius:4).strokeBorder(selected == option ? Color.white : .clear, lineWidth:1.5))
+                                    }.buttonStyle(.plain).help(label).accessibilityLabel(label)
+                                        .accessibilityAddTraits(selected == option ? .isSelected : [])
+                                }
+                            }
+                        }
+                    }.padding(12).foregroundStyle(ice).background(Color(nsColor:BarTheme.background))
                 }
-            }
-            .climateMenu()
-            .disabled(!hasDirection && !ac.has(motor))
+        }.disabled(!hasDirection && !ac.has(motor))
             .accessibilityLabel(title + " air direction").accessibilityValue(value)
             .help(title + ": " + value)
+            }
+        }
+    }
+
+    @ViewBuilder private func airflowIcon(axis:String, option:Int) -> some View {
+        let name = "TCL-\(axis)-\(option)"
+        if let image = TCLAirflowArtwork.image(name) {
+            Image(nsImage:image).renderingMode(.template).resizable().scaledToFit()
+        } else {
+            Image(systemName:"stop.circle").resizable().scaledToFit()
+        }
     }
 
     private var footer: some View {
@@ -192,18 +184,9 @@ struct ClimatePanel: View {
             if let problem = store.problem {
                 Label(problem, systemImage: "exclamationmark.circle").font(.caption).foregroundStyle(.orange)
             }
-            HStack(spacing: 6) {
-                Circle().fill(store.offline ? Color.secondary : .green).frame(width: 5, height: 5)
-                if let pending = store.command {
-                    Text(verbatim: pending)
-                } else if let when = store.statusDate {
-                    Text((store.offline ? "Saved: " : "Updated: ") + when.formatted(date: Calendar.current.isDateInToday(when) ? .omitted : .abbreviated, time: .standard))
-                } else {
-                    Text("Waiting for TCL")
-                }
-                Spacer()
-                Text("TCL Home")
-            }.font(.system(size: 10)).foregroundStyle(.secondary)
+            if let pending = store.command {
+                Text(verbatim: pending).font(.system(size: 10)).foregroundStyle(.secondary)
+            }
         }.padding(.horizontal, 16).padding(.vertical, 8)
     }
 }

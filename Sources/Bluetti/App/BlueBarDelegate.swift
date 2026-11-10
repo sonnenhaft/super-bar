@@ -94,7 +94,7 @@ final class BlueBarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         CGFloat(BarSelection.shared.size)
     }
 
-    var customStatusTextColor: NSColor? { BarSelection.shared.color }
+    var customStatusTextColor: NSColor? { nil }
 
 
 

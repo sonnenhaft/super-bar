@@ -6,7 +6,7 @@ func fail(_ message: String) -> Never {
     exit(1)
 }
 let args = Array(CommandLine.arguments.dropFirst())
-guard let command = args.first else { fail("Не указано действие.") }
+guard let command = args.first else { fail("No action specified.") }
 if command == "stop" {
     let apps = ["local.SuperBar", "com.local.bluebar", "ru.tclbar.app", "local.LGBar"]
         .flatMap(NSRunningApplication.runningApplications(withBundleIdentifier:))
@@ -16,10 +16,10 @@ if command == "stop" {
     while apps.contains(where: { !$0.isTerminated }) && Date() < end {
         RunLoop.current.run(until: Date().addingTimeInterval(0.1))
     }
-    guard apps.allSatisfy(\.isTerminated) else { fail("Не удалось штатно закрыть старые панели. Закрой их и повтори установку.") }
+    guard apps.allSatisfy(\.isTerminated) else { fail("Could not close the previous menu bar apps. Close them and try installation again.") }
     exit(0)
 }
-guard command == "launch", args.count == 5 else { fail("Неверные параметры запуска.") }
+guard command == "launch", args.count == 5 else { fail("Invalid launch arguments.") }
 let appURL = URL(fileURLWithPath: args[1]).standardizedFileURL
 let receipt = URL(fileURLWithPath: args[2])
 let version = args[3], build = args[4]
@@ -36,17 +36,17 @@ NSWorkspace.shared.openApplication(at: appURL, configuration: configuration) { a
 }
 let deadline = Date().addingTimeInterval(20)
 while result == nil && Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.05)) }
-guard let result else { fail("macOS не подтвердила запуск Super Bar.") }
+guard let result else { fail("macOS did not confirm that Super Bar launched.") }
 let app: NSRunningApplication
 switch result {
 case .success(let started): app = started
 case .failure(let error):
     let ns = error as NSError
-    fail("Ошибка запуска: \(error.localizedDescription) (\(ns.domain) \(ns.code)).")
+    fail("Launch error: \(error.localizedDescription) (\(ns.domain) \(ns.code)).")
 }
 guard app.bundleURL?.standardizedFileURL == appURL else {
     _ = app.terminate()
-    fail("Запустилась копия приложения из другого пути.")
+    fail("An application copy launched from a different path.")
 }
 while !FileManager.default.fileExists(atPath: receipt.path) && !app.isTerminated && Date() < deadline {
     RunLoop.current.run(until: Date().addingTimeInterval(0.05))
@@ -63,13 +63,13 @@ guard let data = try? Data(contentsOf: receipt),
       info["build"] as? String == build,
       !app.isTerminated else {
     _ = app.terminate()
-    fail("Новая версия не подтвердила запуск из установленного пути.")
+    fail("The new version did not confirm launch from the installed path.")
 }
-print("Запущен Super Bar \(version) (сборка \(build)), PID \(pid).")
+print("Launched Super Bar \(version) (build \(build)), PID \(pid).")
 if let placement = info["statusItem"] as? [String: Any] {
     if placement["itemVisible"] as? Bool == true, placement["insideMenuBar"] as? Bool == true {
-        print("Значок размещён в строке меню: \(placement["buttonFrame"] as? String ?? "").")
+        print("Icon placed in the menu bar: \(placement["buttonFrame"] as? String ?? "").")
     } else {
-        print("Приложение запущено, но размещение значка в строке меню не подтверждено.")
+        print("The application launched, but menu bar icon placement was not confirmed.")
     }
 }

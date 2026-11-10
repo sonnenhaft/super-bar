@@ -30,6 +30,7 @@ final class BatteryCardButton: NSButton {
     func updateShown(_ value: Bool) {
         guard shown != value else { return }
         shown = value
+        if field == .brand || field == .battery { alphaValue = value ? 1 : 0.4 }
         setAccessibilityValue(NSNumber(value: value))
         updateHelp()
         if hovered { onHover?(value) }

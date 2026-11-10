@@ -36,11 +36,11 @@ extension BlueBarDelegate {
         let showInitialLoading = awaitingFirstRead && isLoadingReading
         let image = statusIcons.image(
             battery: fields.contains(.battery) ? reading?.percent : nil,
-            brand: fields.contains(.brand) ? brandBadge : nil,
+            brand: nil,
             hasReading: reading != nil, loading: showInitialLoading, offline: offline,
             fontSize: statusFontSize, customColor: customStatusTextColor,
             appearance: readout.effectiveAppearance)
-        let displayImage = image ?? (title.isEmpty ? brandBadge : nil)
+        let displayImage = image
         if readout.image !== displayImage {
             readout.image = displayImage
             displayChanged = true

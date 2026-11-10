@@ -142,7 +142,7 @@ func liveWatts(_ value: Any) -> Double? {
   return nil
 }
 func formatEnergy(_ wattHours: Double) -> String {
-  String(format: "%.2f ⚡ kWh", wattHours / 1000)
+  DisplayUnits.energy(wattHours)
 }
 
 func energyTotal(_ value: Any) -> Double? {

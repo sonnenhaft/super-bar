@@ -41,10 +41,23 @@ func ago(_ date: Date?) -> String {
   lazy var api = API()
   let emblem = lgIcon()
   let fanIndicator = FanIndicator()
-  let locationWeather = LocationWeather()
-  let ecoSymbol = "♻️"
+  let ecoSymbol = "🍃"
   var summaryTask: Task<Void, Never>?
   var samples: [String: LGSample] = [:]
+  var powerSamples: [String: [PowerPoint]] = defaults.data(forKey:"lg.powerHistory").flatMap { try? JSONDecoder().decode([String:[PowerPoint]].self,from:$0) } ?? [:]
+  private static let historyFiles = DispatchQueue(label:"superbar.lg.power-history",qos:.utility)
+  func recordPower(_ watts: Double?, for id: String) {
+    guard let watts, watts.isFinite, watts >= 0 else { return }
+    let now = Date()
+    var points = (powerSamples[id] ?? []).filter { now.timeIntervalSince($0.time) <= 86400 }
+    if let last = points.last, now.timeIntervalSince(last.time) < 60 { return }
+    points.append(PowerPoint(time:now,watts:watts))
+    powerSamples[id] = Array(points.suffix(1441))
+    let snapshot = powerSamples
+    Self.historyFiles.async {
+      if let data = try? JSONEncoder().encode(snapshot) { defaults.set(data,forKey:"lg.powerHistory") }
+    }
+  }
   var checked: [String: Date] = [:]
   private var commandStatusItem: NSMenuItem?
   private var readStatusItem: NSMenuItem?
@@ -65,7 +78,7 @@ func ago(_ date: Date?) -> String {
   var chartItem: NSMenuItem?
   var weekBars: [DayUsage] = []
   var historyFailures = 0
-  var textColor: NSColor? { BarSelection.shared.color }
+  var textColor: NSColor? { nil }
   var menuVisible = false
 
   var pollTask: Task<Void, Never>?
@@ -98,15 +111,11 @@ func ago(_ date: Date?) -> String {
   func applicationDidFinishLaunching(_ n: Notification) {
     defaults.register(defaults: [
       "font": 13.0, "icon": true, "sensor": true, "current": true, "interval": 60.0,
-      "locationWeather": true, "fanIndicator": true, "ecoIndicator": true,
+      "fanIndicator": true, "ecoIndicator": true,
     ])
     menu.delegate = self
     menu.autoenablesItems = false
     updateStatus()
-    locationWeather.changed = { [weak self] in
-      guard let self else { return }
-      self.buildMenu()
-    }
     startTimer()
     refresh()
   }
@@ -127,7 +136,6 @@ func ago(_ date: Date?) -> String {
     menuVisible = true
     if panelSections.isEmpty || menuDeviceID != selected { buildMenu() }
     refreshOtherCards()
-    locationWeather.start()
     updateStatus()
     updateAge()
     ageTimer?.invalidate()
@@ -256,14 +264,10 @@ func ago(_ date: Date?) -> String {
       }
       if shown("sensor", for: selected) { readings.append((sample.value("sensor"), false)) }
     }
-    if defaults.bool(forKey: "locationWeather"), let temperature = locationWeather.temperature {
-      readings.append((degree(temperature), false))
-    }
     var displayChanged = false
     defer { if displayChanged { didRender?() } }
     let button = readout
-    if isReportedOff { readings.removeAll() }
-    let icon = isReportedOff || shown("icon", for: selected) ? emblem : nil
+    let icon: NSImage? = nil
     if button.image !== icon { button.image = icon; displayChanged = true }
     if button.imagePosition != .imageLeading { button.imagePosition = .imageLeading; displayChanged = true }
     var attrs: [NSAttributedString.Key: Any] = [
@@ -281,12 +285,12 @@ func ago(_ date: Date?) -> String {
         break
       }
       if index > 0 { title.append(NSAttributedString(string: " / ", attributes: attrs)) }
-      if reading.isAC && shown("ecoIndicator", for: selected) && eco == true && !isReportedOff {
+      if reading.isAC && eco == true && !isReportedOff {
         title.append(NSAttributedString(string: ecoSymbol, attributes: attrs))
       }
-      var style = attrs
-      if reading.text == "OFF" { style[.font] = NSFont.systemFont(ofSize: size, weight: .bold) }
-      title.append(NSAttributedString(string: reading.text, attributes: style))
+      let style = attrs
+      if reading.text == "OFF" { title.append(PowerGlyph.off(size:size)) }
+      else { title.append(NSAttributedString(string:reading.text,attributes:style)) }
       if reading.isAC && connected && !isReportedOff && shown("fanIndicator", for: selected),
         let dots = fanIndicator.attachment(
           speed: speed, fontSize: size, color: textColor ?? .labelColor)
@@ -294,7 +298,8 @@ func ago(_ date: Date?) -> String {
         title.append(dots)
       }
     }
-    if !button.attributedTitle.isEqual(to: title) { button.attributedTitle = title; displayChanged = true }
+    let colored = TemperatureStyle.attributed(title, menuBar: true)
+    if !button.attributedTitle.isEqual(to: colored) { button.attributedTitle = colored; displayChanged = true }
     guard menuVisible else { return }
     updateHeader()
     powerRow?.button.font = .boldSystemFont(ofSize: 13)
@@ -322,44 +327,11 @@ func ago(_ date: Date?) -> String {
     }
     powerRow = nil
     displayRows = [:]
-    readStatusItem = item("Read: " + lastReadResult)
-    commandStatusItem = item("Command: " + lastCommandResult)
-    readStatusItem?.isEnabled = false
-    commandStatusItem?.isEnabled = false
-    errorItem = item(message)
-    errorItem?.isEnabled = false
-    menu.addItem(.separator())
-    refreshRow = row("Refresh", ago(lastRead)) { [weak self] in self?.manualRefresh() }
-    refreshRow?.button.image = NSImage(
-      systemSymbolName: "arrow.clockwise", accessibilityDescription: nil)
-    refreshRow?.button.imagePosition = .imageLeading
-    menu.addItem(.separator())
-    finish("Connection", "antenna.radiowaves.left.and.right")
-    if let name = locationWeather.name {
-      let visible = defaults.bool(forKey: "locationWeather")
-      let location = row(
-        "Local weather · " + (visible ? "ON" : "OFF"),
-        degree(locationWeather.temperature)
-      ) { [weak self] in
-        defaults.set(!defaults.bool(forKey: "locationWeather"), forKey: "locationWeather")
-        self?.buildMenu()
-      }
-      location.button.frame.size.width = 205
-      location.button.cell?.lineBreakMode = .byTruncatingTail
-      location.toolTip = "Current location: \(name) · Weather: Open-Meteo"
-    } else {
-      _ = row(locationWeather.allowed ? "Refresh location" : "Allow location access…") { [weak self] in
-        self?.locationWeather.permit()
-      }
-    }
-    if locationWeather.allowed && !locationWeather.notice.isEmpty {
-      let retry = row(locationWeather.notice) { [weak self] in self?.locationWeather.refresh() }
-      retry.button.isEnabled = !locationWeather.notice.contains("…")
-    }
-    menu.addItem(.separator())
+    readStatusItem = nil
+    commandStatusItem = nil
+    errorItem = nil
+    refreshRow = nil
     buildAppearanceRows()
-    let login = item("Launch at login", #selector(login))
-    login.state = launchAtLogin ? .on : .off
     menu.addItem(.separator())
     item("LG settings…", #selector(openSettings))
     finish("Settings", "gearshape")
@@ -382,7 +354,7 @@ func ago(_ date: Date?) -> String {
     defer { panelChanged?() }
     let watts = connected ? liveWatts(state) : nil
     powerItem?.isHidden = watts == nil
-    if let watts { powerItem?.title = String(format: "Power now  %.2f ⚡ kW", watts / 1000) }
+    if let watts { powerItem?.title = "Power now  " + DisplayUnits.power(watts) }
     let now = Date()
     let monthWh = weekHistory.month == WeekHistory.monthKey(now, .current) ? weekHistory.monthWh : nil
     monthItem?.isHidden = monthWh == nil
@@ -448,15 +420,19 @@ func ago(_ date: Date?) -> String {
   }
   func selectDevice(_ id: String) {
     guard id != selected, devices.contains(where: { $0.id == id }) else { return }
-    reset()
     selected = id
+    reset()
     state = snapshots[id] ?? [:]
     lastRead = snapshots[id] == nil ? nil : checked[id]
     profile = profiles[id] ?? [:]
     menuDeviceID = nil
     panelSections.removeAll { $0.title == "Energy" }
-    refresh()
     updateStatus()
+    let selectionGeneration = generation
+    DispatchQueue.main.async { [weak self] in
+      guard let self, self.selected == id, self.generation == selectionGeneration else { return }
+      self.refresh()
+    }
   }
   func reset() {
     pendingCardAction = nil

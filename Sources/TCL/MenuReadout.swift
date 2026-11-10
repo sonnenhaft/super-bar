@@ -8,8 +8,8 @@ struct MenuReadout: View {
     let visible: Set<ReadoutField>
     let energyText: String?
     var cacheKey: [String] {
-        var values = [String(Double(size)), textColor?.description ?? "", String(ac?.power == false)]
-        if ac?.power == false { return values }
+        var values = [String(Double(size)), textColor?.description ?? "", String(ac?.power == false), String(ac?.code("ECO") ?? -1)]
+        if ac?.power == false { return values + [tempText(ac?.indoor)] + visible.map(\.rawValue).sorted() }
         for field in ReadoutField.allCases where visible.contains(field) {
             values.append(field.rawValue)
             guard let ac else { continue }
@@ -31,15 +31,18 @@ struct MenuReadout: View {
     }
     var body: some View {
         HStack(spacing: 4) {
-            if visible.contains(.icon) || ac?.power == false {
-                TCLLogo().frame(width: 30, height: 15)
-            }
-            if let ac, ac.power != false {
+            if let ac, ac.power == false {
+                if visible.contains(.target) { Image(systemName:"power").font(.system(size:size,weight:.semibold)).foregroundStyle(.red).accessibilityLabel("OFF") }
+                if visible.contains(.indoor), let room = ac.indoor {
+                    if visible.contains(.target) { Text("/") }
+                    TemperatureText(value:tempText(room),menuBar:true).fontWeight(.semibold)
+                }
+            } else if let ac {
                 if visible.contains(.target) {
-                    Text(ac.acTemperature).fontWeight(ac.acTemperature == "OFF" ? .bold : .semibold)
+                    TemperatureText(value:ac.acTemperature, menuBar:true).fontWeight(ac.acTemperature == "OFF" ? .bold : .semibold)
                 }
                 if visible.contains(.target) && visible.contains(.indoor) { Text("/") }
-                if visible.contains(.indoor) { Text(tempText(ac.indoor)).fontWeight(.semibold) }
+                if visible.contains(.indoor) { TemperatureText(value:tempText(ac.indoor), menuBar:true).fontWeight(.semibold) }
                 if visible.contains(.power), let on = ac.power {
                     Image(systemName: on ? "power.circle.fill" : "power.circle").font(.system(size: max(7, size - 2)))
                 }
@@ -55,12 +58,12 @@ struct MenuReadout: View {
                 if visible.contains(.horizontal) {
                     VaneIndicator(vertical: false, direction: ac.code("horizontalDirection"), motor: ac.code("horizontalSwitch"))
                 }
-                if visible.contains(.eco), ac.code("ECO") == 1 {
+                if ac.code("ECO") == 1 {
                     Image(systemName: "leaf.fill").font(.system(size: max(7, size - 2))).foregroundStyle(.green)
                 }
                 if visible.contains(.energy), let energyText {
                     HStack(spacing: 2) {
-                        Image(systemName: "bolt.fill").foregroundStyle(.orange)
+                        Image(systemName: "bolt.fill").foregroundStyle(Color(nsColor: BarTheme.energy))
                         Text(energyText).monospacedDigit()
                     }.font(.system(size: max(7, size - 2), weight: .medium))
                 }
@@ -90,7 +93,7 @@ enum TCLAirflowArtwork {
                 let name = "TCL-" + axis + "-" + String(code)
                 if let url = Bundle.main.url(forResource: name, withExtension: "png"),
                    let image = NSImage(contentsOf: url) {
-                    image.size = NSSize(width: 12, height: 12)
+                    image.size = NSSize(width: 30, height: 30)
                     images[name] = image
                 }
             }
@@ -110,6 +113,6 @@ private struct VaneIndicator: View {
            let image = TCLAirflowArtwork.image("TCL-" + (vertical ? "vertical" : "horizontal") + "-" + String(code)) {
             Image(nsImage: image)
                 .renderingMode(.template).resizable().scaledToFit().frame(width: 17, height: 17)
-        } else { Text("–") }
+        }
     }
 }

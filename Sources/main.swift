@@ -14,6 +14,7 @@ private final class MenuPanel: NSPanel {
     lazy var tcl = ClimateStore()
     let fields = ReadoutPreferences()
     private var item: NSStatusItem!
+    private let settingsPopover = NSPopover()
     private let panel = MenuPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
     private var watch: AnyCancellable?
     private var scheduled = false
@@ -22,6 +23,7 @@ private final class MenuPanel: NSPanel {
     private var hostedBrand: Brand?
     private var blueStarted = false
     private var cachedHeight: CGFloat = 0
+    private var contentHeights: [Brand:CGFloat] = [:]
     private var panelHeader: SuperHeader?
     private var panelFooter: SuperFooter?
     private var panelHost: NSHostingView<AnyView>?
@@ -68,6 +70,7 @@ private final class MenuPanel: NSPanel {
         render()
         DispatchQueue.main.async { [weak self] in
             guard let self, !self.panel.isVisible, self.hostedBrand == nil else { return }
+            if let button = self.item?.button { self.preparePanel(for:button) }
             self.updatePanel(.tcl)
             self.panel.contentView?.layoutSubtreeIfNeeded()
             self.panel.displayIfNeeded()
@@ -119,7 +122,7 @@ private final class MenuPanel: NSPanel {
             let visible = Set(ac.map { fields.ordered($0.id) } ?? (tcl.devices.isEmpty ? [.icon] : []))
             let energy = visible.contains(.energy) ? ac.flatMap { tcl.history.cardEnergy[$0.name] } : nil
             let dark = button.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
-            let readout = MenuReadout(size: CGFloat(state.size), textColor: state.color, ac: ac,
+            let readout = MenuReadout(size: CGFloat(state.size), ac: ac,
                                      visible: visible, energyText: energy)
             let scale = button.window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
             let key = readout.cacheKey + [String(dark), String(Double(scale))]
@@ -140,16 +143,16 @@ private final class MenuPanel: NSPanel {
         syncVisibleHeader()
     }
     private func syncVisibleHeader() {
-        if panel.isVisible { panelHeader?.sync() }
+        if panel.isVisible { panelHeader?.sync(); panelFooter?.sync() }
     }
     private func reading(for brand: Brand) -> BrandReading {
         switch brand {
         case .lg:
             let name = lg.devices.first { $0.id == lg.selected }?.name ?? ""
-            return BrandReading(value: !lg.devices.isEmpty && lg.devices.allSatisfy({ lg.sample(for: $0.id)?.power == "POWER_OFF" && Date().timeIntervalSince(lg.checked[$0.id] ?? .distantPast) < 130 }) ? "All off" : lg.summaryValue(for: lg.selected), name: name)
+            return BrandReading(value: lg.summaryValue(for: lg.selected), name: name)
         case .tcl:
             guard let ac = fields.device(in: tcl) else { return BrandReading() }
-            if !tcl.offline && tcl.devices.allSatisfy({ $0.online == true && !$0.failed && $0.power == false }) { return BrandReading(value: "All off", name: ac.name) }
+            if !tcl.offline && tcl.devices.allSatisfy({ $0.online == true && !$0.failed && $0.power == false }) { return BrandReading(value: "OFF" + (ac.indoor.map { " / " + tempText($0) } ?? ""), name: ac.name) }
             var value = "—"
             if !tcl.offline && ac.online == true && !ac.failed {
                 for field in fields.ordered(ac.id) {
@@ -184,7 +187,31 @@ private final class MenuPanel: NSPanel {
         }, choose: { [weak self] in self?.choose($0) })
     }
     private func footer() -> SuperFooter {
-        SuperFooter(changed: { [weak self] in
+        SuperFooter(refresh:{ [weak self] in
+            guard let self else { return }
+            switch self.state.current {
+            case .tcl: self.tcl.manualRefresh()
+            case .lg: self.lg.manualRefresh()
+            case .bluetti: self.blue.refreshClicked()
+            }
+        }, settings:{ [weak self] _ in self?.lg.openSettings() }, interval:{ [weak self] in
+            guard let self else { return ([60],60) }
+            switch self.state.current {
+            case .tcl: return ([1,5,30,60,300,600],Int(self.tcl.refreshInterval))
+            case .lg: return (intervals.map(Int.init),Int(defaults.double(forKey:"interval")))
+            case .bluetti: return (PollInterval.allCases.map(\.rawValue),self.blue.selectedInterval.rawValue)
+            }
+        }, setInterval:{ [weak self] seconds in
+            guard let self else { return }
+            switch self.state.current {
+            case .tcl: self.tcl.setRefreshInterval(seconds)
+            case .lg: defaults.set(Double(seconds),forKey:"interval"); self.lg.startTimer()
+            case .bluetti:
+                let slider = NSSlider()
+                slider.doubleValue = Double(PollInterval.allCases.firstIndex(where:{$0.rawValue == seconds}) ?? 4)
+                self.blue.changeRefreshInterval(slider)
+            }
+        }, changed: { [weak self] in
             guard let self else { return }
             switch self.state.current {
             case .lg: self.lg.updateStatus()
@@ -193,6 +220,22 @@ private final class MenuPanel: NSPanel {
             }
         })
     }
+    private func showBrandSettings(_ source:NSView) {
+        let view: AnyView
+        switch state.current {
+        case .tcl:
+            view = AnyView(ReadoutSettings(preferences:fields,id:tcl.selected?.id ?? "").frame(width:350))
+        case .lg:
+            view = AnyView(DevicePanel(brand:.lg,sections:lg.panelSections.filter { $0.title == "Settings" }) { EmptyView() }.frame(width:350,height:300))
+        case .bluetti:
+            view = AnyView(DevicePanel(brand:.bluetti,sections:[DeviceSection(title:"Settings",symbol:"slider.horizontal.3",items:blue.panelSettings)]) { EmptyView() }.frame(width:350,height:300))
+        }
+        settingsPopover.behavior = .transient; settingsPopover.animates = false
+        settingsPopover.contentViewController = NSHostingController(rootView:view)
+        settingsPopover.contentSize = NSSize(width:350,height:300)
+        settingsPopover.show(relativeTo:source.bounds,of:source,preferredEdge:.maxY)
+    }
+
     private func scheduleContent(_ brand: Brand) {
         guard brand == activePanel, !panelUpdateQueued else { return }
         panelUpdateQueued = true
@@ -209,6 +252,7 @@ private final class MenuPanel: NSPanel {
     }
 
     private func endPanel() {
+        ReadingAge.stop()
         openGeneration += 1
         switch activePanel {
         case .lg: lg.menuDidClose(lg.menu)
@@ -222,6 +266,7 @@ private final class MenuPanel: NSPanel {
         // Menu tracking temporarily takes key focus; let the menu action finish.
         DispatchQueue.main.async { [weak self] in
             guard let self, self.panel.isVisible, !self.panel.isKeyWindow else { return }
+            if self.settingsPopover.isShown || (NSApp.keyWindow != nil && NSApp.keyWindow !== self.panel) { return }
             self.dismissPanel()
         }
     }
@@ -233,6 +278,12 @@ private final class MenuPanel: NSPanel {
     private func beginPanel(_ brand: Brand) {
         endPanel()
         activePanel = brand
+        ReadingAge.start { [weak self] in
+            guard let self, self.panel.isVisible, self.activePanel == .bluetti else { return }
+            let now = Date()
+            for row in self.blue.stationRows { _ = row.details.updateAge(now:now) }
+        }
+        if let height = contentHeights[brand] { applyPanelHeight(height) }
         if brand != .bluetti || blueStarted {
             if hostedBrand != brand { updatePanel(brand) }
         }
@@ -260,17 +311,43 @@ private final class MenuPanel: NSPanel {
     private func updatePanel(_ brand: Brand) {
         guard let host = panelHost else { return }
         hostedBrand = brand
+        if let height = contentHeights[brand] { fitPanel(height,brand:brand) }
         switch brand {
         case .tcl:
-            host.rootView = AnyView(ClimatePanel(store: tcl, history: tcl.history, preferences: fields, height: cachedHeight))
+            host.rootView = AnyView(ClimatePanel(store: tcl, history: tcl.history, preferences: fields, contentHeight:{ [weak self] in self?.fitPanel($0,brand:.tcl) }, height: cachedHeight))
         case .lg:
-            host.rootView = AnyView(LGPanel(model: lg))
+            host.rootView = AnyView(LGPanel(model: lg, contentHeight:{ [weak self] in self?.fitPanel($0,brand:.lg) }))
         case .bluetti:
             let sections = [DeviceSection(title: "Batteries", symbol: MenuPresentation.batterySymbol(percent: blue.lastGood?.percent ?? 0), items: [blue.emptyRefreshItem] + blue.stationRows.flatMap { $0.details.items }),
-                            DeviceSection(title: "Load history", symbol: "chart.xyaxis.line", items: [blue.loadGraphItem]),
                             DeviceSection(title: "Settings", symbol: "gearshape", items: blue.panelSettings)]
-            host.rootView = AnyView(DevicePanel(brand: .bluetti, sections: sections, toggleBattery: { self.blue.toggleMenuBarField(.battery) }) { EmptyView() })
+            host.rootView = AnyView(DevicePanel(brand: .bluetti, sections: sections.filter { $0.title != "Settings" }, contentHeight:{ [weak self] in self?.fitPanel($0,brand:.bluetti) }, toggleBattery: { self.blue.toggleMenuBarField(.battery) }) { EmptyView() })
         }
+    }
+
+    private func fitPanel(_ natural: CGFloat, brand: Brand) {
+        guard natural.isFinite, natural > 0 else { return }
+        let available = (panel.screen ?? NSScreen.main)?.visibleFrame.height ?? 800
+        let maximum = min(cachedHeight,max(80,available-SuperHeader.height-SuperFooter.height-36))
+        let height = min(maximum,max(1,ceil(natural)))
+        contentHeights[brand] = height
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.hostedBrand == brand, self.activePanel == brand else { return }
+            self.applyPanelHeight(height)
+        }
+    }
+
+    private func applyPanelHeight(_ height:CGFloat) {
+        guard let host = panelHost else { return }
+        let top = panel.frame.maxY
+        let chrome = SuperHeader.height + SuperFooter.height
+        guard abs(host.frame.height-height) > 1 || abs((panel.contentViewController?.view.frame.height ?? 0) - (height+chrome)) > 1 else { return }
+        panelFooter?.frame = NSRect(x:0,y:0,width:390,height:SuperFooter.height)
+        panelFooter?.sync()
+        panel.contentViewController?.view.setFrameSize(NSSize(width:390,height:height+chrome))
+        host.frame = NSRect(x:0,y:SuperFooter.height,width:390,height:height)
+        panelHeader?.frame.origin.y = height + SuperFooter.height
+        panel.setContentSize(NSSize(width:390,height:height+chrome))
+        panel.setFrameTopLeftPoint(NSPoint(x:panel.frame.minX,y:top))
     }
 
     private func choose(_ brand: Brand) {
@@ -282,9 +359,15 @@ private final class MenuPanel: NSPanel {
     @objc func showPanel() {
         guard let button = item?.button else { return }
         if panel.isVisible { dismissPanel(); return }
+        ReadingAge.panelOpened()
         let started = ProcessInfo.processInfo.systemUptime
         let eventTime = NSApp.currentEvent.flatMap { $0.type == .leftMouseDown ? $0.timestamp : nil }
         preparePanel(for: button)
+        if hostedBrand != state.current {
+            updatePanel(state.current)
+            panel.contentView?.layoutSubtreeIfNeeded()
+        }
+        if let height = contentHeights[state.current] { applyPanelHeight(height) }
         guard let window = button.window, let screen = window.screen else { return }
         let anchor = window.convertToScreen(button.convert(button.bounds, to: nil))
         let width = panel.frame.width
@@ -311,18 +394,24 @@ private final class MenuPanel: NSPanel {
             root.view = NSView(frame: NSRect(x: 0, y: 0, width: 390, height: height + chrome))
             root.view.appearance = NSAppearance(named: .darkAqua)
             root.view.wantsLayer = true
-            root.view.layer?.backgroundColor = BarTheme.background.cgColor
-            root.view.layer?.cornerRadius = 12
+            root.view.layer?.backgroundColor = NSColor.clear.cgColor
+            let tint = NSView(frame:root.view.bounds)
+            tint.wantsLayer = true; tint.layer?.backgroundColor = NSColor(srgbRed:0.035,green:0.16,blue:0.32,alpha:0.80).cgColor
+            tint.autoresizingMask = [.width,.height]
+            root.view.addSubview(tint)
+            root.view.layer?.cornerRadius = 8
             root.view.layer?.masksToBounds = true
             panelHeader = header()
             panelFooter = footer()
             let host = NSHostingView(rootView: AnyView(EmptyView()))
             // The status popover owns its size; child layout must never resize its window.
             host.sizingOptions = []
+            host.wantsLayer = true
+            host.layer?.backgroundColor = NSColor.clear.cgColor
             hostedBrand = nil
             panelHost = host
-            panelHeader!.frame.origin = NSPoint(x: 45, y: height + SuperFooter.height)
-            panelFooter!.frame.origin = NSPoint(x: 45, y: 0)
+            panelHeader!.frame = NSRect(x: 0, y: height + SuperFooter.height, width: 390, height: SuperHeader.height)
+            panelFooter!.frame = NSRect(x: 0, y: 0, width: 390, height: SuperFooter.height)
             host.frame = NSRect(x: 0, y: SuperFooter.height, width: 390, height: height)
             [panelHeader!, host, panelFooter!].forEach(root.view.addSubview)
             panel.contentViewController = root

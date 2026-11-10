@@ -51,6 +51,8 @@ extension BlueBarDelegate {
     private func makeStationEntry(key: String) -> StationMenuEntry {
         let entry = StationMenuEntry(key: key)
         let card = entry.details.card
+        card.selectButton.dragID = key
+        card.selectButton.dragGroup = Brand.bluetti.rawValue
         card.onToggle = { [weak self] field in
             guard let self, let station = self.stationDirectory.stations.first(where: { $0.key == key }) else { return }
             if self.selectedKnownStation?.key != key {

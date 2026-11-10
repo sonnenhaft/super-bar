@@ -1,25 +1,50 @@
 # Super Bar
 
-Одно приложение в строке меню macOS 15+ для станции BLUETTI и кондиционеров TCL и LG ThinQ.
+A native macOS menu bar app for BLUETTI power stations and TCL Home and LG ThinQ air conditioners. Requires macOS 15 or later.
 
-Для запуска на другом Маке с Apple Command Line Tools и SSH-доступом к репозиторию:
+![Super Bar menu with TCL air conditioner controls and energy history](docs/super-bar.png)
+
+## Install
+
+Download the Apple Silicon build from [Releases](https://github.com/sonnenhaft/super-bar/releases/latest), or build from source with Apple Command Line Tools (Apple Silicon or Intel):
 
 ```bash
-git clone git@github.com:sonnenhaft/super-bar.git
+git clone https://github.com/sonnenhaft/super-bar.git
 cd super-bar
 ./start.command
 ```
 
-Откройте **install.command** (или **start.command**): он каждый раз собирает свежую версию, штатно завершает старые панели, устанавливает приложение в ~/Applications и проверяет путь, PID, версию, номер сборки и контрольную сумму. При ошибке вернёт предыдущую установленную копию. Для сборки нужны инструменты Apple. Старые приложения и их автозапуск сохраняются.
+`start.command` and `install.command` always build a fresh version, close the previous menu bar apps, and install Super Bar in `~/Applications`. The installer verifies the running app's path, process, version, build number, and executable checksum. If verification fails, it restores the previous installation.
 
-Нажмите логотип вверху: панель и показания в строке меню переключатся на выбранную марку. При каждом запуске выбрана TCL. Порядок вкладок: TCL, LG, BLUETTI. Цвет и размер текста сохраняются между запусками. Ползунок, цвет и выход находятся внизу каждой панели.
+## Use
 
-У каждого кондиционера и каждой батареи своя синяя карточка. Нажмите имя, чтобы выбрать устройство, или показание, чтобы вывести его в строку меню. Видимые значения выделены жирным. Под значком марки показаны имя устройства и последнее включённое показание, для которого есть данные.
+- Switch between TCL, LG, and BLUETTI using the logos at the top. TCL is selected at startup.
+- Click an air conditioner's header to select it. Only the selected card expands and shows refresh controls.
+- Click readings to choose what appears beside the clock. Visible readings are bold.
+- Set the temperature from the value on the right of a card. A powered-off unit shows room temperature.
+- Hold a device name to reorder cards by dragging.
+- View matching seven-day energy and 24-hour power charts when readings are available. Hover over energy bars for exact values.
+- Set each brand's refresh interval, adjust the shared menu bar text size, or enable launch at login at the bottom of the menu.
 
-Управление устройствами, опрос и графики работают внутри Super Bar. Используются сохранённые настройки старых панелей и локальная сессия TCL Home. Установщик переносит локальный token.txt рядом с Sources в защищённый файл конфигурации LG, только если там нет ранее сохранённого токена; в .app токен не включается. Если LG ещё не настроен, в панели LG откройте **LG settings…**, укажите токен ThinQ и страну/регион аккаунта. При необходимости входа панель TCL сразу показывает поля Email и Password.
+Power is shown in watts below 1,000 W and in kilowatts with two decimal places above that threshold. Energy uses the same convention for Wh and kWh. Read ages update every three seconds while the menu is open.
 
-Сборка: `./build.command`. Проверка выбора марки, размера, цвета, стабильности показаний и повторного использования облачной сессии: `Tests/check.command`.
+## Connect devices
 
-Исходники BLUETTI и TCL взяты из соседних рабочих копий. Модуль LG основан на [LG Bar 1.4.1](https://github.com/sonnenhaft/osx-lg-bar-thinq-near-clock_vibed/tree/cc3d4ac701c48a8dfae677f3f2ba72961e268715). Уведомления о стороннем коде BLUETTI включены в Resources.
+**TCL:** Super Bar reuses the local TCL Home session. If sign-in is required, enter your TCL Home email and password in the TCL panel.
 
-При запуске терминал показывает текущий этап, его длительность и сообщение каждые 5 секунд, пока операция выполняется. Bluetooth не запускается вместе с приложением: первый опрос и системный запрос доступа происходят при открытии панели BLUETTI. После этого опрос продолжается в фоне.
+**LG:** Open **LG settings…** and enter your ThinQ personal access token and account country/region. The installer can migrate a local `token.txt` beside `Sources` into the protected LG configuration directory if no token is already saved. Tokens are never included in the application bundle or repository.
+
+**BLUETTI:** Open the BLUETTI panel to start Bluetooth discovery and grant macOS Bluetooth access. Polling continues in the background after the first connection.
+
+## Build and check
+
+```bash
+./build.command
+Tests/check.command
+```
+
+The optimized, ad-hoc signed app is written to `dist/Super Bar.app`. Build and installation scripts report progress while running.
+
+## Credits
+
+Super Bar combines the original TCL Bar, BLUETTI Bar, and LG Bar projects. The LG module is based on LG Bar 1.4.1, commit `cc3d4ac701c48a8dfae677f3f2ba72961e268715`. BLUETTI third-party notices are included in `Resources/THIRD_PARTY_NOTICES.txt`.

@@ -44,7 +44,7 @@ enum ClimateCLI {
             row("Power",{ $0.status }), row("Room",{ tempText($0.indoor) }), row("Target",{ tempText($0.target) }),
             row("Mode",{ $0.modeName }), row("Fan",{ $0.fan }), row("ECO",{ $0.has("ECO") ? ($0.code("ECO")==1 ? "ON" : "OFF") : "—" }),
             row("Position ↕",{ $0.vane(true) }),row("Position ↔",{ $0.vane(false) }),
-            row("Power, W",{ EnergyHistory.watts(in:$0.report).map { $0.formatted() } ?? "—" })
+            row("Power",{ EnergyHistory.watts(in:$0.report).map(DisplayUnits.power) ?? "—" })
         ]
         let keys = Set(units.flatMap { $0.report.keys }).sorted()
         for k in keys { table.append(row(k, { val($0.report[k]) })) }

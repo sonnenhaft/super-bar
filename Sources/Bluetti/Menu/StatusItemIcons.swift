@@ -18,9 +18,7 @@ final class StatusItemIcons {
 
     func image(battery: Int?, brand: NSImage?, hasReading: Bool, loading: Bool, offline: Bool,
                fontSize: CGFloat, customColor: NSColor?, appearance: NSAppearance) -> NSImage? {
-        var indicator: String?
-        if hasReading && loading { indicator = "arrow.clockwise" }
-        else if hasReading && offline { indicator = "wifi.slash" }
+        let indicator: String? = nil
         let style = Style(battery: battery.map(MenuPresentation.batterySymbol), brand: brand,
                           indicator: indicator, fontSize: fontSize, hasReading: hasReading,
                           customColor: customColor, appearance: appearance.name)
@@ -38,15 +36,15 @@ final class StatusItemIcons {
             guard let symbol = NSImage(systemSymbolName: name, accessibilityDescription: nil),
                   symbol.size.width > 0 else { return }
             let height = width * symbol.size.height / symbol.size.width
-            let tint = (style.customColor ?? .labelColor).withAlphaComponent(opacity)
+            let tint = NSColor.white.withAlphaComponent(opacity)
             parts.append((symbol, NSSize(width: width, height: height), tint))
         }
 
-        if let battery = style.battery { appendSymbol(battery, width: 18 * scale, opacity: 1) }
         if let brand = style.brand {
             let side = min(22, (style.hasReading ? 16 : 18) * scale).rounded()
             parts.append((brand, NSSize(width: side, height: side), nil))
         }
+        if let battery = style.battery { appendSymbol(battery, width:18 * scale, opacity:1) }
         if let indicator = style.indicator {
             appendSymbol(indicator, width: 6 * scale, opacity: indicator == "wifi.slash" ? 0.45 : 0.65)
         }

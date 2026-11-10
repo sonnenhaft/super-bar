@@ -11,8 +11,8 @@ bundle="$app/Contents"
 mkdir -p "$bundle"/{MacOS,Resources} .build/modules
 sources=()
 while IFS= read -r -d '' file; do sources+=("$file"); done < <(find Sources -name '*.swift' -print0)
-step "Компиляция Super Bar (Swift, оптимизация)" xcrun swiftc -O -whole-module-optimization -swift-version 5 -target "$(uname -m)-apple-macosx15.0" -module-cache-path .build/modules -import-objc-header Sources/Bluetti/Bluetooth/BluettiPOSIX.h "${sources[@]}" -o "$bundle/MacOS/SuperBar"
-printf "▶ Подготовка ресурсов и метаданных\n"
+step "Compiling Super Bar (optimized Swift)" xcrun swiftc -O -whole-module-optimization -swift-version 5 -target "$(uname -m)-apple-macosx15.0" -module-cache-path .build/modules -import-objc-header Sources/Bluetti/Bluetooth/BluettiPOSIX.h "${sources[@]}" -o "$bundle/MacOS/SuperBar"
+printf "▶ Preparing resources and metadata\n"
 cp Info.plist "$bundle/"
 cp Resources/* "$bundle/Resources/"
 build="$(date -u +%s)"
@@ -20,8 +20,8 @@ previous="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' 'dist/Super Bar.
 if [[ "$previous" =~ ^[0-9]+$ ]] && (( previous >= build )); then build=$((previous + 1)); fi
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $build" "$bundle/Info.plist"
 plutil -lint "$bundle/Info.plist" >/dev/null
-step "Подпись приложения" codesign --force --sign - "$app"
-step "Проверка подписи" codesign --verify --deep --strict "$app"
+step "Signing the application" codesign --force --sign - "$app"
+step "Verifying the signature" codesign --verify --deep --strict "$app"
 # Publish a complete bundle and restore the previous bundle if publication fails.
 if [[ -e 'dist/Super Bar.app' ]]; then mv 'dist/Super Bar.app' "$stage/previous.app"; fi
 if ! mv "$app" 'dist/Super Bar.app'; then
@@ -29,6 +29,6 @@ if ! mv "$app" 'dist/Super Bar.app'; then
   exit 1
 fi
 version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' 'dist/Super Bar.app/Contents/Info.plist')"
-printf 'Собран Super Bar %s (%s).\n' "$version" "$build"
+printf 'Built Super Bar %s (%s).\n' "$version" "$build"
 
-printf "✓ Сборка целиком — %s с\n" "$((SECONDS - build_started))"
+printf "✓ Complete build — %s s\n" "$((SECONDS - build_started))"

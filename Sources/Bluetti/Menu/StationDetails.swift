@@ -5,8 +5,9 @@ final class StationDetails {
     private let cardItem = NSMenuItem()
     let statusItem = NSMenuItem()
     let statusButton = RefreshRowButton(frame: NSRect(x: 0, y: 0, width: 264, height: 20), style: .textOnly)
-    private let ageLabel = NSTextField(labelWithString: "")
+
     private var measuredAt: Date?
+    private var loading = false
 
     var items: [NSMenuItem] { [cardItem] }
 
@@ -14,12 +15,6 @@ final class StationDetails {
         card.autoresizingMask = [.width]
         cardItem.view = card
         statusButton.autoresizingMask = [.width]
-        ageLabel.font = .systemFont(ofSize: 10)
-        ageLabel.textColor = .secondaryLabelColor
-        ageLabel.alignment = .right
-        ageLabel.frame = NSRect(x: 98, y: 3, width: 155, height: 14)
-        ageLabel.autoresizingMask = [.minXMargin]
-        statusButton.addSubview(ageLabel)
         card.addSubview(statusButton)
     }
 
@@ -27,19 +22,20 @@ final class StationDetails {
                 loading: Bool, enabled: Bool, shortDate: (Date) -> String) {
         let chargeTime = reading?.compactChargeTime(at: asOf) ?? ""
         let batteryTime = reading?.outputWatts == 0 ? "" : reading?.compactRuntime(at: asOf) ?? ""
-        card.update(readingPercent: reading?.percent, power: power, chargeTime: chargeTime, batteryTime: batteryTime)
-        statusButton.update(status: status, loading: loading, enabled: enabled)
         measuredAt = reading?.measuredAt
-        ageLabel.toolTip = measuredAt.map(shortDate)
-        ageLabel.isHidden = measuredAt == nil
+        self.loading = loading
+        card.update(readingPercent: reading?.percent, power: power, chargeTime: chargeTime, batteryTime: batteryTime)
+        statusButton.update(status: loading ? "Refreshing…" : reading.map { ReadingAge.label($0.measuredAt) } ?? status, loading: loading, enabled: enabled)
+        statusButton.toolTip = reading.map { shortDate($0.measuredAt) }
     }
 
     func updateAge(now: Date) -> Date? {
-        guard let measuredAt else { return nil }
-        let text = "Last read " + measuredAt.formatted(date: Calendar.current.isDateInToday(measuredAt) ? .omitted : .abbreviated, time: .standard)
-        ageLabel.stringValue = text
+        if !loading, let measuredAt {
+            statusButton.update(status:ReadingAge.label(measuredAt,now:now),loading:false,enabled:statusButton.isEnabled)
+        }
         return nil
     }
+
 }
 
 extension BlueBarDelegate {

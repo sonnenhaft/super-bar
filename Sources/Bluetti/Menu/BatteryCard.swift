@@ -1,7 +1,7 @@
 import AppKit
 
 final class BatteryCard: NSView {
-    let selectButton = PanelButton()
+    let selectButton = HoldDragButton()
     let refreshButton = RefreshRowButton(frame: .zero, style: .iconOnly)
     let renameButton = PanelButton()
     var onToggle: ((MenuBarField) -> Void)?
@@ -15,19 +15,20 @@ final class BatteryCard: NSView {
     private var percent: Int?
 
     private let percentage = BatteryCardButton(.percentage, name: "Battery percentage")
+    private let battery = BatteryCardButton(.battery, name:"Battery icon")
     private let brand = BatteryCardButton(.brand, name: "BLUETTI logo")
     private let input = BatteryCardButton(.input, name: "Input power")
     private let output = BatteryCardButton(.output, name: "Output power")
     private let charge = BatteryCardButton(.chargeTime, name: "Time to full charge")
     private let runtime = BatteryCardButton(.runtime, name: "Battery runtime")
-    private var buttons: [BatteryCardButton] { [percentage, brand, input, output, charge, runtime] }
+    private var buttons: [BatteryCardButton] { [percentage, battery, input, output, charge, runtime] }
     override var isFlipped: Bool { true }
 
     override init(frame: NSRect) {
         super.init(frame: frame)
         autoresizingMask = [.width]
         nameLabel.textColor = .white
-        nameLabel.font = .systemFont(ofSize: 12, weight: .semibold)
+        nameLabel.font = .systemFont(ofSize: 15, weight: .semibold)
         nameLabel.usesSingleLineMode = true
         nameLabel.lineBreakMode = .byTruncatingMiddle
         nameLabel.setAccessibilityElement(false)
@@ -42,12 +43,13 @@ final class BatteryCard: NSView {
         selectButton.title = ""
         selectButton.setAccessibilityRole(.radioButton)
         addSubview(selectButton)
+        refreshButton.isHidden = true
         refreshButton.iconTint = .white
         addSubview(refreshButton)
         renameButton.title = ""
         renameButton.isBordered = false
         renameButton.image = NSImage(systemSymbolName: "pencil", accessibilityDescription: nil)?
-            .withSymbolConfiguration(.init(pointSize: 11, weight: .regular))
+            .withSymbolConfiguration(.init(pointSize: 14, weight: .regular))
         renameButton.contentTintColor = .white
         renameButton.imagePosition = .imageOnly
         renameButton.toolTip = "Rename station"
@@ -56,9 +58,12 @@ final class BatteryCard: NSView {
         for button in buttons {
             button.target = self
             button.action = #selector(toggleField(_:))
-            button.onHover = { [weak self] shown in self?.eye.isHidden = !shown }
+            button.onHover = nil
             addSubview(button)
         }
+        battery.imagePosition = .imageOnly
+        battery.imageScaling = .scaleNone
+        battery.contentTintColor = .white
         brand.imagePosition = .imageOnly
         brand.imageScaling = .scaleProportionallyUpOrDown
         for button in [percentage, input, output, charge, runtime] {
@@ -78,12 +83,13 @@ final class BatteryCard: NSView {
             needsLayout = true
             needsDisplay = true
         }
-        nameLabel.font = .systemFont(ofSize: 13, weight: checked ? .bold : .regular)
+        nameLabel.font = .systemFont(ofSize: 15, weight: checked ? .bold : .regular)
         if selected != checked { selected = checked; needsDisplay = true }
         selectButton.isEnabled = enabled
         selectButton.setAccessibilityLabel(title.accessibilityLabel)
         selectButton.setAccessibilityValue(NSNumber(value: checked))
         selectButton.state = checked ? .on : .off
+        refreshButton.isHidden = !checked
         renameButton.isEnabled = canRename
     }
 
@@ -102,7 +108,7 @@ final class BatteryCard: NSView {
 
     func setFields(_ fields: Set<MenuBarField>, brand image: NSImage?) {
         if brand.image !== image { brand.image = image }
-        brand.isHidden = image == nil || percent == nil
+        brand.isHidden = true
         for button in buttons { button.updateShown(fields.contains(button.field)) }
     }
 
@@ -113,7 +119,9 @@ final class BatteryCard: NSView {
                                (charge, chargeTime), (runtime, batteryTime)] {
             updateText(button, text)
         }
-        brand.isHidden = readingPercent == nil || brand.image == nil
+        brand.isHidden = true
+        battery.isHidden = readingPercent == nil
+        if let readingPercent { battery.image = NSImage(systemSymbolName:MenuPresentation.batterySymbol(percent:readingPercent),accessibilityDescription:"Battery")?.withSymbolConfiguration(.init(pointSize:16,weight:.medium)) }
         output.helpDetail = power.toolTip
         arrangeContents()
     }
@@ -126,7 +134,7 @@ final class BatteryCard: NSView {
         style.alignment = main ? .left : .right
         style.lineBreakMode = .byTruncatingTail
         let color: NSColor = button === charge || button === runtime ? .init(srgbRed: 0.62, green: 0.88, blue: 0.96, alpha: 1) : .white
-        let font = NSFont.monospacedDigitSystemFont(ofSize: main ? 25 : 11, weight: button.shown == true ? .bold : .regular)
+        let font = NSFont.monospacedDigitSystemFont(ofSize: main ? 28 : 13, weight: button.shown == true ? .bold : .regular)
         if !text.isEmpty, button.attributedTitle.string == text, button.attributedTitle.attribute(.font, at: 0, effectiveRange: nil) as? NSFont == font { return }
         button.alignment = style.alignment
         button.attributedTitle = NSAttributedString(string: text,
@@ -141,58 +149,63 @@ final class BatteryCard: NSView {
     }
 
     private func arrangeContents() {
-        let left = bounds.minX + 18, right = max(left, bounds.maxX - 17)
-        let header = NSRect(x: left, y: 4, width: right - left, height: 22)
+        let left = bounds.minX + 8, right = max(left, bounds.maxX - 8)
+        let header = NSRect(x: left, y: 8, width: right - left, height: 22)
         selectButton.frame = header
         let slot = min(22, header.width / 5)
         renameButton.frame = NSRect(x: right - slot, y: header.minY, width: slot, height: header.height)
         refreshButton.frame = renameButton.frame.offsetBy(dx: -slot, dy: 0)
         eye.frame = NSRect(x: refreshButton.frame.minX - 15, y: header.minY, width: 14, height: header.height)
-        nameLabel.frame = NSRect(x: left, y: 7, width: max(0, eye.frame.minX - left - 8), height: 16)
+        nameLabel.frame = NSRect(x: left + 27, y: 9, width: max(0, eye.frame.minX - left - 35), height: 21)
         editor?.frame = nameLabel.frame.insetBy(dx: 0, dy: -2)
+        battery.frame = NSRect(x:left,y:9,width:23,height:21)
         guard percent != nil else { setHeight(30); return }
 
-        let bodyY: CGFloat = 28
+        let bodyY: CGFloat = 32
         let percentWidth = ceil(percentage.attributedTitle.size().width) + 4
         let leftWidth = max(64, percentWidth)
-        percentage.frame = NSRect(x: left, y: bodyY, width: leftWidth, height: 31)
-        brand.frame = NSRect(x: left, y: bodyY + 32, width: 20, height: 19)
+        percentage.frame = NSRect(x: left, y: bodyY, width: leftWidth, height: 35)
+        battery.frame = NSRect(x:left,y:9,width:23,height:21)
 
         // Power and time share a right edge for each direction. For unusually
         // long dual AC/DC readings, stack the pairs rather than cutting off watts.
         let pairs = [(input, charge), (output, runtime)].filter { !$0.0.isHidden || !$0.1.isHidden }
-        guard !pairs.isEmpty else { setHeight(bodyY + 58); return }
+        guard !pairs.isEmpty else { setHeight(bodyY + 66); return }
         let otherLeft = left + leftWidth + 6
         let available = max(0, right - otherLeft)
         let widths = pairs.map { ceil(max($0.0.attributedTitle.size().width, $0.1.attributedTitle.size().width)) + 6 }
         let nextLine = (widths.max() ?? 0) > available
         let start = nextLine ? left : otherLeft
-        let y = nextLine ? bodyY + 55 : bodyY + 5
+        let y = nextLine ? bodyY + 66 : bodyY + 5
         let sideBySide = widths.reduce(0, +) + 4 <= right - start
         var x = right
         var bottom = y
         for index in pairs.indices.reversed() {
             let pair = pairs[index]
             let width = sideBySide ? widths[index] : right - start
-            let top = y + (sideBySide ? 0 : CGFloat(index) * 32)
-            pair.0.frame = NSRect(x: x - width, y: top, width: width, height: 16)
-            pair.1.frame = pair.0.frame.offsetBy(dx: 0, dy: 16)
+            let top = y + (sideBySide ? 0 : CGFloat(index) * 40)
+            pair.0.frame = NSRect(x: x - width, y: top, width: width, height: 20)
+            pair.1.frame = pair.0.frame.offsetBy(dx: 0, dy: 20)
             bottom = max(bottom, pair.1.isHidden ? pair.0.frame.maxY : pair.1.frame.maxY)
             if sideBySide { x -= width + 4 }
         }
-        setHeight(max(bodyY + 52, bottom) + 6)
+        setHeight(max(bodyY + 66, bottom) + 6)
     }
 
     private func setHeight(_ height: CGFloat) {
         contentHeight = max(112, height + 24)
         if let footer = subviews.last as? RefreshRowButton, footer !== refreshButton {
-            footer.frame = NSRect(x: 6, y: contentHeight - 23, width: max(0, bounds.width - 12), height: 20)
+            footer.frame = NSRect(x: 0, y: contentHeight - 28, width: bounds.width, height: 20)
         }
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        let card = NSBezierPath(roundedRect: bounds.insetBy(dx: 9, dy: 2), xRadius: 9, yRadius: 9)
-        NSGradient(starting: selected ? BarTheme.navy : BarTheme.panel, ending: selected ? BarTheme.ocean : BarTheme.navy)?.draw(in: card, angle: 0)
+        let card = NSBezierPath(roundedRect: bounds, xRadius: 6, yRadius: 6)
+        (selected ? BarTheme.navy : BarTheme.panel).setFill()
+        card.fill()
+        NSColor.white.withAlphaComponent(0.16).setStroke()
+        card.lineWidth = 0.5
+        card.stroke()
         if connected && editor == nil {
             let textWidth = min(nameLabel.frame.width, ceil(nameLabel.intrinsicContentSize.width))
             NSColor.systemGreen.setFill()
