@@ -209,8 +209,8 @@ struct ClimatePanel: View {
     private func vaneButton(_ title: String, hint: String, selected: Bool, icon: String? = nil, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Group {
-                if let icon {
-                    Image(icon).renderingMode(.template).resizable().scaledToFit().frame(width: 24, height: 24)
+                if let icon, let artwork = TCLAirflowArtwork.image(icon) {
+                    Image(nsImage: artwork).renderingMode(.original).resizable().scaledToFit().frame(width: 24, height: 24)
                 } else { Text(verbatim: title) }
             }.font(.system(size: 12, weight: .medium))
                 .frame(maxWidth: .infinity, minHeight: 23)

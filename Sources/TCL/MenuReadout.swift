@@ -81,13 +81,31 @@ struct MenuReadout: View {
     }
 }
 
+enum TCLAirflowArtwork {
+    private static let images: [String: NSImage] = {
+        var images = [String: NSImage]()
+        for axis in ["vertical", "horizontal"] {
+            let codes = Array(9...13) + Array(1...(axis == "vertical" ? 3 : 4))
+            for code in codes {
+                let name = "TCL-" + axis + "-" + String(code)
+                if let url = Bundle.main.url(forResource: name, withExtension: "png"),
+                   let image = NSImage(contentsOf: url) { images[name] = image }
+            }
+        }
+        return images
+    }()
+
+    static func image(_ name: String) -> NSImage? { images[name] }
+}
+
 private struct VaneIndicator: View {
     let vertical: Bool
     let direction: Int?
     let motor: Int?
     var body: some View {
-        if let code = direction, (9...13).contains(code) || (motor != 0 && (1...(vertical ? 3 : 4)).contains(code)) {
-            Image("TCL-" + (vertical ? "vertical" : "horizontal") + "-" + String(code))
+        if let code = direction, (9...13).contains(code) || (motor != 0 && (1...(vertical ? 3 : 4)).contains(code)),
+           let image = TCLAirflowArtwork.image("TCL-" + (vertical ? "vertical" : "horizontal") + "-" + String(code)) {
+            Image(nsImage: image)
                 .renderingMode(.template).resizable().scaledToFit().frame(width: 17, height: 17)
         } else { Text("–") }
     }
