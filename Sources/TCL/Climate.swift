@@ -114,18 +114,20 @@ struct Aircon: Identifiable {
     }
 }
 
-enum CoolingPreset {
-    case quiet, turbo
+enum CoolingPreset: CaseIterable, Hashable {
+    case high, low
 
-    var label: String { self == .quiet ? "22° · Quiet" : "16° · Turbo" }
-    private var degrees: Int { self == .quiet ? 22 : 16 }
+    var label: String { self == .high ? "16° High" : "22° Low" }
+    var degrees: Int { self == .high ? 16 : 22 }
+    var speed: String { self == .high ? "HIGH" : "LOW" }
 
     func fields(for ac: Aircon) -> [(String, Int)]? {
         guard ac.has("powerSwitch"), ac.has("workMode"), ac.has("targetTemperature"),
               ac.setpoints.contains(degrees) else { return nil }
         var fields = [("powerSwitch", 1), ("workMode", 1), ("targetTemperature", degrees)]
         if ac.has("ECO") { fields.append(("ECO", 0)) }
-        guard ac.has(ac.fanField), let level = self == .quiet ? ac.manualFanCodes.first : ac.manualFanCodes.last else { return nil }
+        guard ac.has(ac.fanField) else { return nil }
+        let level = self == .high ? 6 : 2
         fields += ac.fanChanges(level)
         return fields
     }
@@ -133,13 +135,7 @@ enum CoolingPreset {
         guard let fields = fields(for: ac), let values = try? DeviceService.desired(fields, report: ac.report) else { return false }
         return values.allSatisfy { ac.code($0.key) == $0.value }
     }
-    func details(for ac: Aircon) -> String {
-        if fields(for: ac) == nil { return "This unit does not support this preset." }
-        let mode: String
-        if self == .quiet { mode = ac.has("silenceSwitch") ? "quiet mode" : "minimum fan" }
-        else { mode = ac.has("turbo") || ac.has("windSpeed7Gear") ? "turbo" : "maximum fan" }
-        return "Cool to " + String(degrees) + " °C, " + mode
-    }
+
 }
 
 final class ClimateStore: ObservableObject {

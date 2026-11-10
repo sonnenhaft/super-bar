@@ -55,7 +55,6 @@ func ago(_ date: Date?) -> String {
   }
   var errorItem: NSMenuItem?
   var displayRows: [String: ActionRow] = [:]
-  var presetRows: [Double: ActionRow] = [:]
   let speeds = ["LOW", "MID", "HIGH"]
   var powerRow: ActionRow?
   var refreshRow: ActionRow?
@@ -299,12 +298,6 @@ func ago(_ date: Date?) -> String {
     updateHeader()
     powerRow?.button.font = .boldSystemFont(ofSize: 13)
     powerRow?.button.title = powerIsOn ? "Turn OFF" : "Turn ON"
-    for (t, r) in presetRows {
-      let match =
-        powerIsOn && displayValue("airConJobMode", "currentJobMode") as? String == "COOL"
-        && speed == (t == 16 ? "HIGH" : "LOW") && set == t
-      r.right.stringValue = match ? "✓" : ""
-    }
     updateEnergyRows()
   }
   func reported(_ g: String, _ k: String) -> Any? {
@@ -327,17 +320,7 @@ func ago(_ date: Date?) -> String {
       start = menu.numberOfItems
     }
     powerRow = nil
-    presetRows = [:]
     displayRows = [:]
-    if !profile.isEmpty {
-      for (t, speed, title) in [
-        (16.0, "HIGH", "16° · High · Cool"), (22.0, "LOW", "22° · Low · Cool"),
-      ] where presetAllowed(t, speed) {
-        if presetRows.isEmpty { menu.addItem(.separator()) }
-        presetRows[t] = row(title) { [weak self] in self?.preset(t, speed) }
-      }
-    }
-    finish("Controls", "dial.medium")
     readStatusItem = item("Read: " + lastReadResult)
     commandStatusItem = item("Command: " + lastCommandResult)
     readStatusItem?.isEnabled = false
@@ -468,7 +451,7 @@ func ago(_ date: Date?) -> String {
     selected = id
     profile = profiles[id] ?? [:]
     menuDeviceID = nil
-    panelSections.removeAll { $0.title == "Controls" || $0.title == "Energy" }
+    panelSections.removeAll { $0.title == "Energy" }
     refresh()
     updateStatus()
   }

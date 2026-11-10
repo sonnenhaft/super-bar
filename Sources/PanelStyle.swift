@@ -152,3 +152,24 @@ struct CardMenus<Fan: View>: View {
         }.menuStyle(.borderedButton).controlSize(.small).fixedSize()
     }
 }
+
+struct CoolingPresetRow: View {
+    let enabled: (CoolingPreset) -> Bool
+    let selected: (CoolingPreset) -> Bool
+    let apply: (CoolingPreset) -> Void
+
+    var body: some View {
+        HStack(spacing: 5) {
+            ForEach(CoolingPreset.allCases, id: \.self) { preset in
+                Button { apply(preset) } label: {
+                    Text(preset.label).font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.white).frame(maxWidth: .infinity, minHeight: 29)
+                        .background(selected(preset) ? cobalt : Color(nsColor: BarTheme.panel),
+                                    in: RoundedRectangle(cornerRadius: 7))
+                        .contentShape(Rectangle())
+                }.buttonStyle(.plain).disabled(!enabled(preset))
+                    .accessibilityAddTraits(selected(preset) ? .isSelected : [])
+            }
+        }
+    }
+}

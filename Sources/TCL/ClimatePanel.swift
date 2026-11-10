@@ -132,93 +132,58 @@ struct ClimatePanel: View {
             }
     }
     @ViewBuilder private func controls(_ ac: Aircon) -> some View {
-        Card {
-            SectionName("Controls", "dial.medium")
-            HStack(spacing: 8) {
-                presetButton(.quiet, for: ac, title: "22° · Quiet", icon: "speaker.wave.1.fill")
-                presetButton(.turbo, for: ac, title: "16° · Turbo", icon: "bolt.fill")
-            }
-        }
+        CoolingPresetRow(enabled: { $0.fields(for: ac) != nil }, selected: { $0.isSelected(on: ac) },
+                         apply: { store.preset(ac, $0) })
         Card {
             SectionName("Air direction", "wind")
             vane(ac, true)
-            Divider()
             vane(ac, false)
         }
     }
-    private func presetButton(_ preset: CoolingPreset, for ac: Aircon, title: String, icon: String) -> some View {
-        let selected = preset.isSelected(on: ac)
-        return Button {
-            store.preset(ac, preset)
-        } label: {
-            HStack(spacing: 6) {
-                Image(systemName: icon).foregroundStyle(cobalt)
-                Text(title).fontWeight(.medium)
-                Spacer(minLength: 0)
-                if selected { Image(systemName: "checkmark").foregroundStyle(cobalt) }
-            }.frame(maxWidth: .infinity)
-        }
-        .buttonStyle(.bordered).controlSize(.small)
-        .accessibilityAddTraits(selected ? .isSelected : [])
-        .disabled(preset.fields(for: ac) == nil)
-        .help(preset.details(for: ac))
-    }
-    @ViewBuilder private func vane(_ ac: Aircon, _ vertical: Bool) -> some View {
-        let prefix = vertical ? "vertical" : "horizontal"
-        let field = prefix + "Direction", toggle = prefix + "Switch"
-        let label = vertical ? "Vertical" : "Horizontal"
+
+    private func vane(_ ac: Aircon, _ vertical: Bool) -> some View {
+        let axis = vertical ? "vertical" : "horizontal"
+        let direction = axis + "Direction", motor = axis + "Switch"
+        let title = vertical ? "Vertical" : "Horizontal"
+        let hasDirection = ac.has(direction)
         let stops = vertical ? verticalStops : horizontalStops
-        if ac.has(field) {
-            let direction = ac.code(field)
-            let motor = ac.code(toggle)
-            let ranges = vertical ? ["Full", "Upper", "Lower"] : ["Full", "Left", "Center", "Right"]
-            HStack {
-                Text(label).font(.system(size: 12, weight: .medium))
-                Spacer()
-                Text(ac.vane(vertical)).font(.caption).foregroundStyle(.secondary)
+        let swings = vertical ? ["Up and down", "Upper zone", "Lower zone"] : ["Left to right", "Left zone", "Center zone", "Right zone"]
+        let code = ac.code(direction)
+        let stopped = ac.code(motor) == 0
+        let selected = hasDirection ? (stopped && !(9...13).contains(code ?? -1) ? 8 : code) : ac.code(motor)
+        let value = selected == (hasDirection ? 8 : 0) ? "Stopped" : ac.vane(vertical)
+        func option(_ label: String, _ value: Int, icon: Bool = true) -> some View {
+            Button {
+                store.set(ac, hasDirection ? direction : motor, value, title)
+            } label: {
+                if icon, let image = TCLAirflowArtwork.image("TCL-" + axis + "-" + String(value)) {
+                    Label { Text(label) } icon: { Image(nsImage: image).renderingMode(.template) }
+                } else { Text(label) }
             }
-            HStack(spacing: 4) {
-                ForEach(0..<5) { i in
-                    vaneButton(stops[i], hint: stops[i], selected: direction == i+9, icon: "TCL-" + prefix + "-" + String(i+9)) {
-                        store.set(ac, field, i+9, label)
-                    }
-                }
-            }
-            HStack(spacing: 4) {
-                Image(systemName: vertical ? "arrow.up.and.down" : "arrow.left.and.right")
-                    .font(.caption).frame(width: 14).foregroundStyle(.secondary).help("Swing")
-                vaneButton("Stop", hint: "Stop swing", selected: motor == 0 || direction == 8) {
-                    store.set(ac, field, 8, label)
-                }
-                ForEach(Array(ranges.enumerated()), id: \.offset) { i, text in
-                    vaneButton(text, hint: "Swing · " + text, selected: direction == i+1 && motor != 0, icon: "TCL-" + prefix + "-" + String(i+1)) {
-                        store.set(ac, field, i+1, label)
-                    }
-                }
-            }
-        } else if ac.has(toggle) {
-            HStack(spacing: 5) {
-                Text(label).font(.caption)
-                vaneButton("Stop", hint: "Stop swing", selected: ac.code(toggle) == 0) { store.set(ac, toggle, 0, label) }
-                vaneButton("Swing", hint: label, selected: ac.code(toggle) == 1) { store.set(ac, toggle, 1, label) }
-            }
-        } else {
-            HStack { Text(label); Spacer(); Text("No data").foregroundStyle(.secondary) }.font(.caption)
         }
-    }
-    private func vaneButton(_ title: String, hint: String, selected: Bool, icon: String? = nil, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Group {
-                if let icon, let artwork = TCLAirflowArtwork.image(icon) {
-                    Image(nsImage: artwork).renderingMode(.original).resizable().scaledToFit().frame(width: 24, height: 24)
-                } else { Text(verbatim: title) }
-            }.font(.system(size: 12, weight: .medium))
-                .frame(maxWidth: .infinity, minHeight: 23)
-                .foregroundStyle(selected ? Color.white : Color.primary)
-                .background(selected ? cobalt : Color.secondary.opacity(0.12), in: RoundedRectangle(cornerRadius: 5))
-                .contentShape(Rectangle())
-        }.buttonStyle(.plain).help(hint).accessibilityLabel(hint)
-            .accessibilityAddTraits(selected ? .isSelected : [])
+        return HStack {
+            Text(title).font(.system(size: 12))
+            Spacer()
+            Menu {
+                if hasDirection {
+                    ForEach(stops.indices, id: \.self) { i in option(stops[i], i + 9) }
+                    Divider()
+                    ForEach(swings.indices, id: \.self) { i in option(swings[i], i + 1) }
+                    option("Stop", 8, icon: false)
+                } else {
+                    option("Swing", 1, icon: false)
+                    option("Stop", 0, icon: false)
+                }
+            } label: {
+                HStack(spacing: 5) {
+                    if hasDirection, let selected, let image = TCLAirflowArtwork.image("TCL-" + axis + "-" + String(selected)) {
+                        Image(nsImage: image).resizable().scaledToFit().frame(width: 19, height: 19)
+                    }
+                    Text(value).lineLimit(1)
+                }
+            }.controlSize(.small).fixedSize().disabled(!hasDirection && !ac.has(motor))
+                .accessibilityLabel(title + " air direction").accessibilityValue(value)
+        }
     }
 
     private var footer: some View {

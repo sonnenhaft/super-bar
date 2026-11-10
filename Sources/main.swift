@@ -263,6 +263,12 @@ private final class MenuPanel: NSPanel {
                 if !self.lg.devices.isEmpty {
                     SectionName("Air conditioners", "air.conditioner.horizontal")
                     ForEach(self.lg.devices, id: \.id) { self.lg.deviceCard($0) }
+                    CoolingPresetRow(enabled: { self.lg.connected && self.lg.presetAllowed(Double($0.degrees), $0.speed) },
+                        selected: { preset in
+                            self.lg.powerIsOn && self.lg.displayValue("airConJobMode", "currentJobMode") as? String == "COOL"
+                                && self.lg.displayValue("airFlow", self.lg.windKey) as? String == preset.speed
+                                && lgNumber(self.lg.displayValue("temperature", "targetTemperature")) == Double(preset.degrees)
+                        }, apply: { self.lg.preset(Double($0.degrees), $0.speed) })
                 }
             })
         case .bluetti:
