@@ -171,23 +171,17 @@ struct ClimatePanel: View {
                     option("Stop", 0, icon: false)
                 }
             } label: {
-                HStack(spacing: 4) {
+                Label {
+                    Text(title + " · " + value)
+                } icon: {
                     if hasDirection, let selected, let image = TCLAirflowArtwork.image("TCL-" + axis + "-" + String(selected)) {
-                        Image(nsImage: image).resizable().scaledToFit().frame(width: 12, height: 12)
+                        Image(nsImage: image).renderingMode(.template)
+                    } else {
+                        Image(systemName: "wind")
                     }
-                    Text(title).fontWeight(.medium)
-                    Text(value).foregroundStyle(.secondary).lineLimit(1).truncationMode(.tail)
-                    Spacer(minLength: 0)
-                    Image(systemName: "chevron.down").font(.system(size: 7, weight: .semibold))
                 }
-                .font(.system(size: 10)).padding(.horizontal, 6)
-                .frame(maxWidth: .infinity).frame(height: 22)
-                .foregroundStyle(.white)
-        .background(Color(nsColor: BarTheme.navy), in: RoundedRectangle(cornerRadius: 5))
-        .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(cobalt.opacity(0.65), lineWidth: 0.5))
-                .clipShape(RoundedRectangle(cornerRadius: 5))
             }
-            .menuStyle(.borderlessButton).menuIndicator(.hidden).controlSize(.mini)
+            .climateMenu()
             .disabled(!hasDirection && !ac.has(motor))
             .accessibilityLabel(title + " air direction").accessibilityValue(value)
             .help(title + ": " + value)

@@ -90,7 +90,7 @@ enum TCLAirflowArtwork {
                 let name = "TCL-" + axis + "-" + String(code)
                 if let url = Bundle.main.url(forResource: name, withExtension: "png"),
                    let image = NSImage(contentsOf: url) {
-                    image.size = NSSize(width: 19, height: 19)
+                    image.size = NSSize(width: 12, height: 12)
                     images[name] = image
                 }
             }

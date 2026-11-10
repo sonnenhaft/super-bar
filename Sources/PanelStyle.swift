@@ -191,7 +191,8 @@ struct CardMenus<Fan: View>: View {
                     ForEach(degrees, id: \.self) { degree in
                         Button(String(degree) + "°") { change(degree) }
                     }
-                } label: { menuLabel(target, symbol: "thermometer.medium") }
+                } label: { Label(target, systemImage: "thermometer.medium") }
+                .climateMenu(width: 104)
                 .accessibilityLabel("Set temperature").accessibilityValue(target)
             }
             HStack(spacing: 4) {
@@ -205,7 +206,8 @@ struct CardMenus<Fan: View>: View {
                      .help("Eco " + (eco ? "ON" : "OFF"))
                 }
                 if !fan.isEmpty {
-                    Menu(content: fanOptions) { menuLabel(fan, symbol: "fanblades") }
+                    Menu(content: fanOptions) { Label(fan, systemImage: "fanblades") }
+                        .climateMenu(width: 104)
                         .accessibilityLabel("Set fan speed").accessibilityValue(fan)
                 }
             }
@@ -214,19 +216,17 @@ struct CardMenus<Fan: View>: View {
         .fixedSize()
     }
 
-    private func menuLabel(_ title: String, symbol: String) -> some View {
-        HStack(spacing: 4) {
-            Image(systemName: symbol).resizable().scaledToFit().frame(width: 11, height: 11)
-            Text(title).lineLimit(1).truncationMode(.tail).frame(maxWidth: .infinity, alignment: .leading)
-            Image(systemName: "chevron.down").font(.system(size: 7, weight: .semibold))
-        }
-        .font(.system(size: 11)).padding(.horizontal, 6)
-        .frame(width: 104, height: 22)
-        .foregroundStyle(.white)
-        .background(Color(nsColor: BarTheme.navy), in: RoundedRectangle(cornerRadius: 5))
-        .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(cobalt.opacity(0.65), lineWidth: 0.5))
-        .clipShape(RoundedRectangle(cornerRadius: 5))
-        .contentShape(Rectangle())
+}
+
+extension View {
+    func climateMenu(width: CGFloat? = nil) -> some View {
+        self.menuStyle(.borderlessButton).menuIndicator(.hidden).controlSize(.mini)
+            .font(.system(size: 11)).foregroundStyle(.white).tint(.white)
+            .padding(.horizontal, 6).frame(width: width, height: 22)
+            .frame(maxWidth: width == nil ? .infinity : nil)
+            .background(Color(nsColor: BarTheme.navy), in: RoundedRectangle(cornerRadius: 5))
+            .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(cobalt.opacity(0.65), lineWidth: 0.5))
+            .clipShape(RoundedRectangle(cornerRadius: 5))
     }
 }
 
