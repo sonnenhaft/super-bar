@@ -33,11 +33,11 @@ final class RefreshRowButton: NSButton {
         statusLabel.textColor = .secondaryLabelColor
         statusLabel.lineBreakMode = .byTruncatingTail
         arrow.image = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: nil)
-        arrow.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 12, weight: .regular)
+        arrow.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 10, weight: .regular)
         arrow.imageScaling = .scaleNone
         arrow.isHidden = style == .textOnly
         spinner.style = .spinning
-        spinner.controlSize = .small
+        spinner.controlSize = .mini
         spinner.isDisplayedWhenStopped = false
         for view in [statusLabel, arrow, spinner] as [NSView] {
             addSubview(view)
@@ -54,7 +54,7 @@ final class RefreshRowButton: NSButton {
     override func layout() {
         super.layout()
         let icon = NSRect(x: style == .iconOnly ? bounds.midX - 8 : bounds.maxX - 23, y: bounds.midY - 8, width: 16, height: 16)
-        spinner.frame = icon
+        spinner.frame = icon.insetBy(dx: 2, dy: 2)
         arrow.frame = icon
         let labelEnd = style == .textOnly ? bounds.maxX : icon.minX
         statusLabel.frame = NSRect(x: 12, y: bounds.midY - 8, width: max(0, labelEnd - 16), height: 16)

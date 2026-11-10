@@ -7,6 +7,28 @@ struct MenuReadout: View {
     let ac: Aircon?
     let visible: Set<ReadoutField>
     let energyText: String?
+    var cacheKey: [String] {
+        var values = [String(Double(size)), textColor?.description ?? "", String(ac?.power == false)]
+        if ac?.power == false { return values }
+        for field in ReadoutField.allCases where visible.contains(field) {
+            values.append(field.rawValue)
+            guard let ac else { continue }
+            switch field {
+            case .target: values.append(ac.acTemperature)
+            case .indoor: values.append(tempText(ac.indoor))
+            case .power: values.append(ac.status)
+            case .fan: values.append(Self.speed(ac))
+            case .eco: values.append(String(ac.code("ECO") ?? -1))
+            case .vertical, .horizontal:
+                let prefix = field == .vertical ? "vertical" : "horizontal"
+                values.append(String(ac.code(prefix + "Direction") ?? -1))
+                values.append(String(ac.code(prefix + "Switch") ?? -1))
+            case .energy: values.append(energyText ?? "")
+            case .icon: break
+            }
+        }
+        return values
+    }
     var body: some View {
         HStack(spacing: 4) {
             if visible.contains(.icon) || ac?.power == false {
@@ -59,49 +81,14 @@ struct MenuReadout: View {
     }
 }
 
-// A dot locates one of the five stops. A double arrow spans the active swing
-// zone. A dashed track means the unit did not report its stopped position.
 private struct VaneIndicator: View {
     let vertical: Bool
     let direction: Int?
     let motor: Int?
     var body: some View {
-        Canvas { context, size in
-            let range = CGFloat(11)
-            func point(_ level: CGFloat, cross: CGFloat = 0) -> CGPoint {
-                let offset = (level / 4 - 0.5) * range
-                return CGPoint(x: size.width / 2 + (vertical ? cross : offset),
-                               y: size.height / 2 + (vertical ? offset : cross))
-            }
-            func line(_ points: [CGPoint], opacity: Double = 1, dashed: Bool = false) {
-                var path = Path()
-                path.move(to: points[0])
-                for p in points.dropFirst() { path.addLine(to: p) }
-                context.stroke(path, with: .color(.primary.opacity(opacity)),
-                               style: StrokeStyle(lineWidth: 1.25, lineCap: .round, lineJoin: .round, dash: dashed ? [1, 2] : []))
-            }
-            let code = direction ?? -1
-            if (9...13).contains(code) {
-                line([point(0), point(4)], opacity: 0.48)
-                for end: CGFloat in [0, 4] { line([point(end, cross: -1.5), point(end, cross: 1.5)], opacity: 0.65) }
-                let p = point(CGFloat(code - 9))
-                context.fill(Path(ellipseIn: CGRect(x: p.x-2.1, y: p.y-2.1, width: 4.2, height: 4.2)), with: .color(.primary))
-            } else if motor != 0 && ((1...(vertical ? 3 : 4)).contains(code) || motor == 1) {
-                let zone: (CGFloat, CGFloat)
-                switch (vertical, code) {
-                case (_, 2): zone = (0, 2.5)
-                case (true, 3), (false, 4): zone = (1.5, 4)
-                case (false, 3): zone = (0.75, 3.25)
-                default: zone = (0, 4)
-                }
-                line([point(0), point(4)], opacity: 0.3)
-                let (a,b) = zone
-                line([point(a), point(b)])
-                line([point(a+0.7, cross:-2), point(a), point(a+0.7, cross:2)])
-                line([point(b-0.7, cross:-2), point(b), point(b-0.7, cross:2)])
-            } else {
-                line([point(0), point(4)], opacity: 0.65, dashed: true)
-            }
-        }.frame(width: vertical ? 8 : 15, height: 16)
+        if let code = direction, (9...13).contains(code) || (motor != 0 && (1...(vertical ? 3 : 4)).contains(code)) {
+            Image("TCL-" + (vertical ? "vertical" : "horizontal") + "-" + String(code))
+                .renderingMode(.template).resizable().scaledToFit().frame(width: 17, height: 17)
+        } else { Text("–") }
     }
 }

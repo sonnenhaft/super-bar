@@ -122,7 +122,7 @@ struct ClimatePanel: View {
             }, reading: store.refreshing, readAt: store.statusDate, refresh: store.manualRefresh, select: { if !active { store.select(ac) } }) {
                 CardMenus(degrees: ac.setpoints.filter { (16...26).contains($0) && ac.target != nil },
                           target: ac.acTemperature, off: ac.power == nil ? nil : { store.set(ac, "powerSwitch", 0, "Power") }, eco: ac.has("ECO") ? ac.code("ECO") == 1 : nil, toggleEco: { store.set(ac, "ECO", ac.code("ECO") == 1 ? 0 : 1, "Eco") },
-                          change: { store.set(ac, "targetTemperature", $0, "Temperature") },
+                          change: { store.setTemperature(ac, $0) },
                           fan: ac.has(ac.fanField) ? ac.fan : "") {
                     Button("Auto") { store.autoFan(ac, enabled: true) }
                     ForEach(ac.manualFanCodes, id: \.self) { level in
@@ -133,14 +133,7 @@ struct ClimatePanel: View {
     }
     @ViewBuilder private func controls(_ ac: Aircon) -> some View {
         Card {
-            HStack {
-                SectionName("Controls", "dial.medium")
-                Spacer()
-                Button {
-                    store.set(ac, "powerSwitch", ac.power == true ? 0 : 1, "Power")
-                } label: { Label(ac.power == true ? "Turn OFF" : "Turn ON", systemImage: "power").bold() }
-                    .controlSize(.small).disabled(ac.power == nil)
-            }
+            SectionName("Controls", "dial.medium")
             HStack(spacing: 8) {
                 presetButton(.quiet, for: ac, title: "22° · Quiet", icon: "speaker.wave.1.fill")
                 presetButton(.turbo, for: ac, title: "16° · Turbo", icon: "bolt.fill")
@@ -174,7 +167,6 @@ struct ClimatePanel: View {
     }
     private func modePicker(_ ac: Aircon) -> some View {
         let cooling = ac.modeName == "Cool"
-        let eco = ac.code("ECO") == 1
         return HStack {
             Text("Mode").font(.system(size: 12))
             Spacer()
@@ -187,7 +179,7 @@ struct ClimatePanel: View {
                 }.disabled(!ac.has("ECO"))
             } label: {
                 if cooling {
-                    Label(eco ? "Eco" : "Cool", systemImage: eco ? "leaf.fill" : "snowflake")
+                    Label("Cool", systemImage: "snowflake")
                 } else {
                     Text(ac.modeName)
                 }
@@ -202,7 +194,6 @@ struct ClimatePanel: View {
         if ac.has(field) {
             let direction = ac.code(field)
             let motor = ac.code(toggle)
-            let angles = ["↑","↗","→","↘","↓"]
             let ranges = vertical ? ["Full", "Upper", "Lower"] : ["Full", "Left", "Center", "Right"]
             HStack {
                 Text(label).font(.system(size: 12, weight: .medium))
@@ -211,7 +202,7 @@ struct ClimatePanel: View {
             }
             HStack(spacing: 4) {
                 ForEach(0..<5) { i in
-                    vaneButton(angles[i], hint: stops[i], selected: direction == i+9, horizontalStop: vertical ? nil : i) {
+                    vaneButton(stops[i], hint: stops[i], selected: direction == i+9, icon: "TCL-" + prefix + "-" + String(i+9)) {
                         store.set(ac, field, i+9, label)
                     }
                 }
@@ -223,7 +214,7 @@ struct ClimatePanel: View {
                     store.set(ac, field, 8, label)
                 }
                 ForEach(Array(ranges.enumerated()), id: \.offset) { i, text in
-                    vaneButton(text, hint: "Swing · " + text, selected: direction == i+1 && motor != 0) {
+                    vaneButton(text, hint: "Swing · " + text, selected: direction == i+1 && motor != 0, icon: "TCL-" + prefix + "-" + String(i+1)) {
                         store.set(ac, field, i+1, label)
                     }
                 }
@@ -238,19 +229,11 @@ struct ClimatePanel: View {
             HStack { Text(label); Spacer(); Text("No data").foregroundStyle(.secondary) }.font(.caption)
         }
     }
-    private func vaneButton(_ title: String, hint: String, selected: Bool, horizontalStop: Int? = nil, action: @escaping () -> Void) -> some View {
+    private func vaneButton(_ title: String, hint: String, selected: Bool, icon: String? = nil, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Group {
-                if let stop = horizontalStop {
-                    Canvas { ctx, size in
-                        let offset = CGFloat(stop - 2) * 2.4
-                        var path = Path()
-                        for x in [size.width/2 - 7, size.width/2, size.width/2 + 7] {
-                            path.move(to: CGPoint(x: x - offset/2, y: 2))
-                            path.addLine(to: CGPoint(x: x + offset/2, y: 12))
-                        }
-                        ctx.stroke(path, with: .foreground, style: StrokeStyle(lineWidth: 2, lineCap: .round))
-                    }.frame(width: 30, height: 14)
+                if let icon {
+                    Image(icon).renderingMode(.template).resizable().scaledToFit().frame(width: 24, height: 24)
                 } else { Text(verbatim: title) }
             }.font(.system(size: 12, weight: .medium))
                 .frame(maxWidth: .infinity, minHeight: 23)

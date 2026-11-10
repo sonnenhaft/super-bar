@@ -28,3 +28,5 @@ SOFTWARE.
 BLUETTI application artwork is used to identify the supported device brand.
 Source: https://apps.apple.com/us/app/bluetti/id1550568336
 Artwork and BLUETTI marks remain property of their respective owner.
+
+TCL airflow icons are cropped from the supplied TCL Home app screenshot. TCL artwork belongs to its respective owner.

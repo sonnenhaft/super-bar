@@ -206,10 +206,13 @@ final class ClimateStore: ObservableObject {
         self.apply = apply ?? { try session.apply(id: $0, fields: $1) }
 
         let file = directory.appendingPathComponent("tcl-status.json")
-        if let data = try? Data(contentsOf: file),
-           let rows = (try? JSONSerialization.jsonObject(with: data)) as? [JSONObject] {
+        worker.async {
+            guard let data = try? Data(contentsOf: file),
+                  let rows = try? JSONSerialization.jsonObject(with: data) as? [JSONObject] else { return }
             let timestamp = (try? file.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
-            accept(rows, at: timestamp)
+            DispatchQueue.main.async {
+                if !self.didRead { self.accept(rows, at: timestamp) }
+            }
         }
     }
     func signIn(email: String, password: String, completion: @escaping (String?) -> Void) {
@@ -290,6 +293,11 @@ final class ClimateStore: ObservableObject {
     }
     func set(_ ac: Aircon, _ field: String, _ value: Int, _ description: String) {
         enqueue(ac, [(field, value)], label: description)
+    }
+    func setTemperature(_ ac: Aircon, _ degrees: Int) {
+        var edits = [("targetTemperature", degrees)]
+        if ac.power == false { edits.insert(("powerSwitch", 1), at: 0) }
+        enqueue(ac, edits, label: "Temperature")
     }
     func preset(_ ac: Aircon, _ preset: CoolingPreset) {
         if let fields = preset.fields(for: ac) { enqueue(ac, fields, label: preset.label) }

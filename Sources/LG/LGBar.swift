@@ -102,7 +102,6 @@ func ago(_ date: Date?) -> String {
     ])
     menu.delegate = self
     menu.autoenablesItems = false
-    buildMenu()
     updateStatus()
     locationWeather.changed = { [weak self] in
       guard let self else { return }
@@ -126,6 +125,7 @@ func ago(_ date: Date?) -> String {
   func menuWillOpen(_ m: NSMenu) {
     guard m === menu else { return }
     menuVisible = true
+    if panelSections.isEmpty || menuDeviceID != selected { buildMenu() }
     refreshOtherCards()
     locationWeather.start()
     updateStatus()
@@ -330,18 +330,6 @@ func ago(_ date: Date?) -> String {
     presetRows = [:]
     displayRows = [:]
     if !profile.isEmpty {
-      if canWrite("operation", "airConOperationMode") {
-        powerRow = row("") { [weak self] in
-          guard let self else { return }
-          self.send([
-            ("operation", "airConOperationMode", self.powerIsOn ? "POWER_OFF" : "POWER_ON")
-          ])
-        }
-        powerRow?.button.image = NSImage(systemSymbolName: "power", accessibilityDescription: nil)
-        powerRow?.button.imagePosition = .imageLeading
-      }
-    }
-    if !profile.isEmpty {
       for (t, speed, title) in [
         (16.0, "HIGH", "16° · High · Cool"), (22.0, "LOW", "22° · Low · Cool"),
       ] where presetAllowed(t, speed) {
@@ -467,6 +455,13 @@ func ago(_ date: Date?) -> String {
     startTimer()
     refresh()
   }
+  var pendingCardAction: (() -> Void)?
+  func useCard(_ id: String, action: @escaping () -> Void) {
+    if id == selected && connected { action(); return }
+    if id != selected { selectDevice(id) }
+    pendingCardAction = action
+    if !polling { manualRefresh() }
+  }
   func selectDevice(_ id: String) {
     guard id != selected, devices.contains(where: { $0.id == id }) else { return }
     reset()
@@ -478,6 +473,7 @@ func ago(_ date: Date?) -> String {
     updateStatus()
   }
   func reset() {
+    pendingCardAction = nil
     manualReadPending = false
     cancelOtherCards()
     lastCommandResult = "None sent"
@@ -560,14 +556,18 @@ func ago(_ date: Date?) -> String {
           autoRetry = AutoRetry()
           startTimer()
         }
-        if firstProfile || menuDeviceID != id {
+        if menuVisible && (firstProfile || menuDeviceID != id) {
           buildMenu()
         } else if changed {
           updateStatus()
         }
         fetchEnergy()
+        let requested = pendingCardAction
+        pendingCardAction = nil
+        requested?()
       } catch {
         if gen == generation && !Task.isCancelled {
+          pendingCardAction = nil
           connected = false
           lastReadResult = error.localizedDescription + " · " + Date().formatted(date: .omitted, time: .standard)
           autoRetry.fail()
@@ -600,7 +600,9 @@ func ago(_ date: Date?) -> String {
   }
   func setDegrees(_ value: Double) {
     let step = lgNumber(capability("temperature", "targetTemperature")["step"]) ?? 1
-    send([("temperature", "targetTemperature", (value / step).rounded() * step)])
+    var edits: [ControlChange] = [("temperature", "targetTemperature", (value / step).rounded() * step)]
+    if isReportedOff { edits.insert(("operation", "airConOperationMode", "POWER_ON"), at: 0) }
+    send(edits)
   }
   func send(_ commands: [ControlChange]) {
     guard !selected.isEmpty, commands.allSatisfy({ allowed($0.0, $0.1, $0.2) }) else { return }

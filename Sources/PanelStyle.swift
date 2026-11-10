@@ -20,7 +20,7 @@ struct SectionName: View {
 }
 extension View {
     func overviewSurface(selected: Bool) -> some View {
-        self.foregroundStyle(.white).padding(.horizontal, 11).padding(.vertical, 7)
+        self.foregroundStyle(.white).padding(.horizontal, 9).padding(.vertical, 5).frame(maxWidth: .infinity, alignment: .leading)
             .background(LinearGradient(colors: [Color(nsColor: selected ? BarTheme.navy : BarTheme.panel), Color(nsColor: selected ? BarTheme.ocean : BarTheme.navy)], startPoint: .leading, endPoint: .trailing))
             .clipShape(RoundedRectangle(cornerRadius: 12))
     }
@@ -51,7 +51,7 @@ struct ClimateDeviceCard<Controls: View>: View {
     @ViewBuilder let controls: () -> Controls
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
+        VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 8) {
                 Button(action: toggleIcon) {
                     HStack(spacing: 4) {
@@ -68,26 +68,31 @@ struct ClimateDeviceCard<Controls: View>: View {
                     HStack {
                         Text(verbatim: name).fontWeight(selected ? .bold : .regular).lineLimit(1)
                         Spacer()
-                        Text(status).font(.caption.bold())
+                        if !["ON", "OFF", "Connected"].contains(status) { Text(status).font(.caption.bold()) }
                     }.contentShape(Rectangle())
                 }.buttonStyle(.plain).accessibilityValue(selected ? "Selected" : "Not selected")
             }
             HStack(alignment: .top, spacing: 10) { metricButtons }
-            if selected { controls() }
+            controls()
             HStack {
                 Text(reading ? "Reading…" : readAt.map { "Last read " + $0.formatted(date: .omitted, time: .standard) } ?? "No reading yet")
                     .font(.caption).monospacedDigit().foregroundStyle(.secondary)
                 Spacer()
                 Button(action: refresh) {
-                    if reading { ProgressView().controlSize(.small) }
-                    else { Image(systemName: "arrow.clockwise") }
-                }.buttonStyle(.plain).frame(width: 26, height: 22).accessibilityLabel("Refresh " + name)
+                    if reading { ProgressView().controlSize(.mini) }
+                    else { Image(systemName: "arrow.clockwise").font(.system(size: 11)) }
+                }.buttonStyle(.plain).frame(width: 20, height: 16).accessibilityLabel("Refresh " + name)
             }
         }.overviewSurface(selected: selected)
+        .contextMenu {
+            ForEach(metrics) { metric in
+                Button((metric.visible ? "Unpin " : "Pin ") + metric.label, action: metric.toggle)
+            }
+        }
     }
 
     @ViewBuilder private var metricButtons: some View {
-        ForEach(metrics) { metric in
+        ForEach(metrics.filter { !["AC","Fan","Eco"].contains($0.label) }) { metric in
             Button(action: metric.toggle) {
                 VStack(alignment: .leading, spacing: 2) {
                     Label(metric.label, systemImage: metric.symbol).font(.system(size: 10, weight: metric.visible ? .bold : .regular))
@@ -123,7 +128,7 @@ struct CardMenus<Fan: View>: View {
     @ViewBuilder let fanOptions: () -> Fan
     var body: some View {
         HStack(spacing: 10) {
-            if !degrees.isEmpty {
+            if !degrees.isEmpty || off != nil {
                 Menu {
                     if let off { Button("OFF", action: off); Divider() }
                     ForEach(degrees, id: \.self) { degree in
@@ -136,7 +141,14 @@ struct CardMenus<Fan: View>: View {
                 Menu(content: fanOptions) { Label(fan, systemImage: "fanblades") }
                     .accessibilityLabel("Set fan speed").accessibilityValue(fan)
             }
-            if let eco { Button("Eco " + (eco ? "ON" : "OFF"), action: toggleEco).buttonStyle(.bordered).fontWeight(.bold).foregroundStyle(eco ? Color.green : Color.secondary) }
+            if let eco {
+                Button(action: toggleEco) {
+                    Image(systemName: eco ? "leaf.fill" : "leaf").font(.system(size: 10))
+                        .foregroundStyle(eco ? Color.green : .secondary)
+                        .frame(width: 20, height: 17).contentShape(Rectangle())
+                }.buttonStyle(.plain).accessibilityLabel("Eco").accessibilityValue(eco ? "ON" : "OFF")
+                 .help("Eco " + (eco ? "ON" : "OFF"))
+            }
         }.menuStyle(.borderedButton).controlSize(.small).fixedSize()
     }
 }

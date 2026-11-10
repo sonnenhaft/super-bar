@@ -4,12 +4,14 @@ import SwiftUI
 struct LGSample {
     var room: Double?
     var target: Double?
+    var eco: Bool?
     var fan: String?
     var power: String?
     init(_ snapshot: [String: Any]) {
         let temperature = celsius(find("temperature", in: snapshot) ?? [:])
         room = lgNumber(temperature["currentTemperature"] ?? temperature["currentTemperatureC"])
         target = lgNumber(temperature["targetTemperature"] ?? temperature["targetTemperatureC"])
+        eco = find("powerSaveEnabled", in: snapshot) as? Bool
         let flow = find("airFlow", in: snapshot) ?? [:]
         fan = ((find("windStrengthDetail", in: flow) ?? find("windStrength", in: flow)) as? String)?.capitalized
         power = find("airConOperationMode", in: find("operation", in: snapshot) ?? [:]) as? String
@@ -57,19 +59,22 @@ extension App {
                 if self.selected == id { self.manualRefresh() } else { self.selectDevice(id) }
             }, select: { self.selectDevice(id) }) {
                 let limits = self.bounds()
-                let degrees = (16...26).filter {
-                    let n = Double($0)
-                    return n >= limits.0 && n <= limits.1 && self.allowed("temperature", "targetTemperature", n)
+                let degrees = (16...26).filter { degree in
+                    !active || (Double(degree) >= limits.0 && Double(degree) <= limits.1 && self.allowed("temperature", "targetTemperature", Double(degree)))
                 }
-                let options = self.speeds.filter { self.allowed("airFlow", self.windKey, $0) }
-                CardMenus(degrees: degrees, target: self.isReportedOff ? "OFF" : degree(lgNumber(self.displayValue("temperature", "targetTemperature"))),
-                          off: self.allowed("operation", "airConOperationMode", "POWER_OFF") ? { self.send([("operation", "airConOperationMode", "POWER_OFF")]) } : nil, eco: self.ecoChoice.change == nil ? nil : self.ecoChoice.enabled, toggleEco: self.toggleEco,
-                          change: { if self.selected == id { self.setDegrees(Double($0)) } },
-                          fan: options.isEmpty ? "" : (self.displayValue("airFlow", self.windKey) as? String).map { $0.capitalized + " " + String(repeating: "•", count: FanIndicator.count(for: $0)) } ?? "Fan") {
+                let options = self.speeds.filter { !active || self.allowed("airFlow", self.windKey, $0) }
+                let speed = active ? self.displayValue("airFlow", self.windKey) as? String : sample?.fan?.uppercased()
+                let target = sample?.value("current") ?? "—"
+                CardMenus(degrees: degrees, target: target,
+                          off: { self.useCard(id) { self.send([("operation", "airConOperationMode", "POWER_OFF")]) } },
+                          eco: active ? self.ecoChoice.enabled : sample?.eco,
+                          toggleEco: { self.useCard(id) { self.toggleEco() } },
+                          change: { degrees in self.useCard(id) { self.setDegrees(Double(degrees)) } },
+                          fan: options.isEmpty ? "" : (speed?.capitalized ?? "Fan") + String(repeating: "•", count: FanIndicator.count(for: speed))) {
                     ForEach(options, id: \.self) { speed in
-                        Button(speed.capitalized + " " + String(repeating: "•", count: FanIndicator.count(for: speed))) { if self.selected == id { self.send([("airFlow", self.windKey, speed)]) } }
+                        Button(speed.capitalized) { self.useCard(id) { self.send([("airFlow", self.windKey, speed)]) } }
                     }
-                }.disabled(!self.connected)
+                }.disabled(active && !self.connected)
             }
     }
 

@@ -18,6 +18,9 @@ private final class MenuPanel: NSPanel {
     private var watch: AnyCancellable?
     private var scheduled = false
     private var needsReadout = false
+    private var cachedTCLImage: (key: [String], image: NSImage?)?
+    private var hostedBrand: Brand?
+    private var blueStarted = false
     private var cachedHeight: CGFloat = 0
     private var panelHeader: SuperHeader?
     private var panelFooter: SuperFooter?
@@ -32,6 +35,7 @@ private final class MenuPanel: NSPanel {
         item.isVisible = true
         guard let b = item.button else { return }
         b.target = self; b.action = #selector(showPanel)
+        b.sendAction(on: [.leftMouseDown])
         b.title = state.current.rawValue
         b.imageScaling = .scaleNone
         b.setAccessibilityLabel("Super Bar")
@@ -41,25 +45,27 @@ private final class MenuPanel: NSPanel {
         DispatchQueue.main.async { self.startServices(n) }
     }
     private func startServices(_ n: Notification) {
-        blue.panelChanged = { [weak self] in self?.scheduleContent(.bluetti) }
         lg.panelChanged = { [weak self] in self?.scheduleContent(.lg) }
         panel.delegate = self
         panel.isReleasedWhenClosed = false
         panel.isOpaque = false
         panel.backgroundColor = .clear
+        panel.animationBehavior = .none
         panel.level = .popUpMenu
         panel.hasShadow = true
         panel.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
         panel.appearance = NSAppearance(named: .darkAqua)
-        blue.didRender = { [weak self] in self?.schedule(.bluetti) }
         lg.didRender = { [weak self] in self?.schedule(.lg) }
         watch = tcl.objectWillChange.merge(with: fields.objectWillChange, tcl.history.objectWillChange).sink { [weak self] _ in self?.schedule(.tcl) }
         lg.applicationDidFinishLaunching(n)
-        blue.applicationDidFinishLaunching(n)
         tcl.start()
         render()
         // Let AppKit place the button before recording its screen coordinates.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self.publishLaunchReceipt() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self.publishLaunchReceipt()
+            if !self.panel.isVisible, let button = self.item.button {
+                self.preparePanel(for: button)
+                if self.hostedBrand == nil { self.updatePanel(.tcl) }
+            } }
     }
     private func publishLaunchReceipt() {
         guard let path = ProcessInfo.processInfo.environment["SUPER_BAR_LAUNCH_RECEIPT"], !path.isEmpty,
@@ -93,6 +99,9 @@ private final class MenuPanel: NSPanel {
     private func render() {
         guard let button = item?.button else { return }
         switch state.current {
+        case .bluetti where !blueStarted:
+            button.title = "BLUETTI"
+            button.image = nil
         case .bluetti, .lg:
             let readout = state.current == .lg ? lg.readout : blue.readout
             button.image = readout.image
@@ -105,10 +114,15 @@ private final class MenuPanel: NSPanel {
             let dark = button.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
             let readout = MenuReadout(size: CGFloat(state.size), textColor: state.color, ac: ac,
                                      visible: visible, energyText: energy)
-            let renderer = ImageRenderer(content: readout.environment(\.colorScheme, dark ? .dark : .light))
-            renderer.scale = button.window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
+            let scale = button.window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
+            let key = readout.cacheKey + [String(dark), String(Double(scale))]
+            if cachedTCLImage?.key != key {
+                let renderer = ImageRenderer(content: readout.environment(\.colorScheme, dark ? .dark : .light))
+                renderer.scale = scale
+                cachedTCLImage = (key, renderer.nsImage.flatMap { $0.size.width > 0 ? $0 : nil })
+            }
             button.title = ""
-            button.image = renderer.nsImage.flatMap { $0.size.width > 0 ? $0 : nil }
+            button.image = cachedTCLImage?.image
             button.imagePosition = .imageOnly
         }
         if button.image == nil && button.title.isEmpty {
@@ -148,6 +162,7 @@ private final class MenuPanel: NSPanel {
             }
             return BrandReading(value: value, name: ac.name)
         case .bluetti:
+            guard blueStarted else { return BrandReading() }
             let value = blue.lastGood.flatMap { sample in
                 Date().timeIntervalSince(sample.measuredAt) < blue.maximumAge && !blue.awaitingFirstRead && !blue.hasConnectionFailure
                     ? blue.visibility.summary(for: sample, at: blue.runtimeFrozenAt ?? Date()) : nil
@@ -202,7 +217,9 @@ private final class MenuPanel: NSPanel {
     private func beginPanel(_ brand: Brand) {
         endPanel()
         activePanel = brand
-        updatePanel(brand)
+        if brand != .bluetti || blueStarted {
+            if brand != .tcl || hostedBrand != brand { updatePanel(brand) }
+        }
         panelHeader?.sync()
         panelFooter?.sync()
         DispatchQueue.main.async { [weak self] in
@@ -210,6 +227,13 @@ private final class MenuPanel: NSPanel {
             switch brand {
             case .lg: self.lg.menuWillOpen(self.lg.menu)
             case .bluetti:
+                if !self.blueStarted {
+                    self.blueStarted = true
+                    self.blue.panelChanged = { [weak self] in self?.scheduleContent(.bluetti) }
+                    self.blue.didRender = { [weak self] in self?.schedule(.bluetti) }
+                    self.blue.applicationDidFinishLaunching(Notification(name: NSApplication.didFinishLaunchingNotification))
+                    self.updatePanel(.bluetti)
+                }
                 self.blue.activateBluetooth()
                 self.blue.mainMenuWillOpen()
             case .tcl: break
@@ -219,6 +243,7 @@ private final class MenuPanel: NSPanel {
 
     private func updatePanel(_ brand: Brand) {
         guard let host = panelHost else { return }
+        hostedBrand = brand
         switch brand {
         case .tcl:
             host.rootView = AnyView(ClimatePanel(store: tcl, history: tcl.history, preferences: fields, height: cachedHeight))
@@ -246,7 +271,17 @@ private final class MenuPanel: NSPanel {
     @objc func showPanel() {
         guard let button = item?.button else { return }
         if panel.isVisible { dismissPanel(); return }
-        if !NSApp.isActive { NSApp.activate(ignoringOtherApps: true) }
+        preparePanel(for: button)
+        guard let window = button.window, let screen = window.screen else { return }
+        let anchor = window.convertToScreen(button.convert(button.bounds, to: nil))
+        let width = panel.frame.width
+        let x = min(max(anchor.midX - width / 2, screen.visibleFrame.minX + 4), screen.visibleFrame.maxX - width - 4)
+        panel.setFrameTopLeftPoint(NSPoint(x: x, y: anchor.minY - 2))
+        panel.makeKeyAndOrderFront(nil)
+        panel.displayIfNeeded()
+        beginPanel(state.current)
+    }
+    private func preparePanel(for button: NSStatusBarButton) {
         let chrome = SuperHeader.height + SuperFooter.height
         let height = min(720, max(300, (button.window?.screen?.visibleFrame.height ?? 800) - chrome - 36))
         if cachedHeight != height {
@@ -263,6 +298,7 @@ private final class MenuPanel: NSPanel {
             let host = NSHostingView(rootView: AnyView(EmptyView()))
             // The status popover owns its size; child layout must never resize its window.
             host.sizingOptions = []
+            hostedBrand = nil
             panelHost = host
             panelHeader!.frame.origin = NSPoint(x: 45, y: height + SuperFooter.height)
             panelFooter!.frame.origin = NSPoint(x: 45, y: 0)
@@ -271,21 +307,14 @@ private final class MenuPanel: NSPanel {
             panel.contentViewController = root
             panel.setContentSize(root.view.frame.size)
         }
-        beginPanel(state.current)
-        guard let window = button.window, let screen = window.screen else { return }
-        let anchor = window.convertToScreen(button.convert(button.bounds, to: nil))
-        let width = panel.frame.width
-        let x = min(max(anchor.midX - width / 2, screen.visibleFrame.minX + 4), screen.visibleFrame.maxX - width - 4)
-        panel.setFrameTopLeftPoint(NSPoint(x: x, y: anchor.minY - 2))
-        panel.makeKeyAndOrderFront(nil)
     }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         item?.isVisible = true
         if !panel.isVisible { showPanel() } else { panel.makeKeyAndOrderFront(nil) }
         return false
     }
-    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply { blue.applicationShouldTerminate(sender) }
-    func applicationWillTerminate(_ n: Notification) { lg.applicationWillTerminate(n); blue.applicationWillTerminate(n) }
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply { blueStarted ? blue.applicationShouldTerminate(sender) : .terminateNow }
+    func applicationWillTerminate(_ n: Notification) { lg.applicationWillTerminate(n); if blueStarted { blue.applicationWillTerminate(n) } }
 }
 
 let arguments = Array(CommandLine.arguments.dropFirst())
