@@ -119,7 +119,11 @@ struct ClimatePanel: View {
                     if !active { store.select(ac) }
                     preferences.set(field, for: ac.id, visible: !displayed || !visible)
                 }
-            }, reading: store.refreshing, readAt: store.statusDate, refresh: store.manualRefresh, select: { if !active { store.select(ac) } }) {
+            }, reading: store.refreshing, readAt: store.statusDate, refresh: store.manualRefresh, select: { if !active { store.select(ac) } },
+            directions: AnyView(HStack(spacing: 5) {
+                vane(ac, true)
+                vane(ac, false)
+            }.disabled(store.offline || ac.online != true || ac.failed))) {
                 CardMenus(degrees: ac.setpoints.filter { (16...26).contains($0) && ac.target != nil },
                           target: ac.acTemperature, off: ac.power == nil ? nil : { store.set(ac, "powerSwitch", 0, "Power") }, eco: ac.has("ECO") ? ac.code("ECO") == 1 : nil, toggleEco: { store.set(ac, "ECO", ac.code("ECO") == 1 ? 0 : 1, "Eco") },
                           change: { store.setTemperature(ac, $0) },
@@ -134,11 +138,6 @@ struct ClimatePanel: View {
     @ViewBuilder private func controls(_ ac: Aircon) -> some View {
         CoolingPresetRow(enabled: { $0.fields(for: ac) != nil }, selected: { $0.isSelected(on: ac) },
                          apply: { store.preset(ac, $0) })
-        Card {
-            SectionName("Air direction", "wind")
-            vane(ac, true)
-            vane(ac, false)
-        }
     }
 
     private func vane(_ ac: Aircon, _ vertical: Bool) -> some View {
@@ -161,10 +160,7 @@ struct ClimatePanel: View {
                 } else { Text(label) }
             }
         }
-        return HStack {
-            Text(title).font(.system(size: 12))
-            Spacer()
-            Menu {
+        return Menu {
                 if hasDirection {
                     ForEach(stops.indices, id: \.self) { i in option(stops[i], i + 9) }
                     Divider()
@@ -175,15 +171,26 @@ struct ClimatePanel: View {
                     option("Stop", 0, icon: false)
                 }
             } label: {
-                HStack(spacing: 5) {
+                HStack(spacing: 4) {
                     if hasDirection, let selected, let image = TCLAirflowArtwork.image("TCL-" + axis + "-" + String(selected)) {
-                        Image(nsImage: image).resizable().scaledToFit().frame(width: 19, height: 19)
+                        Image(nsImage: image).resizable().scaledToFit().frame(width: 12, height: 12)
                     }
-                    Text(value).lineLimit(1)
+                    Text(title).fontWeight(.medium)
+                    Text(value).foregroundStyle(.secondary).lineLimit(1).truncationMode(.tail)
+                    Spacer(minLength: 0)
+                    Image(systemName: "chevron.down").font(.system(size: 7, weight: .semibold))
                 }
-            }.controlSize(.small).fixedSize().disabled(!hasDirection && !ac.has(motor))
-                .accessibilityLabel(title + " air direction").accessibilityValue(value)
-        }
+                .font(.system(size: 10)).padding(.horizontal, 6)
+                .frame(maxWidth: .infinity).frame(height: 22)
+                .foregroundStyle(.white)
+        .background(Color(nsColor: BarTheme.navy), in: RoundedRectangle(cornerRadius: 5))
+        .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(cobalt.opacity(0.65), lineWidth: 0.5))
+                .clipShape(RoundedRectangle(cornerRadius: 5))
+            }
+            .menuStyle(.borderlessButton).menuIndicator(.hidden).controlSize(.mini)
+            .disabled(!hasDirection && !ac.has(motor))
+            .accessibilityLabel(title + " air direction").accessibilityValue(value)
+            .help(title + ": " + value)
     }
 
     private var footer: some View {

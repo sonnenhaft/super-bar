@@ -94,6 +94,7 @@ struct ClimateDeviceCard<Controls: View>: View {
     let readAt: Date?
     let refresh: () -> Void
     let select: () -> Void
+    var directions: AnyView? = nil
     @ViewBuilder let controls: () -> Controls
 
     var body: some View {
@@ -114,8 +115,12 @@ struct ClimateDeviceCard<Controls: View>: View {
                     .frame(maxWidth: .infinity, minHeight: 20)
                 if !["ON", "OFF", "Connected"].contains(status) { Text(status).font(.caption.bold()) }
             }
-            metricButtons
-            controls()
+            HStack(alignment: .center, spacing: 8) {
+                metricButtons
+                Spacer(minLength: 4)
+                controls()
+            }
+            if let directions { directions }
             HStack {
                 Text(reading ? "Reading…" : readAt.map { "Last read " + $0.formatted(date: .omitted, time: .standard) } ?? "No reading yet")
                     .font(.caption).monospacedDigit().foregroundStyle(.secondary)
@@ -179,29 +184,49 @@ struct CardMenus<Fan: View>: View {
     let fan: String
     @ViewBuilder let fanOptions: () -> Fan
     var body: some View {
-        HStack(spacing: 10) {
+        VStack(alignment: .trailing, spacing: 3) {
             if !degrees.isEmpty || off != nil {
                 Menu {
                     if let off { Button("OFF", action: off); Divider() }
                     ForEach(degrees, id: \.self) { degree in
                         Button(String(degree) + "°") { change(degree) }
                     }
-                } label: { Label(target, systemImage: "thermometer.medium") }
+                } label: { menuLabel(target, symbol: "thermometer.medium") }
                 .accessibilityLabel("Set temperature").accessibilityValue(target)
             }
-            if !fan.isEmpty {
-                Menu(content: fanOptions) { Label(fan, systemImage: "fanblades") }
-                    .accessibilityLabel("Set fan speed").accessibilityValue(fan)
+            HStack(spacing: 4) {
+                if let eco {
+                    Button(action: toggleEco) {
+                        Image(systemName: eco ? "leaf.fill" : "leaf")
+                            .font(.system(size: 10))
+                            .foregroundStyle(eco ? Color.green : .secondary)
+                            .frame(width: 20, height: 22).contentShape(Rectangle())
+                    }.buttonStyle(.plain).accessibilityLabel("Eco").accessibilityValue(eco ? "ON" : "OFF")
+                     .help("Eco " + (eco ? "ON" : "OFF"))
+                }
+                if !fan.isEmpty {
+                    Menu(content: fanOptions) { menuLabel(fan, symbol: "fanblades") }
+                        .accessibilityLabel("Set fan speed").accessibilityValue(fan)
+                }
             }
-            if let eco {
-                Button(action: toggleEco) {
-                    Image(systemName: eco ? "leaf.fill" : "leaf").font(.system(size: 10))
-                        .foregroundStyle(eco ? Color.green : .secondary)
-                        .frame(width: 20, height: 17).contentShape(Rectangle())
-                }.buttonStyle(.plain).accessibilityLabel("Eco").accessibilityValue(eco ? "ON" : "OFF")
-                 .help("Eco " + (eco ? "ON" : "OFF"))
-            }
-        }.menuStyle(.borderedButton).controlSize(.small).fixedSize()
+        }
+        .menuStyle(.borderlessButton).menuIndicator(.hidden).controlSize(.mini)
+        .fixedSize()
+    }
+
+    private func menuLabel(_ title: String, symbol: String) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: symbol).resizable().scaledToFit().frame(width: 11, height: 11)
+            Text(title).lineLimit(1).truncationMode(.tail).frame(maxWidth: .infinity, alignment: .leading)
+            Image(systemName: "chevron.down").font(.system(size: 7, weight: .semibold))
+        }
+        .font(.system(size: 11)).padding(.horizontal, 6)
+        .frame(width: 104, height: 22)
+        .foregroundStyle(.white)
+        .background(Color(nsColor: BarTheme.navy), in: RoundedRectangle(cornerRadius: 5))
+        .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(cobalt.opacity(0.65), lineWidth: 0.5))
+        .clipShape(RoundedRectangle(cornerRadius: 5))
+        .contentShape(Rectangle())
     }
 }
 
