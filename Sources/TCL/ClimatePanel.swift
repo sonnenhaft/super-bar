@@ -138,8 +138,6 @@ struct ClimatePanel: View {
                 presetButton(.quiet, for: ac, title: "22° · Quiet", icon: "speaker.wave.1.fill")
                 presetButton(.turbo, for: ac, title: "16° · Turbo", icon: "bolt.fill")
             }
-            modePicker(ac)
-
         }
         Card {
             SectionName("Air direction", "wind")
@@ -164,27 +162,6 @@ struct ClimatePanel: View {
         .accessibilityAddTraits(selected ? .isSelected : [])
         .disabled(preset.fields(for: ac) == nil)
         .help(preset.details(for: ac))
-    }
-    private func modePicker(_ ac: Aircon) -> some View {
-        let cooling = ac.modeName == "Cool"
-        return HStack {
-            Text("Mode").font(.system(size: 12))
-            Spacer()
-            Menu {
-                Button { store.cooling(ac, eco: false) } label: {
-                    Label("Cool", systemImage: "snowflake")
-                }
-                Button { store.cooling(ac, eco: true) } label: {
-                    Label("Eco", systemImage: "leaf.fill")
-                }.disabled(!ac.has("ECO"))
-            } label: {
-                if cooling {
-                    Label("Cool", systemImage: "snowflake")
-                } else {
-                    Text(ac.modeName)
-                }
-            }.fixedSize().controlSize(.small).disabled(!ac.has("workMode"))
-        }
     }
     @ViewBuilder private func vane(_ ac: Aircon, _ vertical: Bool) -> some View {
         let prefix = vertical ? "vertical" : "horizontal"

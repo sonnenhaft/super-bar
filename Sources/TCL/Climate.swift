@@ -302,13 +302,6 @@ final class ClimateStore: ObservableObject {
     func preset(_ ac: Aircon, _ preset: CoolingPreset) {
         if let fields = preset.fields(for: ac) { enqueue(ac, fields, label: preset.label) }
     }
-    func cooling(_ ac: Aircon, eco: Bool) {
-        guard ac.has("workMode"), !eco || ac.has("ECO") else { return }
-        var fields = [("workMode", 1)]
-        if ac.has("ECO") { fields.append(("ECO", eco ? 1 : 0)) }
-        if eco && ac.has("turbo") { fields.append(("turbo", 0)) }
-        enqueue(ac, fields, label: eco ? "Eco" : "Cool")
-    }
     func fanLevel(for ac: Aircon) -> Int {
         ac.manualFanCode ?? lastManualFan[ac.id] ?? 4
     }
