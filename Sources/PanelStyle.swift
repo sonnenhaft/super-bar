@@ -114,7 +114,7 @@ struct ClimateDeviceCard<Controls: View>: View {
                     .frame(maxWidth: .infinity, minHeight: 20)
                 if !["ON", "OFF", "Connected"].contains(status) { Text(status).font(.caption.bold()) }
             }
-            HStack(alignment: .top, spacing: 10) { metricButtons }
+            metricButtons
             controls()
             HStack {
                 Text(reading ? "Reading…" : readAt.map { "Last read " + $0.formatted(date: .omitted, time: .standard) } ?? "No reading yet")
@@ -134,16 +134,26 @@ struct ClimateDeviceCard<Controls: View>: View {
     }
 
     @ViewBuilder private var metricButtons: some View {
-        ForEach(metrics.filter { !["AC","Fan","Eco"].contains($0.label) }) { metric in
-            Button(action: metric.toggle) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Label(metric.label, systemImage: metric.symbol).font(.system(size: 10, weight: metric.visible ? .bold : .regular))
-                        .foregroundStyle(ice)
-                    Text(verbatim: metric.value).monospacedDigit()
-                        .font(.system(size: 16, weight: metric.visible || metric.value == "OFF" ? .bold : .regular, design: .rounded))
-                }.lineLimit(1).minimumScaleFactor(0.78).contentShape(Rectangle())
-            }.buttonStyle(.plain).help((metric.visible ? "Hide " : "Show ") + metric.label + " in menu bar")
-                .accessibilityValue(metric.visible ? "Visible in menu bar" : "Hidden from menu bar")
+        let rows = metrics.filter {
+            !["AC", "Fan", "Eco"].contains($0.label) && !$0.value.isEmpty && $0.value != "—"
+        }
+        if !rows.isEmpty {
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(rows) { metric in
+                    Button(action: metric.toggle) {
+                        HStack(spacing: 4) {
+                            Image(systemName: metric.symbol).frame(width: 12)
+                            Text(metric.label).frame(width: 39, alignment: .leading)
+                            Text(verbatim: metric.value).monospacedDigit()
+                        }
+                        .font(.system(size: 11, weight: metric.visible ? .bold : .regular))
+                        .foregroundStyle(ice).lineLimit(1).contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help((metric.visible ? "Hide " : "Show ") + metric.label + " in menu bar")
+                    .accessibilityValue(metric.visible ? "Visible in menu bar" : "Hidden from menu bar")
+                }
+            }
         }
     }
 }
