@@ -14,7 +14,7 @@ private final class MenuPanel: NSPanel {
     lazy var tcl = ClimateStore()
     let fields = ReadoutPreferences()
     private var item: NSStatusItem!
-    private let panel = MenuPanel(contentRect: .zero, styleMask: [.borderless], backing: .buffered, defer: true)
+    private let panel = MenuPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
     private var watch: AnyCancellable?
     private var scheduled = false
     private var needsReadout = false
@@ -26,6 +26,7 @@ private final class MenuPanel: NSPanel {
     private var panelFooter: SuperFooter?
     private var panelHost: NSHostingView<AnyView>?
     private var activePanel: Brand?
+    private var openGeneration = 0
     private var panelUpdateQueued = false
     private var appearanceObservation: NSKeyValueObservation?
 
@@ -42,10 +43,12 @@ private final class MenuPanel: NSPanel {
         appearanceObservation = b.observe(\.effectiveAppearance, options: [.new]) { [weak self] _, _ in
             DispatchQueue.main.async { self?.schedule(.tcl) }
         }
+        configurePanel()
+        // Prepare the native surface before any device controller starts.
+        preparePanel(for: b)
         DispatchQueue.main.async { self.startServices(n) }
     }
-    private func startServices(_ n: Notification) {
-        lg.panelChanged = { [weak self] in self?.scheduleContent(.lg) }
+    private func configurePanel() {
         panel.delegate = self
         panel.isReleasedWhenClosed = false
         panel.isOpaque = false
@@ -55,17 +58,21 @@ private final class MenuPanel: NSPanel {
         panel.hasShadow = true
         panel.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
         panel.appearance = NSAppearance(named: .darkAqua)
+    }
+    private func startServices(_ n: Notification) {
+        lg.panelChanged = { [weak self] in self?.scheduleContent(.lg) }
         lg.didRender = { [weak self] in self?.schedule(.lg) }
         watch = tcl.objectWillChange.merge(with: fields.objectWillChange, tcl.history.objectWillChange).sink { [weak self] _ in self?.schedule(.tcl) }
         lg.applicationDidFinishLaunching(n)
         tcl.start()
         render()
-        // Let AppKit place the button before recording its screen coordinates.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self.publishLaunchReceipt()
-            if !self.panel.isVisible, let button = self.item.button {
-                self.preparePanel(for: button)
-                if self.hostedBrand == nil { self.updatePanel(.tcl) }
-            } }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, !self.panel.isVisible, self.hostedBrand == nil else { return }
+            self.updatePanel(.tcl)
+            self.panel.contentView?.layoutSubtreeIfNeeded()
+            self.panel.displayIfNeeded()
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self.publishLaunchReceipt() }
     }
     private func publishLaunchReceipt() {
         guard let path = ProcessInfo.processInfo.environment["SUPER_BAR_LAUNCH_RECEIPT"], !path.isEmpty,
@@ -171,7 +178,10 @@ private final class MenuPanel: NSPanel {
         }
     }
     private func header() -> SuperHeader {
-        SuperHeader(reading: { [weak self] brand in self?.reading(for: brand) ?? BrandReading() }, choose: { [weak self] in self?.choose($0) })
+        SuperHeader(reading: { [weak self] brand in
+            guard let self, self.watch != nil else { return BrandReading() }
+            return self.reading(for: brand)
+        }, choose: { [weak self] in self?.choose($0) })
     }
     private func footer() -> SuperFooter {
         SuperFooter(changed: { [weak self] in
@@ -194,6 +204,7 @@ private final class MenuPanel: NSPanel {
     }
 
     private func endPanel() {
+        openGeneration += 1
         switch activePanel {
         case .lg: lg.menuDidClose(lg.menu)
         case .bluetti: blue.mainMenuDidClose()
@@ -218,12 +229,12 @@ private final class MenuPanel: NSPanel {
         endPanel()
         activePanel = brand
         if brand != .bluetti || blueStarted {
-            if brand != .tcl || hostedBrand != brand { updatePanel(brand) }
+            if hostedBrand != brand { updatePanel(brand) }
         }
         panelHeader?.sync()
         panelFooter?.sync()
         DispatchQueue.main.async { [weak self] in
-            guard let self, self.activePanel == brand else { return }
+            guard let self, self.panel.isVisible, self.activePanel == brand else { return }
             switch brand {
             case .lg: self.lg.menuWillOpen(self.lg.menu)
             case .bluetti:
@@ -271,6 +282,8 @@ private final class MenuPanel: NSPanel {
     @objc func showPanel() {
         guard let button = item?.button else { return }
         if panel.isVisible { dismissPanel(); return }
+        let started = ProcessInfo.processInfo.systemUptime
+        let eventTime = NSApp.currentEvent.flatMap { $0.type == .leftMouseDown ? $0.timestamp : nil }
         preparePanel(for: button)
         guard let window = button.window, let screen = window.screen else { return }
         let anchor = window.convertToScreen(button.convert(button.bounds, to: nil))
@@ -278,8 +291,16 @@ private final class MenuPanel: NSPanel {
         let x = min(max(anchor.midX - width / 2, screen.visibleFrame.minX + 4), screen.visibleFrame.maxX - width - 4)
         panel.setFrameTopLeftPoint(NSPoint(x: x, y: anchor.minY - 2))
         panel.makeKeyAndOrderFront(nil)
-        panel.displayIfNeeded()
-        beginPanel(state.current)
+        // Return from mouseDown before synchronizing controls or recreating a provider view.
+        let generation = openGeneration
+        let ordered = ProcessInfo.processInfo.systemUptime
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.openGeneration == generation, self.panel.isVisible else { return }
+            self.beginPanel(self.state.current)
+            let origin = eventTime ?? started
+            NSLog("Super Bar open: event to handler %.1f ms; handler to window ordered %.1f ms", (started-origin)*1000, (ordered-started)*1000)
+            UserDefaults.standard.set((ordered-started)*1000, forKey: "lastMenuOrderMilliseconds")
+        }
     }
     private func preparePanel(for button: NSStatusBarButton) {
         let chrome = SuperHeader.height + SuperFooter.height
