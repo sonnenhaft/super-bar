@@ -7,11 +7,12 @@ let leafGreen = Color(nsColor: BarTheme.green)
 enum PanelLayout { static let width: CGFloat = 460; static let logoColumn: CGFloat = 56 }
 struct DeviceChoice<Content: View>: View {
     var selected = false
+    var compact = false
     let action: () -> Void
     @ViewBuilder let content: () -> Content
     var body: some View {
         Button(action: action) {
-            content().padding(.horizontal, 10).padding(.vertical, 9)
+            content().padding(.horizontal, 10).padding(.vertical, compact ? 5 : 9)
                 .frame(maxWidth: .infinity, alignment: .topLeading).contentShape(Rectangle())
         }.buttonStyle(.plain).deviceSurface(selected: selected)
             .accessibilityAddTraits(selected ? .isSelected : [])
@@ -57,11 +58,6 @@ struct DeviceSelector<Content: View>: View {
         Group {
         if brand == .deye {
             choices
-        } else if brand == .lg {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack { brandLabel; Spacer() }
-                choices
-            }.padding(.top, 6)
         } else {
             HStack(spacing: 8) { brandLabel; choices }
         }
@@ -139,7 +135,7 @@ struct ClimateDeviceCard<Controls: View>: View {
                 }
             }
             .contentShape(Rectangle())
-            .onTapGesture { if !selected { select() } }
+            .onTapGesture { select() }
 
             if selected {
             temperatureControls
@@ -169,10 +165,18 @@ struct ClimateDeviceCard<Controls: View>: View {
     private var compactCard: some View {
         Group {
             if brand == .tcl {
-                VStack(alignment: .leading, spacing: 3) { summaryNameButton; summaryReadings }
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 3) {
+                        summaryNameButton
+                        if powerOn == true, let target = metrics.first(where: { $0.label == "AC" && $0.value.contains(where: { $0.isNumber }) }) {
+                            metricButton(target, compact: true)
+                        }
+                    }
+                    summaryReadings
+                }
             } else {
                 HStack(spacing: 8) {
-                    Button(action: select) { ClimateArtwork(brand: .lg).frame(width: 44, height: 34) }.buttonStyle(.plain).accessibilityLabel("Open " + name)
+                    Button(action: select) { ClimateArtwork(brand: .lg).frame(width: 28, height: 24) }.buttonStyle(.plain).accessibilityLabel("Open " + name)
                     VStack(alignment: .leading, spacing: 3) {
                         summaryNameButton
                         summaryReadings
@@ -204,7 +208,7 @@ struct ClimateDeviceCard<Controls: View>: View {
     private var summaryReadings: some View {
         HStack(spacing: 3) {
             if powerOn != nil {
-                ForEach(metrics.filter { ($0.label == "Room" || (powerOn == true && $0.label == "AC")) && $0.value.contains(where: { $0.isNumber }) }) { metric in
+                ForEach(metrics.filter { ($0.label == "Room" || (brand != .tcl && powerOn == true && $0.label == "AC")) && $0.value.contains(where: { $0.isNumber }) }) { metric in
                     metricButton(metric, compact: true)
                 }
             }
@@ -254,7 +258,9 @@ struct ClimateDeviceCard<Controls: View>: View {
         Button(action: metric.toggle) {
             HStack(spacing: 3) {
                 if compact {
-                    Text(metric.label == "AC" ? "Set" : metric.label).foregroundStyle(.secondary)
+                    if brand != .tcl || metric.label != "AC" {
+                        Text(metric.label == "AC" ? "Set" : metric.label).foregroundStyle(.secondary)
+                    }
                 } else {
                     if metric.id == "energy" { Image(systemName: metric.symbol).foregroundStyle(ice) }
                     else { Text(metric.label == "AC" ? "Set" : metric.label).foregroundStyle(.secondary) }

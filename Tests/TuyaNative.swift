@@ -52,8 +52,8 @@ final class MockTuya: URLProtocol {
             result = ["min": "20261106", "result": ["20261111": "30.44", "20261112": "2.40"]]
         case "tuya.m.dp.rang.stat.hour.list":
             let body = CloudValue.object(fields["postData"])
-            precondition(fields["v"] == "1.0" && body["date"] as? String == "20261112" && body["auto"] as? Int == 2)
-            result = ["2026111200": "0.90", "2026111201": "#", "2026111202": "0", "2026111203": "1.20", "2026111204": "0.30", "2026111123": "8"]
+            precondition(fields["v"] == "1.0" && ["20261111", "20261112"].contains(body["date"] as? String ?? "") && body["auto"] as? Int == 2)
+            result = body["date"] as? String == "20261111" ? ["2026111123": "0.8"] : ["2026111200": "0.90", "2026111201": "#", "2026111202": "0", "2026111203": "1.20", "2026111204": "0.30"]
         default: fatalError("Unexpected request")
         }
         let object: [String: Any] = error.map { ["success": false, "errorCode": $0] } ?? ["success": true, "result": result]
@@ -85,9 +85,9 @@ final class MockTuya: URLProtocol {
         precondition(history.days.count == 30 && MockTuya.dailyStarts.last == "20261014", "Request a full 30-day history")
         precondition(history.days.first { $0.key == "20261111" }?.wattHours == 30440, "API statistics are already scaled kWh")
         precondition(history.days.first { $0.key == "20261110" }?.wattHours == nil, "Missing days cannot become zero")
-        precondition(history.hours.map(\.watts) == [900, 0, 1200], "Skip missing, past-day and incomplete-hour bins")
-        precondition(history.hours.first?.start == ISO8601DateFormatter().date(from: "2026-11-11T16:00:00Z"), "Use meter timezone, not Mac timezone")
-        precondition(history.hours[1].start.timeIntervalSince(history.hours[0].end) == 3600, "Keep the missing hour as a gap")
+        precondition(history.hours.sorted { $0.start < $1.start }.map(\.watts) == [800, 900, 0, 1200], "Load yesterday and today, skipping missing and incomplete bins")
+        precondition(history.hours.first?.start == ISO8601DateFormatter().date(from: "2026-11-11T15:00:00Z"), "Use meter timezone, not Mac timezone")
+        precondition(history.hours[2].start.timeIntervalSince(history.hours[1].end) == 3600, "Keep the missing hour as a gap")
         let invalid = TuyaHistory.hourly(["2026111225": "1", "2026111200": "NaN", "2026111201": -1, "2026111202": true], zone: TuyaHistory.calendar.timeZone, now: now)
         precondition(invalid.isEmpty)
         var other = first.meter!

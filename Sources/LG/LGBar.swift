@@ -82,7 +82,7 @@ func ago(_ date: Date?) -> String {
   var chartItem: NSMenuItem?
   var weekBars: [DayUsage] = []
   var historyFailures = 0
-  var textColor: NSColor? { nil }
+  var textColor: NSColor? { .white }
   var menuVisible = false
 
   var pollTask: Task<Void, Never>?

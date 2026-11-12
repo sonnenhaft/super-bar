@@ -17,6 +17,62 @@ struct PowerInterval: Codable, Identifiable {
     var id: Date { start }
 }
 
+enum RollingEnergy {
+    struct Total {
+        let wattHours: Double
+        let coverage: TimeInterval
+        func label(in range: ClosedRange<Date>) -> String {
+            guard coverage > 0 else { return "—" }
+            return "≈ " + DisplayUnits.energy(wattHours)
+                + (coverage < range.upperBound.timeIntervalSince(range.lowerBound) - 600 ? "*" : "")
+        }
+    }
+    static func clipped(_ intervals: [PowerInterval], to range: ClosedRange<Date>) -> [PowerInterval] {
+        intervals.compactMap {
+            let start = max($0.start, range.lowerBound), end = min($0.end, range.upperBound)
+            guard end > start, $0.watts.isFinite, $0.watts >= 0 else { return nil }
+            return PowerInterval(start: start, end: end, watts: $0.watts)
+        }.sorted { $0.start < $1.start }
+    }
+    // Integrate only observed intervals; never turn missing hours into zero energy.
+    static func total(points: [PowerPoint] = [], intervals: [PowerInterval] = [],
+                      in range: ClosedRange<Date>, maximumGap: TimeInterval = 600) -> Total {
+        let ordered = Dictionary(points.filter { $0.watts.isFinite && $0.watts >= 0 }
+            .map { ($0.time, $0) }, uniquingKeysWith: { _, last in last }).values.sorted { $0.time < $1.time }
+        var segments = clipped(intervals, to: range)
+        for (a, b) in zip(ordered, ordered.dropFirst()) {
+            let duration = b.time.timeIntervalSince(a.time)
+            let start = max(a.time, range.lowerBound), end = min(b.time, range.upperBound)
+            guard duration > 0, duration <= maximumGap, end > start else { continue }
+            var uncovered = [start...end]
+            for known in segments {
+                uncovered = uncovered.flatMap { span -> [ClosedRange<Date>] in
+                    guard known.start < span.upperBound, known.end > span.lowerBound else { return [span] }
+                    var rest: [ClosedRange<Date>] = []
+                    if known.start > span.lowerBound { rest.append(span.lowerBound...known.start) }
+                    if known.end < span.upperBound { rest.append(known.end...span.upperBound) }
+                    return rest
+                }
+            }
+            for span in uncovered {
+                func watts(_ time: Date) -> Double { a.watts + (b.watts - a.watts) * time.timeIntervalSince(a.time) / duration }
+                segments.append(PowerInterval(start: span.lowerBound, end: span.upperBound,
+                                              watts: (watts(span.lowerBound) + watts(span.upperBound)) / 2))
+            }
+        }
+        var energy = 0.0, coverage = 0.0
+        var previousEnd = range.lowerBound
+        for interval in segments.sorted(by: { $0.start < $1.start }) {
+            let start = max(previousEnd, interval.start)
+            guard interval.end > start else { continue }
+            let seconds = interval.end.timeIntervalSince(start)
+            energy += interval.watts * seconds / 3600; coverage += seconds
+            previousEnd = interval.end
+        }
+        return Total(wattHours: energy, coverage: coverage)
+    }
+}
+
 enum DisplayUnits {
     static func powerAxis(_ value: Double) -> String { axis(value,small:"W",large:"kW") }
     static func energyAxis(_ value: Double) -> String { axis(value,small:"Wh",large:"kWh") }
@@ -36,7 +92,12 @@ enum DisplayUnits {
 
 
 enum PowerPolling { static let interval = 15 }
-enum ChartHistory { static let dayCount = 30 }
+enum ChartHistory {
+    static let dayCount = 30
+    static func accountingDayCount(now: Date = Date(), calendar: Calendar) -> Int {
+        max(dayCount, calendar.component(.day, from: now))
+    }
+}
 
 // Independent of the live-readout slider. History requests must never inherit
 // the 1–15 second status polling cadence.

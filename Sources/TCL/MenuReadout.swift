@@ -66,7 +66,7 @@ struct MenuReadout: View {
                     }.font(.system(size: max(7, size - 2), weight: .medium))
                 }
             }
-        }.font(.system(size: size)).monospacedDigit().foregroundStyle(Color(nsColor: textColor ?? .labelColor)).frame(height: 22).fixedSize()
+        }.font(.system(size: size)).monospacedDigit().foregroundStyle(Color(nsColor: textColor ?? .white)).frame(height: 22).fixedSize()
     }
     private static func speed(_ ac: Aircon) -> String {
         guard ac.has(ac.fanField) else { return "–" }

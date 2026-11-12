@@ -4,6 +4,7 @@ import Combine
 enum Brand: String, CaseIterable { case tcl = "TCL", lg = "LG", bluetti = "BLUETTI", deye = "Deye", tuya = "Tuya" }
 
 final class BarSelection: ObservableObject {
+    static let sizeRange = 9...24
     static let shared = BarSelection()
     private let defaults: UserDefaults
     @Published var current: Brand = .tcl
@@ -26,6 +27,12 @@ final class BarSelection: ObservableObject {
         expanded = brand
         if !detailsCollapsed { pin(brand); didExpand?(brand) }
     }
+    func activate(_ brand: Brand) {
+        expanded = brand
+        detailsCollapsed = false
+        pin(brand)
+        didExpand?(brand)
+    }
     var didExpand: ((Brand) -> Void)?
     var readoutChanged: (() -> Void)?
     func pin(_ brand: Brand) {
@@ -36,7 +43,7 @@ final class BarSelection: ObservableObject {
     init(_ defaults: UserDefaults = .standard) {
         self.defaults = defaults
         let saved = defaults.integer(forKey: "super.size")
-        size = (9...18).contains(saved) ? saved : 12
+        size = Self.sizeRange.contains(saved) ? saved : 12
     }
-    func setSize(_ value: Int) { size = min(18, max(9, value)) }
+    func setSize(_ value: Int) { size = min(Self.sizeRange.upperBound, max(Self.sizeRange.lowerBound, value)) }
 }

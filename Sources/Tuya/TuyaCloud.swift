@@ -145,7 +145,7 @@ actor TuyaCloud {
         }) else { throw TuyaError.message("Tuya and Deye use different timezones.") }
         let saved = previous.flatMap { $0.meterID == device.id && $0.timeZoneID == zoneID ? $0 : nil }
         var days = saved?.days.filter { keys.contains($0.key) } ?? []
-        var hours = saved?.hours.filter { TuyaHistory.calendar.isDate($0.start, inSameDayAs: now) } ?? []
+        var hours = saved?.hours.filter { $0.end > now.addingTimeInterval(-86400) } ?? []
         var firstMissing = keys.dropLast().first { key in !days.contains { $0.key == key && $0.wattHours != nil } } ?? keys.last!
         // A cached "today" total was partial. Fetch it once more after midnight.
         if let saved {
@@ -163,14 +163,21 @@ actor TuyaCloud {
             days += fetched
         } catch is CancellationError { throw CancellationError() }
         catch { errors.append("Tuya daily history unavailable") }
-        do {
-            let data = base.merging(["date": keys.last!]) { _, new in new }
+        for key in keys.suffix(2) {
+          do {
+            let data = base.merging(["date": key]) { _, new in new }
             let raw = try await read("tuya.m.dp.rang.stat.hour.list", data: data, version: "1.0")
-            hours = TuyaHistory.hourly(raw, zone: zone, now: now)
+            let fetched = TuyaHistory.hourly(raw, zone: zone, now: now).filter {
+                TuyaHistory.formatter("yyyyMMdd", zone: zone).string(from: $0.start) == key
+            }
+            let incoming = Set(fetched.map(\.start))
+            hours.removeAll { incoming.contains($0.start) }
+            hours += fetched
         } catch is CancellationError { throw CancellationError() }
         catch { errors.append("Tuya hourly history unavailable") }
+        }
         return TuyaHistory(meterID: device.id, timeZoneID: zoneID, days: days.sorted { $0.key < $1.key },
-                           hours: hours, fetchedAt: now, problem: errors.isEmpty ? nil : errors.joined(separator: " · "))
+                           hours: hours.sorted { $0.start < $1.start }, fetchedAt: now, problem: errors.isEmpty ? nil : errors.joined(separator: " · "))
     }
     func savedEmail() -> String { try? load(); return account?.email ?? "" }
 }

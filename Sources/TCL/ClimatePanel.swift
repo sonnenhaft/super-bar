@@ -67,9 +67,7 @@ struct ClimatePanel: View {
     @ViewBuilder var charts: some View {
         if let ac = store.selected {
             Text(DeviceDisplayName.clean(ac.name) + " · TCL").font(.caption).foregroundStyle(.secondary)
-            if history.report(for: ac.name)?.days.isEmpty == false || !history.watts(for: ac.name).isEmpty {
-                EnergyChartView(history: history, device: ac.name)
-            } else { Text("No history yet").font(.caption).foregroundStyle(.secondary) }
+            EnergyChartView(history: history, device: ac.name)
         }
     }
     private func deviceCard(_ ac: Aircon, active: Bool, summary: Bool = false) -> some View {
@@ -88,7 +86,7 @@ struct ClimatePanel: View {
                     visible: displayed && visible) {
                     preferences.set(field, for: ac.id, visible: !displayed || !visible)
                 }
-            }, reading: store.refreshing, readAt: store.statusDate, refresh: store.manualRefresh, select: { let sameDevice = store.selected?.id == ac.id; store.select(ac); selection.select(.tcl, sameDevice: sameDevice) }, powerOn: store.offline || ac.online != true || ac.failed ? nil : ac.power,
+            }, reading: store.refreshing, readAt: store.statusDate, refresh: store.manualRefresh, select: { store.select(ac); selection.activate(.tcl) }, powerOn: store.offline || ac.online != true || ac.failed ? nil : ac.power,
             temperatureOptions:ac.setpoints.filter { (16...26).contains($0) },
             changeTemperature:{ store.setTemperature(ac,$0) },
             turnOff:ac.power == nil ? nil : { store.set(ac,"powerSwitch",0,"Power") },
@@ -98,7 +96,7 @@ struct ClimatePanel: View {
                 vane(ac, true)
                 vane(ac, false)
             }.disabled(store.offline || ac.online != true || ac.failed)), summaryOnly: summary) {
-                CardMenus(eco: ac.has("ECO") ? ac.code("ECO") == 1 : nil, toggleEco: { store.set(ac, "ECO", ac.code("ECO") == 1 ? 0 : 1, "Eco") },
+                CardMenus(eco: ac.ecoChanges != nil ? ac.code("ECO") == 1 : nil, toggleEco: { store.toggleEco(ac) },
                           fan: ac.has(ac.fanField) ? ac.fan : "") {
                     Button("Auto") { store.autoFan(ac, enabled: true) }
                     ForEach(ac.manualFanCodes, id: \.self) { level in

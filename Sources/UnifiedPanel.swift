@@ -97,16 +97,13 @@ struct UnifiedPanel: View {
         return card.summaryName + " · " + card.summaryPercent
     }
     private func sectionTitle(_ title: String, summary: String, brand: Brand) -> some View {
-        HStack(spacing: 6) {
-            Button {
-                if brand == .deye { selection.toggleEnergy(); if selection.openBrand == .deye { deye.pinned = true } }
-                else { selection.select(brand, sameDevice: true) }
-            } label: {
-                HStack(spacing: 6) {
-                    Text(title).font(.system(size: 19, weight: .bold))
-                    Image(systemName: selection.openBrand == brand ? "chevron.down" : "chevron.right").font(.system(size: 11, weight: .semibold))
-                }
-            }.buttonStyle(.plain)
+        Button {
+            if brand == .deye { selection.toggleEnergy(); if selection.openBrand == .deye { deye.pinned = true } }
+            else { selection.select(brand, sameDevice: true) }
+        } label: {
+            HStack(spacing: 6) {
+                Text(title).font(.system(size: 19, weight: .bold))
+                Image(systemName: selection.openBrand == brand ? "chevron.down" : "chevron.right").font(.system(size: 11, weight: .semibold))
             Spacer(minLength: 4)
             if brand == .deye {
                 HStack(spacing: 4) {
@@ -115,7 +112,8 @@ struct UnifiedPanel: View {
                     Text(tuya.reading?.consumption().map(DisplayUnits.power) ?? "—").foregroundStyle(ice)
                 }.font(.system(size: 13, weight: .semibold)).monospacedDigit()
             } else { Text(summary).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1).minimumScaleFactor(0.85) }
-        }.padding(.bottom, 2)
+            }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 2).contentShape(Rectangle())
+        }.buttonStyle(.plain).padding(.bottom, 2)
     }
     private func updateBatteries() { blue.rebuildStationMenu(); batteries.refresh() }
     @ViewBuilder private var batteryControls: some View {
@@ -129,15 +127,15 @@ struct UnifiedPanel: View {
             } else {
                 ForEach(blue.stationRows, id: \.key) { entry in
                     let card = entry.details.card
-                    DeviceChoice(selected: selection.expanded == .bluetti && blue.selectedKnownStation?.key == entry.key, action: card.selectSummary) {
+                    DeviceChoice(selected: selection.expanded == .bluetti && blue.selectedKnownStation?.key == entry.key, compact: true, action: card.selectSummary) {
                         HStack(spacing: 6) {
-                            Image(systemName: card.summaryBatterySymbol).foregroundStyle(leafGreen).font(.system(size: 28))
+                            Image(systemName: card.summaryBatterySymbol).foregroundStyle(leafGreen).font(.system(size: 20))
                             VStack(alignment: .leading, spacing: 1) {
                                 Text(card.summaryName).font(.system(size: 13, weight: .semibold)).lineLimit(1)
-                                Text(card.summaryPercent).font(.system(size: 22, weight: .bold)).monospacedDigit()
+                                Text(card.summaryPercent).font(.system(size: 15, weight: .semibold)).monospacedDigit()
                             }
                             Spacer(minLength: 0)
-                        }.frame(minHeight: 42)
+                        }.frame(minHeight: 28)
                     }
                 }
             }
@@ -155,7 +153,7 @@ struct UnifiedPanel: View {
             case .lg: thinQ.charts
             case .deye:
                 solar.charts
-                if let reading = deye.reading { EnergyValueView(reading: reading, consumption: tuya.chartHistory?.hours ?? [], live: tuya.samples, consumptionDays: tuya.chartHistory?.days ?? []) }
+                if let reading = deye.reading { EnergyValueView(reading: reading, consumptionDays: tuya.chartHistory?.days ?? []) }
             case .tuya: meter.charts
             case .bluetti:
                 if blue.lastGood != nil {

@@ -157,4 +157,25 @@ enum EnergyPeriod {
         }
         return checked
     }
+
+    // Prefer confirmed hourly buckets. Where unavailable, show the average
+    // between consecutive daily-counter observations, never instantaneous power.
+    static func powerIntervals(_ report: DailyEnergyReport, now: Date) -> [PowerInterval] {
+        let start = calendar.startOfDay(for: now).timeIntervalSince1970
+        let end = now.timeIntervalSince1970
+        let hours = (report.hours ?? []).filter {
+            $0.start >= start && $0.start + 3600 <= end && $0.kwh.isFinite && $0.kwh >= 0
+        }.map { PowerInterval(start: Date(timeIntervalSince1970: $0.start), end: Date(timeIntervalSince1970: $0.start + 3600), watts: $0.kwh * 1000) }
+        let meters = Dictionary((report.meters ?? []).filter {
+            $0.at >= start && $0.at <= end && $0.today.isFinite && $0.today >= 0
+        }.map { ($0.at, $0) }, uniquingKeysWith: { _, last in last }).values.sorted { $0.at < $1.at }
+        let intervals = zip(meters, meters.dropFirst()).compactMap { a, b -> PowerInterval? in
+            let duration = b.at - a.at
+            guard duration > 0, duration <= 2 * HistoryPolling.tclSummary + 60, b.today >= a.today else { return nil }
+            let lower = Date(timeIntervalSince1970: a.at), upper = Date(timeIntervalSince1970: b.at)
+            guard !hours.contains(where: { $0.start < upper && $0.end > lower }) else { return nil }
+            return PowerInterval(start: lower, end: upper, watts: (b.today - a.today) * 3_600_000 / duration)
+        }
+        return (hours + intervals).sorted { $0.start < $1.start }
+    }
 }

@@ -28,7 +28,7 @@ extension BlueBarDelegate {
         let fields = visibility.visibleFields(for: reading)
         let title = reading.map { StatusVisibility.title(for: $0, fields: fields, at: displayTime) } ?? ""
         let font = NSFont.monospacedDigitSystemFont(ofSize: statusFontSize, weight: .regular)
-        var attributes: [NSAttributedString.Key: Any] = [.font: font]
+        var attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor.white]
         if let custom = customStatusTextColor { attributes[.foregroundColor] = custom }
         let styledTitle = NSAttributedString(string: title, attributes: attributes)
         if !readout.attributedTitle.isEqual(to: styledTitle) {

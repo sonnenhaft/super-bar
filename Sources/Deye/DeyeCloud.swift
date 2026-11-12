@@ -186,12 +186,12 @@ actor DeyeCloud {
             let formatter = DateFormatter()
             formatter.calendar = calendar; formatter.timeZone = calendar.timeZone
             formatter.locale = Locale(identifier: "en_US_POSIX"); formatter.dateFormat = "yyyy-MM-dd"
-            for ago in -(ChartHistory.dayCount - 1)...0 {
+            for ago in -(ChartHistory.accountingDayCount(calendar: calendar) - 1)...0 {
                 try Task.checkCancellation()
                 let day = calendar.date(byAdding: .day, value: ago, to: Date())!
                 let components = calendar.dateComponents([.year, .month, .day], from: day)
                 let key = formatter.string(from: day)
-                if ago < 0, let lastHistoryDay = previous?.historyDay, lastHistoryDay != key,
+                if ago < -1, let lastHistoryDay = previous?.historyDay, lastHistoryDay != key,
                    let cached = previous?.days.first(where: { $0.day == key }), cached.kwh != nil {
                     days.append(cached)
                     continue
@@ -200,12 +200,13 @@ actor DeyeCloud {
                 do {
                     let data = try await call("/maintain-s/history/batteryPower/\(id)/stats/daily", query: ["year":String(components.year!), "month":String(components.month!), "day":String(components.day!)]) as? [String: Any]
                     value = Self.number((data?["statistics"] as? [String: Any])?["generationValue"])
-                    if ago == 0, let rows = data?["records"] as? [[String: Any]] {
-                        curve = rows.compactMap { row in
+                    if ago >= -1, let rows = data?["records"] as? [[String: Any]] {
+                        let fetched: [PowerPoint] = rows.compactMap { row in
                             guard let time = CloudValue.date(row["dateTime"]), calendar.isDate(time, inSameDayAs: day),
                                   let watts = Self.number(row["generationPower"]) else { return nil }
                             return PowerPoint(time: time, watts: watts)
                         }.sorted { $0.time < $1.time }
+                        curve = (curve ?? []).filter { !calendar.isDate($0.time, inSameDayAs: day) } + fetched
                     }
                 } catch is CancellationError { throw CancellationError() }
                 catch { value = nil }
@@ -220,7 +221,7 @@ actor DeyeCloud {
             days.removeAll { $0.day == today }
             days.append(DeyeDay(day: today, kwh: value))
         }
-        curve = curve?.filter { calendar.isDateInToday($0.time) }
+        curve = curve?.filter { $0.time >= Date().addingTimeInterval(-90000) && $0.time <= Date() }.sorted { $0.time < $1.time }
         return DeyeReading(id: stationID!, name: String(name.filter { !$0.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) }.prefix(160)),
                            power_w: Self.number(current["generationPower"]), today_kwh: Self.number(current["generationValue"]),
                            status: current["networkStatus"] as? String ?? "UNKNOWN", measured_at: stamp, days: days, curve: curve,

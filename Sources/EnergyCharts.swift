@@ -8,8 +8,10 @@ struct EnergyCharts: View {
     let power: [PowerPoint]
     var color: Color = cobalt
     var currentDay = false
+    var powerIntervals: [PowerInterval] = []
     var consumptionDays: [EnergyDayPoint] = []
     var consumptionHours: [PowerInterval] = []
+    var consumptionEnergyIntervals: [PowerInterval] = []
     var showConsumption = false
     var consumptionPower: [PowerPoint] = []
     var maximumPowerGap: TimeInterval = 600
@@ -19,14 +21,14 @@ struct EnergyCharts: View {
         let start = currentDay ? calendar.startOfDay(for: Date()) : Date().addingTimeInterval(-86400)
         return start...(currentDay ? start.addingTimeInterval(86400) : Date())
     }
-    static func normalizedDays(_ source:[EnergyDayPoint], now:Date = Date()) -> [EnergyDayPoint] {
+    static func normalizedDays(_ source:[EnergyDayPoint], now:Date = Date(), count: Int = ChartHistory.dayCount) -> [EnergyDayPoint] {
         var calendar = Calendar(identifier:.gregorian)
         calendar.timeZone = TimeZone(identifier:"Asia/Manila")!
         let formatter = DateFormatter()
         formatter.calendar = calendar; formatter.timeZone = calendar.timeZone
         formatter.locale = Locale(identifier:"en_US_POSIX"); formatter.dateFormat = "yyyyMMdd"
         let values = Dictionary(source.map { ($0.key.replacingOccurrences(of:"-",with:""),$0.wattHours) },uniquingKeysWith:{ _,last in last })
-        return (-(ChartHistory.dayCount - 1)...0).compactMap { offset in
+        return (-(max(1, count) - 1)...0).compactMap { offset in
             guard let date = calendar.date(byAdding:.day,value:offset,to:now) else { return nil }
             let key = formatter.string(from:date)
             return EnergyDayPoint(key:key,label:offset == 0 ? "Today" : String(calendar.component(.day,from:date)),wattHours:values[key] ?? nil)
@@ -39,20 +41,32 @@ struct EnergyCharts: View {
             days[Int((Double(tick * (days.count - 1)) / 5).rounded())].key
         }
         let energyMax = (days + consumption).compactMap(\.wattHours).max() ?? 0
-        let hours = consumptionHours.filter { $0.start >= powerRange.lowerBound && $0.end <= powerRange.upperBound }
+        let range = powerRange
+        let generationTotal = RollingEnergy.total(points: self.power, in: range, maximumGap: maximumPowerGap)
+        let consumptionTotal = RollingEnergy.total(points: consumptionPower, intervals: consumptionEnergyIntervals,
+                                                   in: range, maximumGap: 600)
+        let periodBill = pricing.tariff.summary(generation: days, consumption: consumption, todayKey: days.last!.key)
+        let rollingBill = rollingBill(in: range, generation: generationTotal, consumption: consumptionTotal)
+        let power = self.power.filter { range.contains($0.time) && $0.time <= Date() }.sorted { $0.time < $1.time }
+        let intervals = powerIntervals.filter { $0.start >= powerRange.lowerBound && $0.end <= min(Date(), powerRange.upperBound) }
+        let hours = RollingEnergy.clipped(consumptionHours, to: range)
         let currentHour = TuyaHistory.calendar.dateInterval(of: .hour, for: Date())!.start
         let liveConsumption = consumptionPower.filter { $0.time >= currentHour && $0.time <= Date() }.sorted { $0.time < $1.time }
-        let powerMax = max((power + liveConsumption).map(\.watts).max() ?? 0, hours.map(\.watts).max() ?? 0)
+        let powerMax = max((power + liveConsumption).map(\.watts).max() ?? 0, (hours + intervals).map(\.watts).max() ?? 0)
         VStack(alignment: .leading, spacing: 12) {
             if showConsumption {
                 HStack(spacing: 14) {
                     Label { Text("Generation") } icon: { Circle().fill(color).frame(width: 6, height: 6) }
+                    Spacer()
                     Label { Text("Consumption") } icon: { Circle().fill(ice).frame(width: 6, height: 6) }
                 }.font(.system(size: 10)).foregroundStyle(.secondary)
             }
             if (days + consumption).contains(where: { $0.wattHours != nil }) {
                 HStack {
                     Text("30 days")
+                    if showConsumption, let bill = periodBill.bill {
+                        billCaption(bill, incomplete: periodBill.billDays < days.count)
+                    }
                     Spacer()
                     Text(total(days)).foregroundStyle(showConsumption ? color : .primary).monospacedDigit()
                         .help("Sum of available days; * means some days are missing.")
@@ -114,7 +128,7 @@ struct EnergyCharts: View {
                                         Text("Consumption: " + (consumption.first(where: { $0.key == key })?.wattHours.map(DisplayUnits.energy) ?? "—"))
                                             .foregroundStyle(ice)
                                         if let bill = dailyBill(day, consumption: consumption.first { $0.key == key }, today: key == days.last?.key) {
-                                            Text("Grid purchase ≈ " + EnergyTariff.money(bill.importCost))
+                                            Text("Consumption ≈ " + EnergyTariff.money(bill.importCost))
                                             Text("Sold ≈ " + EnergyTariff.money(bill.exportRevenue))
                                             Text(bill.formatted).fontWeight(.semibold)
                                         } else { Text("Net cost unavailable").foregroundStyle(.secondary) }
@@ -128,16 +142,37 @@ struct EnergyCharts: View {
                     }
                 }.frame(height:112)
             }
-            if !power.isEmpty || !hours.isEmpty || !liveConsumption.isEmpty {
+            if currentDay || showConsumption || !power.isEmpty || !intervals.isEmpty || !hours.isEmpty || !liveConsumption.isEmpty {
                 if (days + consumption).contains(where: { $0.wattHours != nil }) { Divider() }
                 HStack {
                     Text(currentDay ? "Today" : "24 hours").font(.system(size:14,weight:.semibold))
+                    if showConsumption, let bill = rollingBill {
+                        billCaption(bill, incomplete: min(generationTotal.coverage, consumptionTotal.coverage) < 85800)
+                    }
                     Spacer()
-                    Text(powerMax >= 1000 ? "kW" : "W")
-                        .font(.system(size:10)).foregroundStyle(.secondary)
+                    if showConsumption {
+                        HStack(spacing: 5) {
+                            Text(generationTotal.label(in: range))
+                                .foregroundStyle(color)
+                            Text("/").foregroundStyle(.white)
+                            Text(consumptionTotal.label(in: range))
+                                .foregroundStyle(ice)
+                        }.font(.system(size: 14, weight: .semibold)).monospacedDigit().lineLimit(1)
+                            .help("Generation / consumption over the last 24 hours. Estimated from measured intervals; * means coverage is incomplete.")
+                    } else {
+                        Text(powerMax >= 1000 ? "kW" : "W")
+                            .font(.system(size:10)).foregroundStyle(.secondary)
+                    }
                 }
-                let points = segmentedPower
+                let points = segments(power)
                 Chart {
+                    ForEach(Array(intervals.enumerated()), id: \.offset) { index, interval in
+                        RectangleMark(xStart: .value("Start", interval.start), xEnd: .value("End", interval.end),
+                                      yStart: .value("Baseline", 0), yEnd: .value("Average power", interval.watts))
+                            .foregroundStyle(color.opacity(0.22))
+                        RuleMark(xStart: .value("Start", interval.start), xEnd: .value("End", interval.end), y: .value("Average power", interval.watts))
+                            .foregroundStyle(color).lineStyle(StrokeStyle(lineWidth: 2))
+                    }
                     ForEach(points, id: \.point.id) { entry in
                         AreaMark(x: .value("Time", entry.point.time), yStart: .value("Baseline", 0), yEnd: .value("Power", entry.point.watts), series: .value("Segment", "primary-\(entry.segment)"))
                             .foregroundStyle(color.opacity(0.13))
@@ -168,26 +203,54 @@ struct EnergyCharts: View {
                         AxisValueLabel { if let value = tick.as(Double.self) { Text(axisNumber(value,maximum:powerMax)) } }
                     }
                 }.frame(height: 112)
-                if let latest = power.last {
-                    Text((showConsumption ? "Generation · " : "") + DisplayUnits.power(latest.watts) + " · " + timeLabel(latest.time))
-                        .font(.system(size: 11)).monospacedDigit().foregroundStyle(.secondary)
+                if power.isEmpty && intervals.isEmpty && hours.isEmpty && liveConsumption.isEmpty {
+                    Text(currentDay ? "No readings yet today" : "No readings in the last 24 hours").font(.system(size: 10)).foregroundStyle(.secondary)
+                } else if !intervals.isEmpty {
+                    Text("Average power from measured consumption intervals").font(.system(size: 10)).foregroundStyle(.secondary)
                 }
-                if showConsumption {
-                    Text(liveConsumption.last.map { "Consumption · " + DisplayUnits.power($0.watts) + " · " + timeLabel($0.time) }
-                         ?? (hours.isEmpty ? "Consumption · No complete hour yet" : "Consumption · Hourly average through " + timeLabel(hours.last!.end)))
-                        .font(.system(size: 10)).foregroundStyle(ice)
-                        .help("Completed hours: average consumption. Current hour: live readings collected by Super Bar.")
-                }
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    if let latest = power.last {
+                        Text((showConsumption ? "Generation · " : "") + DisplayUnits.power(latest.watts) + " · " + timeLabel(latest.time))
+                            .foregroundStyle(showConsumption ? color : .secondary)
+                    }
+                    if showConsumption {
+                        Spacer(minLength: 0)
+                        Text(consumptionCaption(live: liveConsumption, hours: hours))
+                            .foregroundStyle(ice)
+                            .help("Completed hours: average consumption. Current hour: live readings collected by Super Bar.")
+                    }
+                }.font(.system(size: 10)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.8)
+
             }
         }
         .chartPlotStyle { $0.background(Color.white.opacity(0.018)) }
     }
-    private func dailyBill(_ day: EnergyDayPoint, consumption: EnergyDayPoint?, today: Bool) -> EnergyTariff.Bill? {
-        let matched = today ? EnergyTariff.matched(generation: power, consumption: consumptionHours, live: consumptionPower,
-            range: DateInterval(start: TuyaHistory.calendar.startOfDay(for: Date()), end: Date())) : .init()
-        return pricing.tariff.bill(generationKWh: day.wattHours.map { $0 / 1000 },
-            consumptionKWh: consumption?.wattHours.map { $0 / 1000 }, matched: matched)
+    private func consumptionCaption(live: [PowerPoint], hours: [PowerInterval]) -> String {
+        if let point = live.last { return "Consumption · " + DisplayUnits.power(point.watts) + " · " + timeLabel(point.time) }
+        if let hour = hours.last { return "Consumption · " + DisplayUnits.power(hour.watts) + " · " + timeLabel(hour.end) }
+        return "Consumption · —"
     }
+    private func dailyBill(_ day: EnergyDayPoint, consumption: EnergyDayPoint?, today: Bool) -> EnergyTariff.Bill? {
+        pricing.tariff.bill(generationKWh: day.wattHours.map { $0 / 1000 },
+            consumptionKWh: consumption?.wattHours.map { $0 / 1000 }, today: today)
+    }
+    private func billCaption(_ bill: EnergyTariff.Bill, incomplete: Bool) -> some View {
+        Text("≈ " + EnergyTariff.money(bill.netCost) + (incomplete ? "*" : ""))
+            .font(.system(size: 10)).foregroundStyle(.secondary).monospacedDigit().lineLimit(1)
+            .help("Net cost after generation credit. Negative means credit; * means incomplete history. Details below.")
+    }
+    private func rollingBill(in range: ClosedRange<Date>, generation: RollingEnergy.Total,
+                             consumption: RollingEnergy.Total) -> EnergyTariff.Bill? {
+        guard generation.coverage > 0, consumption.coverage > 0 else { return nil }
+        let midnight = TuyaHistory.calendar.startOfDay(for: range.upperBound)
+        let today = RollingEnergy.total(points: power, in: max(midnight, range.lowerBound)...range.upperBound,
+                                        maximumGap: maximumPowerGap)
+        guard let previousRevenue = pricing.tariff.revenue(generationKWh: max(0, generation.wattHours - today.wattHours) / 1000),
+              let todayRevenue = pricing.tariff.revenue(generationKWh: today.wattHours / 1000, today: true) else { return nil }
+        return EnergyTariff.Bill(importCost: consumption.wattHours / 1000 * pricing.tariff.purchasePerKWh,
+                                 exportRevenue: previousRevenue + todayRevenue)
+    }
+
     private func total(_ days: [EnergyDayPoint]) -> String {
         let values = days.compactMap(\.wattHours)
         guard !values.isEmpty else { return "—" }
@@ -220,16 +283,13 @@ struct EnergyCharts: View {
         return result
     }
     private func hourLabel(_ date: Date) -> String {
-        TuyaHistory.formatter("HH", zone: currentDay ? TuyaHistory.calendar.timeZone : .current).string(from: date)
+        TuyaHistory.formatter("HH", zone: currentDay || showConsumption ? TuyaHistory.calendar.timeZone : .current).string(from: date)
     }
     private func timeLabel(_ date: Date) -> String {
-        TuyaHistory.formatter("HH:mm", zone: currentDay ? TuyaHistory.calendar.timeZone : .current).string(from: date)
+        TuyaHistory.formatter("HH:mm", zone: currentDay || showConsumption ? TuyaHistory.calendar.timeZone : .current).string(from: date)
     }
     private func axisNumber(_ value:Double,maximum:Double) -> String {
         (maximum >= 1000 ? value / 1000 : value).formatted(.number.locale(Locale(identifier:"en_US_POSIX")).grouping(.never).precision(.fractionLength(0...2)))
-    }
-    private var segmentedPower: [(point: PowerPoint, segment: Int)] {
-        segments(power)
     }
     private func segments(_ points: [PowerPoint]) -> [(point: PowerPoint, segment: Int)] {
         var previous: Date?

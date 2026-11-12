@@ -92,6 +92,15 @@ struct Aircon: Identifiable {
         }
         return fields
     }
+    var ecoChanges: [(String, Int)]? {
+        guard has("ECO") else { return nil }
+        if code("ECO") == 1 { return [("ECO", 0)] }
+        guard has("targetTemperature"), setpoints.contains(26), has(fanField), has("silenceSwitch") else { return nil }
+        var fields = [("targetTemperature", 26)] + fanChanges(1)
+        if has("turbo") { fields.append(("turbo", 0)) }
+        fields.append(("ECO", 1))
+        return fields
+    }
     var acTemperature: String {
         guard online == true, !failed else { return "—" }
         return power == false ? "OFF" : tempText(target)
@@ -309,6 +318,9 @@ final class ClimateStore: ObservableObject {
     }
     func preset(_ ac: Aircon, _ preset: CoolingPreset) {
         if let fields = preset.fields(for: ac) { enqueue(ac, fields, label: preset.label) }
+    }
+    func toggleEco(_ ac: Aircon) {
+        if let fields = ac.ecoChanges { enqueue(ac, fields, label: ac.code("ECO") == 1 ? "Eco off" : "Eco · 26° Silent") }
     }
     func fanLevel(for ac: Aircon) -> Int {
         ac.manualFanCode ?? lastManualFan[ac.id] ?? 4

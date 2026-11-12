@@ -41,6 +41,15 @@ enum BrandArtwork {
 }
 
 @MainActor private final class IntervalSliderCell: NSSliderCell {
+    override func drawBar(inside rect: NSRect, flipped: Bool) {
+        let track = NSRect(x: rect.minX, y: rect.midY - 2, width: rect.width, height: 4)
+        NSColor.white.withAlphaComponent(0.22).setFill()
+        NSBezierPath(roundedRect: track, xRadius: 2, yRadius: 2).fill()
+        let fraction = CGFloat(min(1, max(0, (doubleValue - minValue) / max(1, maxValue - minValue))))
+        NSColor.systemBlue.setFill()
+        NSBezierPath(roundedRect: NSRect(x: track.minX, y: track.minY, width: track.width * fraction, height: track.height),
+                     xRadius: 2, yRadius: 2).fill()
+    }
     override func drawTickMarks() {
         for index in 0..<numberOfTickMarks {
             let rect = rectOfTickMark(at:index)
@@ -73,7 +82,9 @@ enum BrandArtwork {
         self.state = state; self.changed = changed; self.refresh = refresh; self.settings = settings
         self.interval = interval; self.setInterval = setInterval
         super.init(frame:NSRect(x:0,y:0,width: 420,height:Self.height))
-        slider.minValue = 9; slider.maxValue = 18; slider.isContinuous = true
+        slider.cell = IntervalSliderCell()
+        slider.minValue = Double(BarSelection.sizeRange.lowerBound)
+        slider.maxValue = Double(BarSelection.sizeRange.upperBound); slider.isContinuous = true
         slider.trackFillColor = BarTheme.cobalt; slider.target = self; slider.action = #selector(changeTextSize)
         slider.setAccessibilityLabel("Text size")
         value.font = .monospacedDigitSystemFont(ofSize:12,weight:.regular); value.alignment = .center
@@ -175,15 +186,9 @@ enum TemperatureStyle {
             let a = stops[index], b = stops[index+1]
             return NSColor(srgbRed:a.0+(b.0-a.0)*u, green:a.1+(b.1-a.1)*u, blue:a.2+(b.2-a.2)*u, alpha:1)
     }
-    private static let menuColors: [NSColor] = (0...100).map { index in
-        let degrees = 16 + Double(index) / 10
-        return NSColor(name:nil) { appearance in
-            palette(degrees, light: appearance.bestMatch(from:[.aqua,.darkAqua]) != .darkAqua)
-        }
-    }
     static func color(_ degrees: Double, menuBar: Bool = false) -> NSColor {
         let clamped = min(26, max(16, degrees))
-        return menuBar ? menuColors[Int(((clamped - 16) * 10).rounded())] : palette(clamped, light:false)
+        return palette(clamped, light:false)
     }
     static func attributed(_ source: NSAttributedString, menuBar: Bool = false) -> NSAttributedString {
         let result = NSMutableAttributedString(attributedString: source)

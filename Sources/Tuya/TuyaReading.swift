@@ -90,7 +90,7 @@ struct TuyaHistory: Codable {
     }
     static func keys(now: Date) -> [String] {
         let format = formatter("yyyyMMdd")
-        return (-(ChartHistory.dayCount - 1)...0).map { format.string(from: calendar.date(byAdding: .day, value: $0, to: now)!) }
+        return (-(ChartHistory.accountingDayCount(now: now, calendar: calendar) - 1)...0).map { format.string(from: calendar.date(byAdding: .day, value: $0, to: now)!) }
     }
     static func daily(_ raw: Any, keys: [String]) -> [EnergyDayPoint] {
         let outer = CloudValue.object(raw)
@@ -102,15 +102,27 @@ struct TuyaHistory: Codable {
     }
     static func hourly(_ raw: Any, zone: TimeZone, now: Date) -> [PowerInterval] {
         let format = formatter("yyyyMMddHH", zone: zone)
-        let today = formatter("yyyyMMdd", zone: zone).string(from: now)
         return CloudValue.object(raw).compactMap { key, raw in
-            guard key.count == 10, key.hasPrefix(today), let start = format.date(from: key),
+            guard key.count == 10, let start = format.date(from: key),
                   format.string(from: start) == key, let kwh = CloudValue.number(raw), kwh >= 0 else { return nil }
             let end = start.addingTimeInterval(3600)
             // Current-hour energy is partial, so it must not be drawn as a full-hour average.
-            guard end <= now else { return nil }
+            guard end <= now, end > now.addingTimeInterval(-86400) else { return nil }
             return PowerInterval(start: start, end: end, watts: kwh * 1000)
         }.sorted { $0.start < $1.start }
+    }
+    var energyIntervals: [PowerInterval] {
+        let start = Self.calendar.startOfDay(for: fetchedAt)
+        let hourStart = Self.calendar.dateInterval(of: .hour, for: fetchedAt)!.start
+        let completed = hours.filter { $0.start >= start && $0.end <= hourStart }
+        let expected = Int(hourStart.timeIntervalSince(start) / 3600)
+        let key = Self.formatter("yyyyMMdd").string(from: fetchedAt)
+        guard completed.count == expected, fetchedAt > hourStart,
+              let total = days.first(where: { $0.key == key })?.wattHours else { return hours }
+        let remaining = total - completed.reduce(0) { $0 + $1.watts * $1.end.timeIntervalSince($1.start) / 3600 }
+        guard remaining >= 0 else { return hours }
+        return hours + [PowerInterval(start: hourStart, end: fetchedAt,
+                                     watts: remaining * 3600 / fetchedAt.timeIntervalSince(hourStart))]
     }
 }
 struct TuyaSnapshot: Codable {

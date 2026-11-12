@@ -43,9 +43,10 @@ struct DeyeCard: View {
         if model.reading?.days.contains(where: { $0.kwh != nil }) == true || tuya.chartHistory != nil {
             EnergyCharts(days: (model.reading?.days ?? []).map {
                 EnergyDayPoint(key: $0.day, label: String($0.day.suffix(2)), wattHours: $0.kwh.map { $0 * 1000 })
-            }, power: model.reading?.curve ?? [], color: sunlight, currentDay: true,
+            }, power: model.reading?.curve ?? [], color: sunlight,
                          consumptionDays: tuya.chartHistory?.days ?? [],
-                         consumptionHours: tuya.chartHistory?.hours ?? [], showConsumption: true,
+                         consumptionHours: tuya.chartHistory?.hours ?? [],
+                         consumptionEnergyIntervals: tuya.chartHistory?.energyIntervals ?? [], showConsumption: true,
                          consumptionPower: tuya.samples)
             if let problem = tuya.historyProblem {
                 Text(problem).font(.system(size: 10)).foregroundStyle(.secondary)

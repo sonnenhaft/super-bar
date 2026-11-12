@@ -41,6 +41,18 @@ import AppKit
         state.toggleEnergy()
         state.select(.tcl, sameDevice: false)
         precondition(state.openBrand == .tcl && state.chartOverride == nil)
+        for brand in [Brand.tcl, .lg] {
+            state.showEnergy()
+            state.activate(brand)
+            precondition(state.current == brand && state.openBrand == brand && state.chartOverride == nil)
+            state.pin(.bluetti)
+            let count = activated.count
+            state.activate(brand)
+            precondition(state.current == brand && state.openBrand == brand && activated.count == count + 1,
+                         "Clicking an already open device must restore its readout and keep its controls and chart open")
+            state.select(brand, sameDevice: true)
+            precondition(state.openBrand == nil && state.current == brand, "Section headers can still collapse charts")
+        }
         let read = Date(timeIntervalSince1970:1000)
         ReadingAge.panelOpened()
         precondition(ReadingAge.label(read,now:read) == "Last read Just now")

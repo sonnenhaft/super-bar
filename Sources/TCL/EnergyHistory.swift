@@ -181,7 +181,8 @@ struct EnergyChartView: View {
                 Text(period?.text ?? "—").fontWeight(.semibold).monospacedDigit()
             }.font(.callout).help(period?.detail ?? "Waiting for meter readings")
             EnergyCharts(days: days(report, now: now),
-                         power: history.watts(for:device,now:now).map { PowerPoint(time:Date(timeIntervalSince1970:$0.timestamp),watts:$0.watts) })
+                         power: history.watts(for:device,now:now).map { PowerPoint(time:Date(timeIntervalSince1970:$0.timestamp),watts:$0.watts) },
+                         currentDay: true, powerIntervals: report.map { EnergyPeriod.powerIntervals($0, now: now) } ?? [])
         }
     }
     private func days(_ report: DailyEnergyReport?, now: Date) -> [EnergyDayPoint] {

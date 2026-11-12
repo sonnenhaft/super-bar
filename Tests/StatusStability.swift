@@ -4,32 +4,48 @@ import AppKit
     @MainActor static func main() {
         _ = NSApplication.shared
         let tariff = EnergyTariff()
-        precondition(abs(tariff.bill(generationKWh: 1, consumptionKWh: 1)!.netCost - 4.55) < 0.000001)
+        precondition(abs(tariff.roi(revenue: 7000)! - 1.75) < 0.000001)
+        precondition(tariff.roi(revenue: 0) == 0 && tariff.roi(revenue: .nan) == nil)
+        precondition(EnergyTariff(panelCost: 0).roi(revenue: 100) == nil)
+        precondition(abs(tariff.revenue(generationKWh: 100)! - 910) < 0.000001)
+        precondition(tariff.revenue(generationKWh: 100, today: true) == 650)
+        precondition(tariff.bill(generationKWh: 100, consumptionKWh: 100)!.withoutSolarCost == 1300)
+        precondition(abs(tariff.bill(generationKWh: 100, consumptionKWh: 100)!.netCost - 390) < 0.000001)
+        precondition(tariff.bill(generationKWh: 100, consumptionKWh: 100, today: true)!.netCost == 650)
         precondition(tariff.bill(generationKWh: nil, consumptionKWh: 1) == nil)
         precondition(tariff.bill(generationKWh: 1, consumptionKWh: nil) == nil)
         precondition(tariff.bill(generationKWh: -1, consumptionKWh: 1) == nil)
         precondition(tariff.bill(generationKWh: 1, consumptionKWh: .nan) == nil)
         precondition(tariff.bill(generationKWh: 0, consumptionKWh: 1)!.netCost == 13)
-        let sold = tariff.bill(generationKWh: 1, consumptionKWh: 0)!
-        precondition(sold.importCost == 0 && sold.netCost == -6.5 && sold.label == "Credit")
-        let begin = Date(timeIntervalSince1970: 0), end = Date(timeIntervalSince1970: 600)
-        let solarSamples = [PowerPoint(time: begin, watts: 6000), PowerPoint(time: end, watts: 6000)]
-        let load = PowerInterval(start: begin, end: end, watts: 3000)
-        let interval = DateInterval(start: begin, end: end)
-        let matched = EnergyTariff.matched(generation: solarSamples, consumption: [load, load], live: [], range: interval)
-        precondition(matched.generationKWh == 1 && matched.selfUseKWh == 0.5 && matched.exportKWh == 0.5 && matched.seconds == 600)
-        precondition(tariff.bill(generationKWh: 1, consumptionKWh: 0.5, matched: matched)!.netCost == -3.25)
-        let mixedBill = tariff.bill(generationKWh: 2, consumptionKWh: 2, matched: matched)!
-        precondition(abs(mixedBill.importCost - 15.6) < 0.000001 && abs(mixedBill.exportRevenue - 7.8) < 0.000001)
-        let missing = EnergyTariff.matched(generation: solarSamples, consumption: [], live: [], range: interval)
-        precondition(missing.seconds == 0 && abs(tariff.bill(generationKWh: 1, consumptionKWh: 1, matched: missing)!.netCost - 4.55) < 0.000001)
-        let importOnly = EnergyTariff.matched(generation: solarSamples, consumption: [PowerInterval(start: begin, end: end, watts: 12000)], live: [], range: interval)
-        precondition(importOnly.importKWh == 1 && importOnly.exportKWh == 0 && tariff.bill(generationKWh: 1, consumptionKWh: 2, matched: importOnly)!.netCost == 13)
-        let gap = EnergyTariff.matched(generation: [solarSamples[0], PowerPoint(time: end.addingTimeInterval(1), watts: 6000)], consumption: [load], live: [], range: interval)
-        precondition(gap.seconds == 0)
-        precondition(EnergyTariff(purchasePerKWh: 13, exportRatio: 0.5, selfUseRatio: 1).bill(generationKWh: 1, consumptionKWh: 1)!.netCost == 0)
-        precondition(EnergyTariff(purchasePerKWh: 13, exportRatio: 0.5, selfUseRatio: 0).bill(generationKWh: 1, consumptionKWh: 1)!.netCost == 6.5)
-        precondition(EnergyTariff(purchasePerKWh: 13, exportRatio: 0.5, selfUseRatio: 1).bill(generationKWh: 10, consumptionKWh: 1)!.netCost == -58.5)
+        precondition(tariff.bill(generationKWh: 1, consumptionKWh: 0, today: true)!.netCost == -6.5)
+        let legacy = try! JSONDecoder().decode(EnergyTariff.self, from: Data(#"{"purchasePerKWh":15,"exportRatio":0.6,"selfUseRatio":0.25}"#.utf8))
+        precondition(legacy.purchasePerKWh == 15 && legacy.exportRatio == 0.6 && legacy.todayExportRatio == 0.5 && legacy.panelCost == 400_000)
+        let pricingDomain = "EnergyTariff.test." + UUID().uuidString
+        let pricingDefaults = UserDefaults(suiteName: pricingDomain)!
+        defer { pricingDefaults.removePersistentDomain(forName: pricingDomain) }
+        pricingDefaults.set(try! JSONEncoder().encode(legacy), forKey: "energy.tariff")
+        let pricing = EnergyPricing(defaults: pricingDefaults)
+        precondition(pricing.tariff.purchasePerKWh == 15 && pricing.tariff.exportRatio == 0.7)
+        pricing.tariff.exportRatio = 0.65
+        precondition(EnergyPricing(defaults: pricingDefaults).tariff.exportRatio == 0.65, "Migration must run only once")
+        let generation = [EnergyDayPoint(key: "20261111", label: "", wattHours: 100000), EnergyDayPoint(key: "20261112", label: "", wattHours: 100000)]
+        let summary = tariff.summary(generation: generation, consumption: generation, todayKey: "20261112")
+        precondition(abs(summary.revenue! - 1560) < 0.000001 && abs(summary.bill!.netCost - 1040) < 0.000001)
+        precondition(abs(tariff.roi(revenue: summary.revenue!)! - 0.39) < 0.000001)
+        let missingLoads = tariff.summary(generation: generation, consumption: [], todayKey: "20261112")
+        precondition(missingLoads.revenue == summary.revenue && missingLoads.bill == nil && missingLoads.generationDays == 2 && missingLoads.billDays == 0)
+        let monthEnd = ISO8601DateFormatter().date(from: "2026-10-31T12:00:00Z")!
+        let monthCount = ChartHistory.accountingDayCount(now: monthEnd, calendar: TuyaHistory.calendar)
+        precondition(monthCount == 31 && TuyaHistory.keys(now: monthEnd).first == "20261001")
+        precondition(EnergyCharts.normalizedDays([], now: monthEnd, count: monthCount).first?.key == "20261001")
+        for fan in ["windSpeed", "windSpeed7Gear"] {
+            let ecoAC = Aircon(["id": "eco", "name": "Test", "reported": ["ECO": 0, "targetTemperature": 22, fan: 6, "silenceSwitch": 0, "turbo": 1, "windSpeedAutoSwitch": 1]])!
+            let edits = try! DeviceService.desired(ecoAC.ecoChanges!, report: ecoAC.report)
+            precondition(edits["ECO"] == 1 && edits["targetTemperature"] == 26 && edits["silenceSwitch"] == 1 && edits["turbo"] == 0)
+            if fan == "windSpeed7Gear" { precondition(edits["windSpeedAutoSwitch"] == 0) }
+        }
+        let ecoOff = Aircon(["id": "eco", "name": "Test", "reported": ["ECO": 1, "targetTemperature": 26]])!
+        precondition(ecoOff.ecoChanges?.count == 1 && ecoOff.ecoChanges?.first?.1 == 0)
         precondition(DeyeReading.power(3314) == "3,3 kW")
         precondition(DeyeReading.power(800) == "0,8 kW")
         precondition(DeyeReading.power(799) == "799 W")
@@ -56,6 +72,23 @@ import AppKit
         precondition(DeviceDisplayName.clean("Bedroom Aircon") == "Bedroom")
         precondition(DeviceDisplayName.clean("A/C Living Room") == "Living Room")
         let chartDay = ISO8601DateFormatter().date(from:"2026-11-10T12:00:00Z")!
+        let meterDayStart = EnergyPeriod.calendar.startOfDay(for: chartDay).timeIntervalSince1970
+        var intervalReport = DailyEnergyReport(id: "ac", name: "Test", state: "ok", attempted: nil, updated: meterDayStart,
+            days: [], meters: [
+                MeterObservation(at: meterDayStart - 900, today: 5, yesterday: nil),
+                MeterObservation(at: meterDayStart, today: 0, yesterday: nil),
+                MeterObservation(at: meterDayStart + 900, today: 0.1, yesterday: nil),
+                MeterObservation(at: meterDayStart + 1800, today: 0.2, yesterday: nil),
+                MeterObservation(at: meterDayStart + 7200, today: 1.0, yesterday: nil),
+                MeterObservation(at: meterDayStart + 8100, today: 0.1, yesterday: nil)
+            ])
+        let averages = EnergyPeriod.powerIntervals(intervalReport, now: chartDay)
+        precondition(averages.count == 2 && averages.allSatisfy { abs($0.watts - 400) < 0.00001 },
+                     "Daily-counter deltas must become interval averages, excluding meterDayStart resets, gaps and decreasing totals")
+        intervalReport.hours = [MeterHour(start: meterDayStart, kwh: 0.3), MeterHour(start: chartDay.timeIntervalSince1970, kwh: 0.4)]
+        let confirmed = EnergyPeriod.powerIntervals(intervalReport, now: chartDay)
+        precondition(confirmed.count == 1 && confirmed[0].watts == 300,
+                     "Confirmed hours take priority over overlapping estimates; incomplete hours are omitted")
         let days = EnergyCharts.normalizedDays([EnergyDayPoint(key:"2026-11-09",label:"?",wattHours:400)],now:chartDay)
         precondition(days.count == 30 && days.first?.key == "20261012" && days.last?.key == "20261110" && days.last?.label == "Today")
         precondition(days[28].wattHours == 400 && days[29].wattHours == nil)
@@ -64,6 +97,25 @@ import AppKit
         precondition(shortMonth.first?.key == "20260131" && shortMonth.last?.key == "20260301")
         precondition(Set(shortMonth.map(\.key)).count == 30, "Repeated day-of-month labels must remain separate bars")
         func at(_ seconds: Double) -> Date { chartDay.addingTimeInterval(seconds) }
+        let rollingRange = at(-86400)...at(0)
+        let rolling = RollingEnergy.total(points: [PowerPoint(time: at(-90000), watts: 1000),
+                                                   PowerPoint(time: at(0), watts: 1000)],
+                                          in: rollingRange, maximumGap: 90000)
+        precondition(abs(rolling.wattHours - 24000) < 0.001 && rolling.coverage == 86400,
+                     "Clip to exactly 24 hours, including the previous calendar day")
+        let gapTotal = RollingEnergy.total(points: [PowerPoint(time: at(-86400), watts: 1000),
+                                                    PowerPoint(time: at(0), watts: 1000)], in: rollingRange)
+        precondition(gapTotal.coverage == 0 && gapTotal.label(in: rollingRange) == "—", "Never interpolate through missing history")
+        let mixedTotal = RollingEnergy.total(points: [PowerPoint(time: at(-3600), watts: 1000), PowerPoint(time: at(0), watts: 1000)],
+                                             intervals: [PowerInterval(start: at(-5400), end: at(-1800), watts: 2000)],
+                                             in: at(-3600)...at(0), maximumGap: 3600)
+        precondition(abs(mixedTotal.wattHours - 1500) < 0.001 && mixedTotal.coverage == 3600,
+                     "Clip boundary hours and give meter intervals priority over overlapping live samples")
+        let partialMeter = TuyaHistory(meterID: "test", timeZoneID: "Asia/Manila",
+            days: [EnergyDayPoint(key: TuyaHistory.formatter("yyyyMMdd").string(from: at(0)), label: "", wattHours: 100)],
+            hours: [], fetchedAt: TuyaHistory.calendar.startOfDay(for: at(0)).addingTimeInterval(1800))
+        precondition(partialMeter.energyIntervals.count == 1 && partialMeter.energyIntervals[0].watts == 200,
+                     "Include current partial-hour energy from the daily meter, without treating it as a full hour")
         let joined = EnergyCharts.consumptionSegments(hours: [
             PowerInterval(start: at(0), end: at(3600), watts: 500),
             PowerInterval(start: at(3600), end: at(7200), watts: 700),

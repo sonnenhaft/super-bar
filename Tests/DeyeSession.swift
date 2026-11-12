@@ -40,7 +40,16 @@ private final class MockDeye: URLProtocol {
             }
         } else if path.contains("/stats/daily") {
             if Self.paths.filter({ $0.contains("/stats/daily") }).count == 2 { status = 500; body = [:] }
-            else { body = ["data":["statistics":["generationValue":29.7], "records": [["dateTime":Date().timeIntervalSince1970, "generationPower":1500]]]] }
+            else {
+                var calendar = Calendar(identifier: .gregorian)
+                calendar.timeZone = TimeZone(identifier: "Asia/Manila")!
+                let query = URLComponents(url: url, resolvingAgainstBaseURL: false)!.queryItems!
+                func part(_ name: String) -> Int { Int(query.first { $0.name == name }!.value!)! }
+                var components = calendar.dateComponents([.hour, .minute, .second], from: Date())
+                components.year = part("year"); components.month = part("month"); components.day = part("day")
+                let stamp = calendar.date(from: components)!.timeIntervalSince1970
+                body = ["data":["statistics":["generationValue":29.7], "records": [["dateTime":stamp, "generationPower":1500]]]]
+            }
         } else if path.contains("/station/search") {
             body = ["data":["data":[["id":61011710, "name":"Leela home solana4u"]]]]
         } else { fatalError("Unexpected Deye endpoint: " + path) }
@@ -111,8 +120,9 @@ private final class MockDeye: URLProtocol {
         precondition(Set(history.days.map(\.day)).count == 30)
         precondition(MockDeye.paths.filter { $0.contains("/stats/daily") }.count == 30)
         precondition(history.curve?.last?.watts == 1500 && history.days.last?.kwh == 2.7)
+        precondition(history.curve?.count == 2, "Retain yesterday's curve for a rolling 24-hour window")
         _ = try await partial.snapshot(previous: history, includeHistory: true)
-        precondition(MockDeye.paths.filter { $0.contains("/stats/daily") }.count == 32, "Completed daily totals should be reused; only today and the missing day need fetching")
+        precondition(MockDeye.paths.filter { $0.contains("/stats/daily") }.count == 33, "Reuse older totals; refresh both curve days and retry the missing day")
         let (_, source) = try fixture("valid")
         let destination = root.appendingPathComponent("native/session.json")
         let imported = DeyeCloud(file:destination,importFile:source,network:network)

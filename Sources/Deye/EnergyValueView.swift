@@ -2,51 +2,53 @@ import SwiftUI
 
 struct EnergyValueView: View {
     let reading: DeyeReading
-    var consumption: [PowerInterval] = []
-    var live: [PowerPoint] = []
     var consumptionDays: [EnergyDayPoint] = []
     @ObservedObject private var pricing = EnergyPricing.shared
-    private var today: Double? {
-        guard let date = reading.date, TuyaHistory.calendar.isDate(date, inSameDayAs: Date()) else { return nil }
-        return reading.today_kwh
-    }
     var body: some View {
-        let matched = EnergyTariff.matched(generation: reading.curve ?? [], consumption: consumption, live: live,
-            range: DateInterval(start: TuyaHistory.calendar.startOfDay(for: Date()), end: Date()))
-        let days = EnergyCharts.normalizedDays(reading.days.map {
+        let now = Date()
+        let todayKey = TuyaHistory.formatter("yyyyMMdd").string(from: now)
+        let count = ChartHistory.accountingDayCount(now: now, calendar: TuyaHistory.calendar)
+        let generation = EnergyCharts.normalizedDays(reading.days.map {
             EnergyDayPoint(key: $0.day, label: "", wattHours: $0.kwh.map { $0 * 1000 })
-        })
-        let loads = EnergyCharts.normalizedDays(consumptionDays)
-        let todayKey = days.last?.key
-        let bills = days.compactMap { day in
-            pricing.tariff.bill(generationKWh: day.key == todayKey ? today : day.wattHours.map { $0 / 1000 },
-                consumptionKWh: loads.first { $0.key == day.key }?.wattHours.map { $0 / 1000 },
-                matched: day.key == todayKey ? matched : .init())
+        }, now: now, count: count).map { day in
+            day.key == todayKey ? EnergyDayPoint(key: day.key, label: day.label,
+                wattHours: reading.date.flatMap { TuyaHistory.calendar.isDate($0, inSameDayAs: now) ? reading.today_kwh.map { $0 * 1000 } : nil }) : day
         }
-        let todayBill = pricing.tariff.bill(generationKWh: today, consumptionKWh: loads.last?.wattHours.map { $0 / 1000 }, matched: matched)
-        let total = bills.isEmpty ? nil : EnergyTariff.Bill(importCost: bills.reduce(0) { $0 + $1.importCost }, exportRevenue: bills.reduce(0) { $0 + $1.exportRevenue })
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 8) {
             Divider()
             Text("Estimated net cost").font(.system(size: 13, weight: .semibold))
-            HStack {
-                amount("Today", value: todayBill)
-                Spacer()
-                amount("30 days · \(bills.count)/\(days.count) days available", value: total)
-            }
-            if matched.seconds > 0 {
-                Text("Matched data: \(Int(matched.seconds / 60)) min · \(DisplayUnits.energy(matched.selfUseKWh * 1000)) self-use")
-                    .font(.system(size: 10)).foregroundStyle(.secondary)
-            }
-            Text("Missing intervals: \(Int((pricing.tariff.selfUseRatio * 100).rounded()))% self-use · \(Int(((1 - pricing.tariff.selfUseRatio) * 100).rounded()))% export")
+            period("Today", days: Array(generation.suffix(1)), todayKey: todayKey)
+            period("This month", days: generation.filter { $0.key.prefix(6) == todayKey.prefix(6) }, todayKey: todayKey)
+            period("30 days", days: Array(generation.suffix(30)), todayKey: todayKey)
+            Text("All generation sold · today \(Int((pricing.tariff.todayExportRatio * 100).rounded()))% · previous days \(Int((pricing.tariff.exportRatio * 100).rounded()))% of purchase price")
                 .font(.system(size: 10)).foregroundStyle(.secondary)
         }
     }
-    private func amount(_ title: String, value: EnergyTariff.Bill?) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(title).font(.system(size: 10)).foregroundStyle(.secondary)
-            Text(value?.formatted ?? "—")
-                .font(.system(size: 15, weight: .semibold)).monospacedDigit()
-        }.help(value.map { "Grid purchase ≈ " + EnergyTariff.money($0.importCost) + " · Sold ≈ " + EnergyTariff.money($0.exportRevenue) + ". Self-used generation is already deducted. Energy charges only; hourly averages and missing intervals are estimates." } ?? "Both generation and household consumption are required.")
+    private func period(_ title: String, days: [EnergyDayPoint], todayKey: String) -> some View {
+        let summary = pricing.tariff.summary(generation: days, consumption: consumptionDays, todayKey: todayKey)
+        return VStack(alignment: .leading, spacing: 3) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(title).font(.system(size: 12, weight: .semibold))
+                Spacer()
+                Text(summary.bill?.formatted ?? "—").font(.system(size: 14, weight: .semibold)).monospacedDigit()
+            }
+            HStack(alignment: .firstTextBaseline) {
+                if let sold = summary.revenue, let roi = pricing.tariff.roi(revenue: sold) {
+                    Text("Sold ≈ " + EnergyTariff.money(sold) + " · ROI " + roi.formatted(.number.precision(.fractionLength(2))) + "%")
+                        .foregroundStyle(sunlight)
+                        .help(EnergyTariff.money(sold) + " ÷ " + EnergyTariff.money(pricing.tariff.panelCost) + " × 100. Same period; no projection.")
+                } else { Text("Sold · —").foregroundStyle(.secondary) }
+                Spacer(minLength: 4)
+                if let bill = summary.bill {
+                    Text(EnergyTariff.money(bill.withoutSolarCost)).strikethrough(color: .white.opacity(0.25))
+                        .foregroundStyle(.white.opacity(0.4)).help("Without solar, for the same available days")
+                }
+            }.font(.system(size: 10)).monospacedDigit()
+            if summary.generationDays < days.count || summary.billDays < days.count {
+                Text("Available days: generation \(summary.generationDays)/\(days.count) · bill \(summary.billDays)/\(days.count)")
+                    .font(.system(size: 9)).foregroundStyle(.secondary)
+            }
+        }
     }
 }
 
@@ -56,28 +58,30 @@ struct EnergyTariffSettings: View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Energy tariff").font(.system(size: 13, weight: .semibold))
             HStack {
+                Text("Panel cost")
+                Spacer()
+                TextField("400,000", value: Binding(get: { pricing.tariff.panelCost }, set: { if $0.isFinite && $0 > 0 { pricing.tariff.panelCost = $0 } }), format: .number.precision(.fractionLength(0...2)))
+                    .textFieldStyle(.roundedBorder).frame(width: 110)
+                Text("₱").foregroundStyle(.secondary)
+            }
+            HStack {
                 Text("Purchase")
                 Spacer()
                 TextField("13", value: Binding(get: { pricing.tariff.purchasePerKWh }, set: { if $0.isFinite && $0 >= 0 { pricing.tariff.purchasePerKWh = $0 } }), format: .number.precision(.fractionLength(0...2)))
                     .textFieldStyle(.roundedBorder).frame(width: 70)
                 Text("₱/kWh").foregroundStyle(.secondary)
             }
-            HStack {
-                Stepper(value: $pricing.tariff.exportRatio, in: 0...1, step: 0.05) {
-                    Text("Export · \(Int((pricing.tariff.exportRatio * 100).rounded()))%")
-                }
-                Spacer()
-                Text(EnergyTariff.money(pricing.tariff.purchasePerKWh * pricing.tariff.exportRatio) + "/kWh").foregroundStyle(.secondary)
-            }
-            HStack {
-                Text("Assumed self-use")
-                Spacer()
-                Picker("Assumed self-use", selection: $pricing.tariff.selfUseRatio) {
-                    Text("20%").tag(0.2); Text("25%").tag(0.25); Text("30%").tag(0.3)
-                }.pickerStyle(.segmented).labelsHidden().frame(width: 160)
-            }
-            Text("Whole-house meter. Matching intervals estimate self-use and export; this assumption applies only where interval data is missing.")
+            saleRate("Sale price · previous days", value: $pricing.tariff.exportRatio)
+            saleRate("Sale price · today", value: $pricing.tariff.todayExportRatio)
+            Text("All generation is sold. Net cost = household consumption × purchase price − generation × sale price.")
                 .font(.system(size: 10)).foregroundStyle(.secondary)
         }.font(.system(size: 12)).padding(.vertical, 6)
+    }
+    private func saleRate(_ title: String, value: Binding<Double>) -> some View {
+        HStack {
+            Stepper(value: value, in: 0...1, step: 0.05) { Text(title + " · \(Int((value.wrappedValue * 100).rounded()))%") }
+            Spacer()
+            Text(EnergyTariff.money(pricing.tariff.purchasePerKWh * value.wrappedValue) + "/kWh").foregroundStyle(.secondary)
+        }
     }
 }

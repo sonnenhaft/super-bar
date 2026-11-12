@@ -59,7 +59,7 @@ extension App {
                              visible: displayed && shown(key, for: id), toggle: { choose(key) })
             }, reading: active && polling, readAt: active ? lastRead : (sample == nil ? nil : checked[id]), refresh: {
                 if self.selected == id { self.manualRefresh() } else { self.selectDevice(id) }
-            }, select: { let sameDevice = self.selected == id; self.selectDevice(id); BarSelection.shared.select(.lg, sameDevice: sameDevice) }, powerOn:sample?.power == nil ? nil : sample?.power == "POWER_ON",
+            }, select: { self.selectDevice(id); BarSelection.shared.activate(.lg) }, powerOn:sample?.power == nil ? nil : sample?.power == "POWER_ON",
             temperatureOptions:Array(16...26).filter { !active || profile.isEmpty || (Double($0) >= bounds().0 && Double($0) <= bounds().1 && allowed("temperature","targetTemperature",Double($0))) },
             changeTemperature:{ degree in self.useCard(id) { self.setDegrees(Double(degree)) } },
             turnOff:{ self.useCard(id) { self.send([("operation","airConOperationMode","POWER_OFF")]) } },
@@ -141,7 +141,7 @@ extension App {
             ForEach(model.devices, id: \.id) { device in
                 let active = selection.expanded == .lg && model.selected == device.id && !selection.detailsCollapsed
                 if active {
-                    model.deviceCard(device, expanded: true)
+                    model.deviceCard(device, expanded: true).padding(.leading, PanelLayout.logoColumn)
                 }
             }
             if model.devices.isEmpty {
@@ -155,10 +155,8 @@ extension App {
     @ViewBuilder var charts: some View {
         Text((model.devices.first { $0.id == model.selected }?.name ?? "LG") + " · LG")
             .font(.caption).foregroundStyle(.secondary)
-        if model.weekBars.contains(where: { $0.wh != nil }) || !(model.powerSamples[model.selected] ?? []).isEmpty {
-            EnergyCharts(days: Array(model.weekBars.suffix(ChartHistory.dayCount)).map {
-                EnergyDayPoint(key: $0.day, label: $0.label, wattHours: $0.wh)
-            }, power: (model.powerSamples[model.selected] ?? []).filter { Date().timeIntervalSince($0.time) <= 86400 })
-        } else { Text("No history yet").font(.caption).foregroundStyle(.secondary) }
+        EnergyCharts(days: Array(model.weekBars.suffix(ChartHistory.dayCount)).map {
+            EnergyDayPoint(key: $0.day, label: $0.label, wattHours: $0.wh)
+        }, power: model.powerSamples[model.selected] ?? [], currentDay: true)
     }
 }
