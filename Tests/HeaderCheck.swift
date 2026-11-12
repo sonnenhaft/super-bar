@@ -8,25 +8,39 @@ import AppKit
         defaults.set(Brand.bluetti.rawValue, forKey: "super.current")
         let state = BarSelection(defaults)
         precondition(state.current == .tcl, "Startup must use TCL even after BLUETTI was saved")
-        precondition(Brand.allCases == [.tcl, .lg, .bluetti])
-        let header = SuperHeader(state: state, choose: { state.current = $0 })
-        let buttons = header.subviews.compactMap { $0 as? NSButton }
-        precondition(buttons.count == 3)
-        for width: CGFloat in [300, 390, 401] {
-            header.setFrameSize(NSSize(width: width, height: SuperHeader.height))
-            header.layout()
-            precondition(buttons.first!.frame.minX == 8 && abs(buttons.last!.frame.maxX - (width - 8)) < 0.001)
-            for button in buttons {
-                precondition(abs(button.frame.width - (width - 32) / 3) < 0.001)
-                precondition(header.bounds.maxY - button.frame.maxY == 8)
-            }
-        }
-        buttons[2].performClick(nil)
-        precondition(state.current == .bluetti)
-        buttons[1].performClick(nil)
-        precondition(state.current == .lg)
-        buttons[0].performClick(nil)
-        precondition(state.current == .tcl)
+        precondition(Brand.allCases == [.tcl, .lg, .bluetti, .deye, .tuya])
+        state.expanded = .bluetti
+        precondition(state.current == .tcl, "Expanding a card must not change pinned readings")
+        state.pin(.lg)
+        precondition(state.expanded == .bluetti && state.current == .lg)
+        state.chartOverride = .deye
+        precondition(state.chartBrand == .deye && state.expanded == .bluetti && state.current == .lg)
+        precondition(state.detailsCollapsed, "Opening Deye must collapse device controls")
+        precondition(state.openBrand == .deye)
+        state.expanded = .bluetti
+        precondition(state.chartBrand == .bluetti)
+        state.detailsCollapsed = false
+        var activated: [Brand] = []
+        state.didExpand = { activated.append($0) }
+        state.select(.bluetti, sameDevice: true)
+        precondition(state.detailsCollapsed && state.current == .lg && state.chartBrand == .bluetti)
+        precondition(state.openBrand == nil, "A collapsed section must also hide its chart")
+        precondition(activated.isEmpty)
+        state.select(.bluetti, sameDevice: true)
+        precondition(!state.detailsCollapsed && state.current == .bluetti && activated == [.bluetti])
+        precondition(state.openBrand == .bluetti)
+        state.select(.lg, sameDevice: false)
+        precondition(!state.detailsCollapsed && state.chartBrand == .lg && state.current == .lg)
+        precondition(state.openBrand == .lg, "Only the newly selected section remains open")
+        state.select(.lg, sameDevice: true)
+        precondition(state.detailsCollapsed && state.current == .lg && activated == [.bluetti, .lg])
+        state.toggleEnergy()
+        precondition(state.openBrand == .deye && state.detailsCollapsed)
+        state.toggleEnergy()
+        precondition(state.openBrand == nil && state.current == .lg, "Closing Energy hides its charts without changing the readout")
+        state.toggleEnergy()
+        state.select(.tcl, sameDevice: false)
+        precondition(state.openBrand == .tcl && state.chartOverride == nil)
         let read = Date(timeIntervalSince1970:1000)
         ReadingAge.panelOpened()
         precondition(ReadingAge.label(read,now:read) == "Last read Just now")
@@ -54,6 +68,6 @@ import AppKit
         }
         let temperature = TemperatureStyle.attributed(NSAttributedString(string:"21 °C"))
         precondition(temperature.attribute(.foregroundColor,at:3,effectiveRange:nil) as? NSColor == .white)
-        print("TCL starts first; tabs and text size work; color picker removed; degree sign stays white.")
+        print("Expanding activates the readout; collapsing preserves it; text size and degree styling verified.")
     }
 }

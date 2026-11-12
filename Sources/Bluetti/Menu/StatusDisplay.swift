@@ -16,13 +16,15 @@ extension BlueBarDelegate {
     func render() {
         var displayChanged = false
         defer { if displayChanged { didRender?() } }
-        let reading = lastGood
+        let pinned = pinnedDisplay
+        let reading = pinned.reading
+        let pinnedIsActive = defaults.string(forKey: "bluetti.pinnedStation") == nil || pinnedStationKey == selectedKnownStation?.key
         let now = Date()
         let stale = reading.map { now.timeIntervalSince($0.measuredAt) >= maximumAge } ?? false
-        let offline = sleeping || hasConnectionFailure || stale
-        if offline || reading?.runtimeCarriedForward == true { freezeRuntime() }
-        let displayTime = runtimeFrozenAt ?? now
-        let visibility = self.visibility
+        let offline = !pinnedIsActive || sleeping || hasConnectionFailure || stale
+        if pinnedIsActive && (offline || reading?.runtimeCarriedForward == true) { freezeRuntime() }
+        let displayTime = pinnedIsActive ? (runtimeFrozenAt ?? now) : (pinned.frozenAt ?? reading?.measuredAt ?? now)
+        let visibility = StatusVisibility(defaults: defaults, reading: reading, station: pinnedStationKey)
         let fields = visibility.visibleFields(for: reading)
         let title = reading.map { StatusVisibility.title(for: $0, fields: fields, at: displayTime) } ?? ""
         let font = NSFont.monospacedDigitSystemFont(ofSize: statusFontSize, weight: .regular)
@@ -33,7 +35,7 @@ extension BlueBarDelegate {
             readout.attributedTitle = styledTitle
             displayChanged = true
         }
-        let showInitialLoading = awaitingFirstRead && isLoadingReading
+        let showInitialLoading = pinnedIsActive && awaitingFirstRead && isLoadingReading
         let image = statusIcons.image(
             battery: fields.contains(.battery) ? reading?.percent : nil,
             brand: nil,
@@ -52,7 +54,8 @@ extension BlueBarDelegate {
             + (showInitialLoading ? ", reading station" : (offline ? ", offline" : "")))
         let detail = lastError ?? (stale ? "Waiting for a fresh Bluetooth reading." : "")
         let lastRead = reading.map { shortDate($0.measuredAt) }
-        readout.toolTip = (demo ? "DEMO\n" : "") + stationDisplayName
+        let pinnedName = stationDirectory.stations.first { $0.key == pinnedStationKey }?.displayName ?? stationDisplayName
+        readout.toolTip = (demo ? "DEMO\n" : "") + pinnedName
             + (lastRead.map { "\n" + $0 } ?? "")
             + (detail.isEmpty ? "" : "\n" + detail)
         guard mainMenuIsOpen else { return }
@@ -62,8 +65,8 @@ extension BlueBarDelegate {
         emptyRefreshItem.isHidden = hasStationRows
         let status = refreshState == .idle ? "Not connected" : refreshState.rawValue
         refreshRow.update(status: status, loading: !hasStationRows && isLoadingReading, enabled: !sleeping && !quitting)
-        loadGraphItem.isHidden = reading == nil
+        loadGraphItem.isHidden = lastGood == nil
         graphBottomSeparator.isHidden = loadGraphItem.isHidden
-        if reading != nil { loadGraph.update(points: loadHistory.visiblePoints(at: now), now: now) }
+        if lastGood != nil { loadGraph.update(points: loadHistory.visiblePoints(at: now), now: now) }
     }
 }

@@ -191,7 +191,7 @@ struct EnergyChartView: View {
         formatter.calendar = calendar; formatter.timeZone = calendar.timeZone
         formatter.locale = Locale(identifier:"en_US_POSIX"); formatter.dateFormat = "yyyy-MM-dd"
         let values = Dictionary((report?.days ?? []).map { ($0.day,$0.kwh) },uniquingKeysWith:{ _,last in last })
-        return (-6...0).compactMap { offset in
+        return (-(ChartHistory.dayCount - 1)...0).compactMap { offset in
             guard let date = calendar.date(byAdding:.day,value:offset,to:now) else { return nil }
             let key = formatter.string(from:date)
             return EnergyDayPoint(key:key,label:offset == 0 ? "Today" : String(calendar.component(.day,from:date)),

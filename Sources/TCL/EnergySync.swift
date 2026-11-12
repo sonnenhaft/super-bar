@@ -35,7 +35,8 @@ enum EnergySync {
             let previous = old[id]
             let timeOfDay = stamp - calendar.startOfDay(for: now).timeIntervalSince1970
             let nearCutoff = abs(timeOfDay - 9 * 3600) <= 180
-            let retry: TimeInterval = nearCutoff ? 50 : 900
+            // Only the in-progress 09:00 accounting boundary needs faster reads.
+            let retry: TimeInterval = nearCutoff ? 60 : HistoryPolling.tclSummary
             let crossedNine = previous?.attempted.map { $0 < EnergyPeriod.start(at: now) } ?? false
             let crossedMidnight = previous?.attempted.map { $0 < calendar.startOfDay(for: now).timeIntervalSince1970 } ?? false
             if let previous, previous.name == name, previous.meters != nil, !crossedNine, !crossedMidnight,
@@ -65,7 +66,12 @@ enum EnergySync {
             }
             var totals = Dictionary((previous?.days ?? []).filter { $0.day >= cutoff && $0.day <= today }
                 .map { ($0.day, $0.kwh) }, uniquingKeysWith: { _, last in last })
-            totals.merge(readings ?? [:]) { _, newest in newest }
+            // The summary endpoint returns old dates too; finalized days stay cached.
+            for (day, value) in readings ?? [:] {
+                if totals[day] == nil || day == today || (crossedMidnight && day == yesterday) {
+                    totals[day] = value
+                }
+            }
             let days = totals.sorted { $0.key < $1.key }.suffix(95).map { EnergyDay(day: $0.key, kwh: $0.value) }
             var meters = (previous?.meters ?? []).filter { $0.at >= stamp - 3 * 86400 && $0.at <= stamp }
             if let nowKWh = readings?[today] {
@@ -74,7 +80,7 @@ enum EnergySync {
             var hours = Dictionary((previous?.hours ?? []).filter { $0.start >= stamp - 3 * 86400 }
                 .map { ($0.start, $0) }, uniquingKeysWith: { _, last in last })
             var hourAttempt = previous?.lastHourlyRequest
-            if let readings, !readings.isEmpty, hourAttempt == nil || stamp - hourAttempt! >= 3600 || stamp < hourAttempt! {
+            if let readings, !readings.isEmpty, hourAttempt == nil || stamp - hourAttempt! >= HistoryPolling.archiveRetry || stamp < hourAttempt! {
                 hourAttempt = stamp
                 if let reply = try? request(device, "/v1/ac/statistics/electricity/summary?timeType=1") {
                     for entry in EnergyPeriod.confirmedHours(reply, calendarTotals: readings, now: now) { hours[entry.start] = entry }

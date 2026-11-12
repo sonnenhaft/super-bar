@@ -32,16 +32,17 @@ struct MenuReadout: View {
     var body: some View {
         HStack(spacing: 4) {
             if let ac, ac.power == false {
-                if visible.contains(.target) { Image(systemName:"power").font(.system(size:size,weight:.semibold)).foregroundStyle(.red).accessibilityLabel("OFF") }
+                if visible.contains(.target) { Text("⏻").fontWeight(.semibold).foregroundStyle(.red).accessibilityLabel("Off") }
                 if visible.contains(.indoor), let room = ac.indoor {
-                    if visible.contains(.target) { Text("/") }
+                    if visible.contains(.target) { Text("/").foregroundStyle(.white) }
                     TemperatureText(value:tempText(room),menuBar:true).fontWeight(.semibold)
                 }
             } else if let ac {
                 if visible.contains(.target) {
+                    if ac.code("ECO") == 1 { Image(systemName: "leaf.fill").font(.system(size: max(7, size - 2))).foregroundStyle(.green) }
                     TemperatureText(value:ac.acTemperature, menuBar:true).fontWeight(ac.acTemperature == "OFF" ? .bold : .semibold)
                 }
-                if visible.contains(.target) && visible.contains(.indoor) { Text("/") }
+                if visible.contains(.target) && visible.contains(.indoor) { Text("/").foregroundStyle(.white) }
                 if visible.contains(.indoor) { TemperatureText(value:tempText(ac.indoor), menuBar:true).fontWeight(.semibold) }
                 if visible.contains(.power), let on = ac.power {
                     Image(systemName: on ? "power.circle.fill" : "power.circle").font(.system(size: max(7, size - 2)))
@@ -57,9 +58,6 @@ struct MenuReadout: View {
                 }
                 if visible.contains(.horizontal) {
                     VaneIndicator(vertical: false, direction: ac.code("horizontalDirection"), motor: ac.code("horizontalSwitch"))
-                }
-                if ac.code("ECO") == 1 {
-                    Image(systemName: "leaf.fill").font(.system(size: max(7, size - 2))).foregroundStyle(.green)
                 }
                 if visible.contains(.energy), let energyText {
                     HStack(spacing: 2) {

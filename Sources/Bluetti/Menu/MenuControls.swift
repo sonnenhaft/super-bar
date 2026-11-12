@@ -2,6 +2,8 @@ import AppKit
 
 extension BlueBarDelegate {
     func toggleMenuBarField(_ field: MenuBarField) {
+        pinnedStationKey = selectedKnownStation?.key ?? identifier
+        BarSelection.shared.pin(.bluetti)
         var choices = visibility
         choices.toggle(field, reading: lastGood, defaults: defaults)
         render()

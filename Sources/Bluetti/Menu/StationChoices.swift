@@ -51,10 +51,11 @@ extension BlueBarDelegate {
     private func makeStationEntry(key: String) -> StationMenuEntry {
         let entry = StationMenuEntry(key: key)
         let card = entry.details.card
-        card.selectButton.dragID = key
-        card.selectButton.dragGroup = Brand.bluetti.rawValue
         card.onToggle = { [weak self] field in
             guard let self, let station = self.stationDirectory.stations.first(where: { $0.key == key }) else { return }
+            let alreadyPinned = BarSelection.shared.current == .bluetti && self.pinnedStationKey == key
+            self.pinnedStationKey = key
+            BarSelection.shared.pin(.bluetti)
             if self.selectedKnownStation?.key != key {
                 self.switchStation(to: station.selector)
                 guard self.selectedKnownStation?.key == key else { return }
@@ -65,7 +66,8 @@ extension BlueBarDelegate {
                     return
                 }
             }
-            self.toggleMenuBarField(field)
+            if !alreadyPinned && self.visibleMenuBarFields.contains(field) { self.render() }
+            else { self.toggleMenuBarField(field) }
         }
         let actions: [(NSButton, Selector)] = [
             (card.selectButton, #selector(selectStationRow(_:))),
@@ -91,7 +93,7 @@ extension BlueBarDelegate {
         let stations = stationDirectory.stations
         syncStationEntries(stations)
         let active = selectedKnownStation?.key
-        let fields = visibleMenuBarFields
+        let fields = StatusVisibility(defaults: defaults, reading: pinnedReading, station: pinnedStationKey).visibleFields(for: pinnedReading)
         let available = Dictionary(uniqueKeysWithValues: stations.map { ($0.key, $0) })
         var nextAge: Date?
         for entry in stationRows {
@@ -104,13 +106,14 @@ extension BlueBarDelegate {
             let watts = current?.outputWatts ?? readingStore.lastOutputWatts(for: station, knownStations: stations)
             let title = StationRowTitle(name: station.displayName, watts: watts, connectedPercent: connected ? current?.percent : nil)
             let card = entry.details.card
-            card.updateHeader(title: title, checked: selected, enabled: !demo && !quitting, canRename: !quitting)
+            card.expanded = selected && BarSelection.shared.expanded == .bluetti && !BarSelection.shared.detailsCollapsed
+            card.updateHeader(title: title, checked: card.expanded, enabled: !demo && !quitting, canRename: !quitting)
             card.selectButton.toolTip = station.deviceID ?? station.bluetoothName
             card.renameButton.setAccessibilityLabel("Rename " + station.displayName)
             card.refreshButton.setAccessibilityLabel("Refresh " + station.displayName)
             card.refreshButton.update(status: selected ? refreshState.rawValue : "", loading: selected && isLoadingReading,
                                       enabled: !sleeping && !quitting)
-            card.setFields(selected ? fields : [], brand: brandBadge)
+            card.setFields(BarSelection.shared.current == .bluetti && pinnedStationKey == entry.key ? fields : [], brand: brandBadge)
             entry.details.statusItem.target = selected ? self : nil
             entry.details.statusItem.action = selected ? #selector(refreshClicked) : nil
             entry.details.statusItem.keyEquivalent = selected ? "r" : ""
@@ -128,7 +131,10 @@ extension BlueBarDelegate {
     @objc private func selectStationRow(_ sender: NSButton) {
         guard let key = sender.identifier?.rawValue,
               let station = stationDirectory.stations.first(where: { $0.key == key }) else { return }
+        let sameDevice = selectedKnownStation?.key == key
         if selectedKnownStation?.key != key { switchStation(to: station.selector) }
+        else { render() }
+        BarSelection.shared.select(.bluetti, sameDevice: sameDevice)
     }
 
     @objc private func refreshStationRow(_ sender: NSButton) {

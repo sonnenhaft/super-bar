@@ -1,18 +1,24 @@
 import AppKit
 
 final class BatteryCard: NSView {
-    let selectButton = HoldDragButton()
+    let selectButton = PanelButton()
     let refreshButton = RefreshRowButton(frame: .zero, style: .iconOnly)
     let renameButton = PanelButton()
     var onToggle: ((MenuBarField) -> Void)?
 
     private let nameLabel = NSTextField(labelWithString: "")
     private var selected = false
+    var expanded = true { didSet { arrangeContents(); needsDisplay = true } }
     private(set) var contentHeight: CGFloat = 112
     private let eye = NSImageView()
     private weak var editor: BlueBarAliasEditor?
     private var connected = false
     private var percent: Int?
+    var summaryName: String { nameLabel.stringValue }
+    var summaryPercent: String { percent.map { "\($0)%" } ?? "—" }
+    var summaryBatterySymbol: String { "battery.\(min(100, max(0, ((percent ?? 0) + 12) / 25 * 25)))percent" }
+    func selectSummary() { _ = selectButton.sendAction(selectButton.action, to: selectButton.target) }
+    func toggleSummaryPercent() { onToggle?(.percentage) }
 
     private let percentage = BatteryCardButton(.percentage, name: "Battery percentage")
     private let battery = BatteryCardButton(.battery, name:"Battery icon")
@@ -21,7 +27,7 @@ final class BatteryCard: NSView {
     private let output = BatteryCardButton(.output, name: "Output power")
     private let charge = BatteryCardButton(.chargeTime, name: "Time to full charge")
     private let runtime = BatteryCardButton(.runtime, name: "Battery runtime")
-    private var buttons: [BatteryCardButton] { [percentage, battery, input, output, charge, runtime] }
+    private var buttons: [BatteryCardButton] { [percentage, battery, brand, input, output, charge, runtime] }
     override var isFlipped: Bool { true }
 
     override init(frame: NSRect) {
@@ -89,7 +95,7 @@ final class BatteryCard: NSView {
         selectButton.setAccessibilityLabel(title.accessibilityLabel)
         selectButton.setAccessibilityValue(NSNumber(value: checked))
         selectButton.state = checked ? .on : .off
-        refreshButton.isHidden = !checked
+        refreshButton.isHidden = !expanded
         renameButton.isEnabled = canRename
     }
 
@@ -108,7 +114,8 @@ final class BatteryCard: NSView {
 
     func setFields(_ fields: Set<MenuBarField>, brand image: NSImage?) {
         if brand.image !== image { brand.image = image }
-        brand.isHidden = true
+        brand.isHidden = false
+        brand.alphaValue = 1
         for button in buttons { button.updateShown(fields.contains(button.field)) }
     }
 
@@ -119,7 +126,8 @@ final class BatteryCard: NSView {
                                (charge, chargeTime), (runtime, batteryTime)] {
             updateText(button, text)
         }
-        brand.isHidden = true
+        brand.isHidden = false
+        brand.alphaValue = 1
         battery.isHidden = readingPercent == nil
         if let readingPercent { battery.image = NSImage(systemSymbolName:MenuPresentation.batterySymbol(percent:readingPercent),accessibilityDescription:"Battery")?.withSymbolConfiguration(.init(pointSize:16,weight:.medium)) }
         output.helpDetail = power.toolTip
@@ -134,7 +142,7 @@ final class BatteryCard: NSView {
         style.alignment = main ? .left : .right
         style.lineBreakMode = .byTruncatingTail
         let color: NSColor = button === charge || button === runtime ? .init(srgbRed: 0.62, green: 0.88, blue: 0.96, alpha: 1) : .white
-        let font = NSFont.monospacedDigitSystemFont(ofSize: main ? 28 : 13, weight: button.shown == true ? .bold : .regular)
+        let font = NSFont.monospacedDigitSystemFont(ofSize: main ? (expanded ? 28 : 13) : 13, weight: button.shown == true ? .bold : .regular)
         if !text.isEmpty, button.attributedTitle.string == text, button.attributedTitle.attribute(.font, at: 0, effectiveRange: nil) as? NSFont == font { return }
         button.alignment = style.alignment
         button.attributedTitle = NSAttributedString(string: text,
@@ -156,16 +164,32 @@ final class BatteryCard: NSView {
         renameButton.frame = NSRect(x: right - slot, y: header.minY, width: slot, height: header.height)
         refreshButton.frame = renameButton.frame.offsetBy(dx: -slot, dy: 0)
         eye.frame = NSRect(x: refreshButton.frame.minX - 15, y: header.minY, width: 14, height: header.height)
-        nameLabel.frame = NSRect(x: left + 27, y: 9, width: max(0, eye.frame.minX - left - 35), height: 21)
+        nameLabel.frame = NSRect(x: left + 32, y: 9, width: max(0, eye.frame.minX - left - 40), height: 21)
         editor?.frame = nameLabel.frame.insetBy(dx: 0, dy: -2)
-        battery.frame = NSRect(x:left,y:9,width:23,height:21)
+        brand.frame = NSRect(x: left, y: 9, width: 25, height: 21)
+        battery.frame = NSRect(x: right - 20, y: 38, width: 20, height: 20)
+        refreshButton.isHidden = !expanded
+        renameButton.isHidden = !expanded
+        for button in [input, output, charge, runtime] { button.isHidden = !expanded || button.title.isEmpty }
+        if let footer = subviews.last as? RefreshRowButton { footer.isHidden = !expanded }
+        if !expanded {
+            brand.frame = NSRect(x: left, y: 6, width: 24, height: 14)
+            percentage.frame = NSRect(x: right - 48, y: 3, width: 48, height: 20)
+            nameLabel.frame = NSRect(x: left + 30, y: 3, width: max(0, right - left - 86), height: 20)
+            nameLabel.font = .systemFont(ofSize: 13)
+            selectButton.frame = NSRect(x: left, y: 3, width: max(0, right - left - 52), height: 20)
+            battery.isHidden = true
+            contentHeight = 26
+            return
+        }
+        nameLabel.font = .systemFont(ofSize: 15, weight: .bold)
+        battery.isHidden = percent == nil
         guard percent != nil else { setHeight(30); return }
 
         let bodyY: CGFloat = 32
         let percentWidth = ceil(percentage.attributedTitle.size().width) + 4
         let leftWidth = max(64, percentWidth)
         percentage.frame = NSRect(x: left, y: bodyY, width: leftWidth, height: 35)
-        battery.frame = NSRect(x:left,y:9,width:23,height:21)
 
         // Power and time share a right edge for each direction. For unusually
         // long dual AC/DC readings, stack the pairs rather than cutting off watts.
@@ -193,19 +217,13 @@ final class BatteryCard: NSView {
     }
 
     private func setHeight(_ height: CGFloat) {
-        contentHeight = max(112, height + 24)
+        contentHeight = max(144, height + 24)
         if let footer = subviews.last as? RefreshRowButton, footer !== refreshButton {
             footer.frame = NSRect(x: 0, y: contentHeight - 28, width: bounds.width, height: 20)
         }
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        let card = NSBezierPath(roundedRect: bounds, xRadius: 6, yRadius: 6)
-        (selected ? BarTheme.navy : BarTheme.panel).setFill()
-        card.fill()
-        NSColor.white.withAlphaComponent(0.16).setStroke()
-        card.lineWidth = 0.5
-        card.stroke()
         if connected && editor == nil {
             let textWidth = min(nameLabel.frame.width, ceil(nameLabel.intrinsicContentSize.width))
             NSColor.systemGreen.setFill()

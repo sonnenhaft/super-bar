@@ -1,6 +1,22 @@
 import AppKit
 
 extension BlueBarDelegate {
+    var pinnedStationKey: String {
+        get { defaults.string(forKey: "bluetti.pinnedStation") ?? selectedKnownStation?.key ?? identifier }
+        set { defaults.set(newValue, forKey: "bluetti.pinnedStation") }
+    }
+    var pinnedReading: Reading? { pinnedDisplay.reading }
+    var pinnedDisplay: (reading: Reading?, frozenAt: Date?) {
+        guard defaults.string(forKey: "bluetti.pinnedStation") != nil,
+              pinnedStationKey != selectedKnownStation?.key else { return (lastGood, runtimeFrozenAt) }
+        guard let station = stationDirectory.stations.first(where: { $0.key == pinnedStationKey }),
+              let saved = readingStore.savedSnapshot(for: station, knownStations: stationDirectory.stations),
+              var reading = try? Reading.decode(saved, previous: nil, now: Date(), maximumAge: nil)
+        else { return (nil, nil) }
+        let frozenAt = restoreDisplayMetadata(saved["_bluebar_display"], into: &reading) ?? reading.runtimeMeasuredAt
+        return (reading, frozenAt)
+    }
+
     var selectedKnownStation: BlueBarKnownStation? {
         if !identifier.isEmpty {
             let stations = stationDirectory.stations
@@ -26,6 +42,7 @@ extension BlueBarDelegate {
 
     func switchStation(to value: String) {
         guard !demo, !quitting, value != identifier else { return }
+        if defaults.string(forKey: "bluetti.pinnedStation") == nil { pinnedStationKey = selectedKnownStation?.key ?? identifier }
         cancelStationRename()
         // Save the previous station before changing the selector. Its values
         // never remain on-screen while the next station is connecting.

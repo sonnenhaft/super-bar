@@ -50,12 +50,6 @@ private func cloudJSON(_ data: Data, service: String) throws -> CloudObject {
 
 // Follow only the explicit, validated cloud endpoints. Never forward an SSO
 // body or a signed request to an HTTP redirect chosen by another host.
-private final class CloudRedirects: NSObject, URLSessionTaskDelegate {
-    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
-                    newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
-        completionHandler(nil)
-    }
-}
 
 private final class CloudReply: @unchecked Sendable {
     let ready = DispatchSemaphore(value: 0)

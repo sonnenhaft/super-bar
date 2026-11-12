@@ -55,7 +55,13 @@ struct WeekHistory: Codable {
   var month: String? = nil
   var monthWh: Double? = nil
   var mornings: [String: Morning]? = nil  // optional to read earlier caches
-  func due(at date: Date) -> Bool { lastAttempt.map { date.timeIntervalSince($0) >= 3600 } ?? true }
+  var completedThrough: String? = nil
+  func due(at date: Date, calendar: Calendar = .current) -> Bool {
+    let offset = date < Self.nine(date, calendar) ? -2 : -1
+    let end = Self.dayKey(calendar.date(byAdding: .day, value: offset, to: date)!, calendar)
+    guard completedThrough != end || days.count < ChartHistory.dayCount else { return false }
+    return lastAttempt.map { date < $0 || date.timeIntervalSince($0) >= HistoryPolling.archiveRetry } ?? true
+  }
   static func load(_ key: String) -> Self {
     guard let data = defaults.data(forKey: key),
       let h = try? JSONDecoder().decode(Self.self, from: data)
@@ -213,7 +219,7 @@ final class WeekChart: NSView {
       totals[key, default: 0] += wh
       if let t = runtime(row) { durations[key, default: 0] += t } else { incomplete.insert(key) }
     }
-    return (-9...0).map { offset in
+    return (-(ChartHistory.dayCount - 1)...0).map { offset in
       let d = cal.date(byAdding: .day, value: offset, to: end)!
       let next = cal.date(byAdding: .day, value: 1, to: d)!
       let key = WeekHistory.dayKey(d, cal)
@@ -252,12 +258,13 @@ final class WeekChart: NSView {
         BarTheme.cobalt.withAlphaComponent(hovered == nil || hovered == i ? 1 : 0.55)
           .setFill()
         NSBezierPath(
-          roundedRect: NSRect(x: center - 7, y: 20, width: 14, height: max(1, 42 * wh / peak)),
+          roundedRect: NSRect(x: center - min(14, slot * 0.7) / 2, y: 20, width: min(14, slot * 0.7), height: max(1, 42 * wh / peak)),
           xRadius: 2, yRadius: 2
         ).fill()
       } else {
         ("–" as NSString).draw(at: NSPoint(x: center - 3, y: 19), withAttributes: attrs)
       }
+      guard i % 5 == 0 || i == days.count - 1 else { continue }
       let label = day.label as NSString
       label.draw(
         at: NSPoint(x: center - label.size(withAttributes: attrs).width / 2, y: 4),

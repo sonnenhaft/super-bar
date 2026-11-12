@@ -13,21 +13,23 @@ private final class MenuPanel: NSPanel {
     lazy var blue = BlueBarDelegate()
     lazy var tcl = ClimateStore()
     let fields = ReadoutPreferences()
+    let deye = DeyeStore()
+    let tuya = TuyaStore()
+    private var solarWatch: AnyCancellable?
+    private var powerTimer: Timer?
     private var item: NSStatusItem!
-    private let settingsPopover = NSPopover()
     private let panel = MenuPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
     private var watch: AnyCancellable?
     private var scheduled = false
     private var needsReadout = false
     private var cachedTCLImage: (key: [String], image: NSImage?)?
-    private var hostedBrand: Brand?
+    private var panelReady = false
+    private lazy var batteries = BatteryPanelState(blue)
     private var blueStarted = false
     private var cachedHeight: CGFloat = 0
-    private var contentHeights: [Brand:CGFloat] = [:]
-    private var panelHeader: SuperHeader?
-    private var panelFooter: SuperFooter?
+    private var contentHeight: CGFloat?
     private var panelHost: NSHostingView<AnyView>?
-    private var activePanel: Brand?
+    private var panelActive = false
     private var openGeneration = 0
     private var panelUpdateQueued = false
     private var appearanceObservation: NSKeyValueObservation?
@@ -44,6 +46,26 @@ private final class MenuPanel: NSPanel {
         b.setAccessibilityLabel("Super Bar")
         appearanceObservation = b.observe(\.effectiveAppearance, options: [.new]) { [weak self] _, _ in
             DispatchQueue.main.async { self?.schedule(.tcl) }
+        }
+        state.readoutChanged = { [weak self] in
+            guard let self else { return }
+            self.schedule(self.state.current)
+        }
+        state.didExpand = { [weak self] brand in
+            guard let self else { return }
+            switch brand {
+            case .tcl:
+                if let id = self.tcl.selected?.id { self.fields.pinDevice(id) }
+            case .lg:
+                self.lg.pinnedDeviceID = self.lg.selected
+                self.lg.updateStatus()
+            case .bluetti:
+                if let key = self.blue.selectedKnownStation?.key { self.blue.pinnedStationKey = key }
+                self.blue.render()
+            case .deye: self.deye.pinned = true
+            case .tuya:
+                if let device = self.tuya.selected { self.tuya.pin(device.id) }
+            }
         }
         configurePanel()
         // Prepare the native surface before any device controller starts.
@@ -67,11 +89,23 @@ private final class MenuPanel: NSPanel {
         watch = tcl.objectWillChange.merge(with: fields.objectWillChange, tcl.history.objectWillChange).sink { [weak self] _ in self?.schedule(.tcl) }
         lg.applicationDidFinishLaunching(n)
         tcl.start()
+        solarWatch = deye.objectWillChange.merge(with: tuya.objectWillChange).sink { [weak self] _ in
+            guard let self else { return }
+            self.schedule(self.state.current)
+        }
+        deye.start()
+        tuya.start()
+        let timer = Timer(timeInterval: Double(PowerPolling.interval), repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.refreshPower() }
+        }
+        timer.tolerance = 1
+        powerTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
         render()
         DispatchQueue.main.async { [weak self] in
-            guard let self, !self.panel.isVisible, self.hostedBrand == nil else { return }
+            guard let self, !self.panel.isVisible, !self.panelReady else { return }
             if let button = self.item?.button { self.preparePanel(for:button) }
-            self.updatePanel(.tcl)
+            self.updatePanel()
             self.panel.contentView?.layoutSubtreeIfNeeded()
             self.panel.displayIfNeeded()
         }
@@ -103,7 +137,6 @@ private final class MenuPanel: NSPanel {
             guard let self else { return }
             self.scheduled = false
             if self.needsReadout { self.needsReadout = false; self.render() }
-            else { self.syncVisibleHeader() }
         }
     }
     private func render() {
@@ -117,7 +150,11 @@ private final class MenuPanel: NSPanel {
             button.image = readout.image
             button.imagePosition = readout.imagePosition
             button.attributedTitle = readout.attributedTitle
-        case .tcl:
+        case .tuya:
+            button.image = nil
+            button.imagePosition = .noImage
+            button.attributedTitle = NSAttributedString(string: tuya.pinnedWatts.map(DisplayUnits.power) ?? "—", attributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: CGFloat(state.size), weight: .medium), .foregroundColor: NSColor.white])
+        case .tcl, .deye:
             let ac = fields.device(in: tcl)
             let visible = Set(ac.map { fields.ordered($0.id) } ?? (tcl.devices.isEmpty ? [.icon] : []))
             let energy = visible.contains(.energy) ? ac.flatMap { tcl.history.cardEnergy[$0.name] } : nil
@@ -135,75 +172,41 @@ private final class MenuPanel: NSPanel {
             button.image = cachedTCLImage?.image
             button.imagePosition = .imageOnly
         }
-        if button.image == nil && button.title.isEmpty {
+        if button.image == nil && button.title.isEmpty && deye.readout == nil {
             button.imagePosition = .noImage
             button.title = "···"
         }
-        button.toolTip = "Super Bar · " + state.current.rawValue
-        syncVisibleHeader()
-    }
-    private func syncVisibleHeader() {
-        if panel.isVisible { panelHeader?.sync(); panelFooter?.sync() }
-    }
-    private func reading(for brand: Brand) -> BrandReading {
-        switch brand {
-        case .lg:
-            let name = lg.devices.first { $0.id == lg.selected }?.name ?? ""
-            return BrandReading(value: lg.summaryValue(for: lg.selected), name: name)
-        case .tcl:
-            guard let ac = fields.device(in: tcl) else { return BrandReading() }
-            if !tcl.offline && tcl.devices.allSatisfy({ $0.online == true && !$0.failed && $0.power == false }) { return BrandReading(value: "OFF" + (ac.indoor.map { " / " + tempText($0) } ?? ""), name: ac.name) }
-            var value = "—"
-            if !tcl.offline && ac.online == true && !ac.failed {
-                for field in fields.ordered(ac.id) {
-                    switch field {
-                    case .indoor: value = tempText(ac.indoor)
-                    case .icon: continue
-                    case .target: value = ac.acTemperature
-                    case .power: value = ac.status
-                    case .fan: value = ac.fan
-                    case .energy: value = tcl.history.cardEnergy[ac.name] ?? "—"
-                    case .eco: value = ac.code("ECO") == 1 ? "Eco" : "—"
-                    case .vertical: value = ac.vane(true)
-                    case .horizontal: value = ac.vane(false)
-                    }
-                    if value != "—" { break }
-                }
-            }
-            return BrandReading(value: value, name: ac.name)
-        case .bluetti:
-            guard blueStarted else { return BrandReading() }
-            let value = blue.lastGood.flatMap { sample in
-                Date().timeIntervalSince(sample.measuredAt) < blue.maximumAge && !blue.awaitingFirstRead && !blue.hasConnectionFailure
-                    ? blue.visibility.summary(for: sample, at: blue.runtimeFrozenAt ?? Date()) : nil
-            }
-            return BrandReading(value: value ?? "—", name: blue.selectedKnownStation?.displayName ?? "")
+        if deye.pinned {
+            let balance = EnergyBalance(production: deye.reading, consumption: tuya.reading)
+            SolarReadout.prepend(balance.text, to: button, size: CGFloat(state.size), color: balance.color)
         }
+        button.toolTip = "Super Bar · " + state.current.rawValue + (deye.pinned ? " · Net power: " + deye.status : "")
     }
-    private func header() -> SuperHeader {
-        SuperHeader(reading: { [weak self] brand in
-            guard let self, self.watch != nil else { return BrandReading() }
-            return self.reading(for: brand)
-        }, choose: { [weak self] in self?.choose($0) })
-    }
+    private func refreshPower() { deye.refresh(); tuya.refresh() }
     private func footer() -> SuperFooter {
         SuperFooter(refresh:{ [weak self] in
             guard let self else { return }
-            switch self.state.current {
+            switch self.state.chartBrand {
+            case .deye: self.refreshPower()
+            case .tuya: self.refreshPower()
             case .tcl: self.tcl.manualRefresh()
             case .lg: self.lg.manualRefresh()
             case .bluetti: self.blue.refreshClicked()
             }
         }, settings:{ [weak self] _ in self?.lg.openSettings() }, interval:{ [weak self] in
             guard let self else { return ([60],60) }
-            switch self.state.current {
+            switch self.state.chartBrand {
+            case .deye: return ([PowerPolling.interval],PowerPolling.interval)
+            case .tuya: return ([PowerPolling.interval],PowerPolling.interval)
             case .tcl: return ([1,5,30,60,300,600],Int(self.tcl.refreshInterval))
             case .lg: return (intervals.map(Int.init),Int(defaults.double(forKey:"interval")))
             case .bluetti: return (PollInterval.allCases.map(\.rawValue),self.blue.selectedInterval.rawValue)
             }
         }, setInterval:{ [weak self] seconds in
             guard let self else { return }
-            switch self.state.current {
+            switch self.state.chartBrand {
+            case .deye: break
+            case .tuya: break
             case .tcl: self.tcl.setRefreshInterval(seconds)
             case .lg: defaults.set(Double(seconds),forKey:"interval"); self.lg.startTimer()
             case .bluetti:
@@ -213,60 +216,35 @@ private final class MenuPanel: NSPanel {
             }
         }, changed: { [weak self] in
             guard let self else { return }
-            switch self.state.current {
-            case .lg: self.lg.updateStatus()
-            case .bluetti: self.blue.render()
-            case .tcl: self.schedule(.tcl)
-            }
+            self.lg.updateStatus()
+            if self.blueStarted { self.blue.render() }
+            self.schedule(self.state.current)
         })
     }
-    private func showBrandSettings(_ source:NSView) {
-        let view: AnyView
-        switch state.current {
-        case .tcl:
-            view = AnyView(ReadoutSettings(preferences:fields,id:tcl.selected?.id ?? "").frame(width:350))
-        case .lg:
-            view = AnyView(DevicePanel(brand:.lg,sections:lg.panelSections.filter { $0.title == "Settings" }) { EmptyView() }.frame(width:350,height:300))
-        case .bluetti:
-            view = AnyView(DevicePanel(brand:.bluetti,sections:[DeviceSection(title:"Settings",symbol:"slider.horizontal.3",items:blue.panelSettings)]) { EmptyView() }.frame(width:350,height:300))
-        }
-        settingsPopover.behavior = .transient; settingsPopover.animates = false
-        settingsPopover.contentViewController = NSHostingController(rootView:view)
-        settingsPopover.contentSize = NSSize(width:350,height:300)
-        settingsPopover.show(relativeTo:source.bounds,of:source,preferredEdge:.maxY)
-    }
-
     private func scheduleContent(_ brand: Brand) {
-        guard brand == activePanel, !panelUpdateQueued else { return }
+        guard panelActive, !panelUpdateQueued else { return }
         panelUpdateQueued = true
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.panelUpdateQueued = false
-            switch self.activePanel {
-            case .lg: self.lg.objectWillChange.send()
-            case .bluetti: self.updatePanel(.bluetti)
-            default: return
-            }
-            self.syncVisibleHeader()
+            self.lg.objectWillChange.send()
+            self.batteries.refresh()
         }
     }
 
     private func endPanel() {
         ReadingAge.stop()
         openGeneration += 1
-        switch activePanel {
-        case .lg: lg.menuDidClose(lg.menu)
-        case .bluetti: blue.mainMenuDidClose()
-        default: break
-        }
-        activePanel = nil
+        lg.menuDidClose(lg.menu)
+        if blueStarted { blue.mainMenuDidClose() }
+        panelActive = false
     }
     func windowDidResignKey(_ notification: Notification) {
         guard notification.object as? NSWindow === panel else { return }
         // Menu tracking temporarily takes key focus; let the menu action finish.
         DispatchQueue.main.async { [weak self] in
             guard let self, self.panel.isVisible, !self.panel.isKeyWindow else { return }
-            if self.settingsPopover.isShown || (NSApp.keyWindow != nil && NSApp.keyWindow !== self.panel) { return }
+            if NSApp.keyWindow != nil && NSApp.keyWindow !== self.panel { return }
             self.dismissPanel()
         }
     }
@@ -275,85 +253,50 @@ private final class MenuPanel: NSPanel {
         endPanel()
     }
 
-    private func beginPanel(_ brand: Brand) {
-        endPanel()
-        activePanel = brand
+    private func beginPanel() {
+        panelActive = true
+        lg.menuWillOpen(lg.menu)
+        if !blueStarted {
+            blueStarted = true
+            blue.panelChanged = { [weak self] in self?.scheduleContent(.bluetti) }
+            blue.didRender = { [weak self] in self?.schedule(.bluetti) }
+            blue.applicationDidFinishLaunching(Notification(name: NSApplication.didFinishLaunchingNotification))
+        }
+        blue.mainMenuWillOpen()
+        batteries.refresh()
         ReadingAge.start { [weak self] in
-            guard let self, self.panel.isVisible, self.activePanel == .bluetti else { return }
-            let now = Date()
-            for row in self.blue.stationRows { _ = row.details.updateAge(now:now) }
+            guard let self, self.panel.isVisible else { return }
+            for row in self.blue.stationRows { _ = row.details.updateAge(now: Date()) }
         }
-        if let height = contentHeights[brand] { applyPanelHeight(height) }
-        if brand != .bluetti || blueStarted {
-            if hostedBrand != brand { updatePanel(brand) }
-        }
-        panelHeader?.sync()
-        panelFooter?.sync()
-        DispatchQueue.main.async { [weak self] in
-            guard let self, self.panel.isVisible, self.activePanel == brand else { return }
-            switch brand {
-            case .lg: self.lg.menuWillOpen(self.lg.menu)
-            case .bluetti:
-                if !self.blueStarted {
-                    self.blueStarted = true
-                    self.blue.panelChanged = { [weak self] in self?.scheduleContent(.bluetti) }
-                    self.blue.didRender = { [weak self] in self?.schedule(.bluetti) }
-                    self.blue.applicationDidFinishLaunching(Notification(name: NSApplication.didFinishLaunchingNotification))
-                    self.updatePanel(.bluetti)
-                }
-                self.blue.activateBluetooth()
-                self.blue.mainMenuWillOpen()
-            case .tcl: break
-            }
-        }
+        if !panelReady { updatePanel() }
     }
 
-    private func updatePanel(_ brand: Brand) {
+    private func updatePanel() {
         guard let host = panelHost else { return }
-        hostedBrand = brand
-        if let height = contentHeights[brand] { fitPanel(height,brand:brand) }
-        switch brand {
-        case .tcl:
-            host.rootView = AnyView(ClimatePanel(store: tcl, history: tcl.history, preferences: fields, contentHeight:{ [weak self] in self?.fitPanel($0,brand:.tcl) }, height: cachedHeight))
-        case .lg:
-            host.rootView = AnyView(LGPanel(model: lg, contentHeight:{ [weak self] in self?.fitPanel($0,brand:.lg) }))
-        case .bluetti:
-            let sections = [DeviceSection(title: "Batteries", symbol: MenuPresentation.batterySymbol(percent: blue.lastGood?.percent ?? 0), items: [blue.emptyRefreshItem] + blue.stationRows.flatMap { $0.details.items }),
-                            DeviceSection(title: "Settings", symbol: "gearshape", items: blue.panelSettings)]
-            host.rootView = AnyView(DevicePanel(brand: .bluetti, sections: sections.filter { $0.title != "Settings" }, contentHeight:{ [weak self] in self?.fitPanel($0,brand:.bluetti) }, toggleBattery: { self.blue.toggleMenuBarField(.battery) }) { EmptyView() })
-        }
+        panelReady = true
+        host.rootView = AnyView(UnifiedPanel(selection: state, tcl: tcl, history: tcl.history,
+            fields: fields, lg: lg, batteries: batteries, deye: deye, tuya: tuya, availableHeight: cachedHeight,
+            contentHeight: { [weak self] in self?.fitPanel($0) },
+            settings: footer()))
     }
 
-    private func fitPanel(_ natural: CGFloat, brand: Brand) {
+    private func fitPanel(_ natural: CGFloat) {
         guard natural.isFinite, natural > 0 else { return }
-        let available = (panel.screen ?? NSScreen.main)?.visibleFrame.height ?? 800
-        let maximum = min(cachedHeight,max(80,available-SuperHeader.height-SuperFooter.height-36))
-        let height = min(maximum,max(1,ceil(natural)))
-        contentHeights[brand] = height
+        let height = min(cachedHeight, max(1, ceil(natural)))
+        contentHeight = height
         DispatchQueue.main.async { [weak self] in
-            guard let self, self.hostedBrand == brand, self.activePanel == brand else { return }
+            guard let self, self.panelReady else { return }
             self.applyPanelHeight(height)
         }
     }
 
-    private func applyPanelHeight(_ height:CGFloat) {
-        guard let host = panelHost else { return }
+    private func applyPanelHeight(_ height: CGFloat) {
+        guard let host = panelHost, abs(host.frame.height - height) > 1 else { return }
         let top = panel.frame.maxY
-        let chrome = SuperHeader.height + SuperFooter.height
-        guard abs(host.frame.height-height) > 1 || abs((panel.contentViewController?.view.frame.height ?? 0) - (height+chrome)) > 1 else { return }
-        panelFooter?.frame = NSRect(x:0,y:0,width:390,height:SuperFooter.height)
-        panelFooter?.sync()
-        panel.contentViewController?.view.setFrameSize(NSSize(width:390,height:height+chrome))
-        host.frame = NSRect(x:0,y:SuperFooter.height,width:390,height:height)
-        panelHeader?.frame.origin.y = height + SuperFooter.height
-        panel.setContentSize(NSSize(width:390,height:height+chrome))
-        panel.setFrameTopLeftPoint(NSPoint(x:panel.frame.minX,y:top))
-    }
-
-    private func choose(_ brand: Brand) {
-        state.current = brand
-        beginPanel(brand)
-        render()
+        panel.contentViewController?.view.setFrameSize(NSSize(width: PanelLayout.width, height: height))
+        host.frame = NSRect(x: 0, y: 0, width: PanelLayout.width, height: height)
+        panel.setContentSize(NSSize(width: PanelLayout.width, height: height))
+        panel.setFrameTopLeftPoint(NSPoint(x: panel.frame.minX, y: top))
     }
 
     @objc func showPanel() {
@@ -363,11 +306,11 @@ private final class MenuPanel: NSPanel {
         let started = ProcessInfo.processInfo.systemUptime
         let eventTime = NSApp.currentEvent.flatMap { $0.type == .leftMouseDown ? $0.timestamp : nil }
         preparePanel(for: button)
-        if hostedBrand != state.current {
-            updatePanel(state.current)
+        if !panelReady {
+            updatePanel()
             panel.contentView?.layoutSubtreeIfNeeded()
         }
-        if let height = contentHeights[state.current] { applyPanelHeight(height) }
+        if let height = contentHeight { applyPanelHeight(height) }
         guard let window = button.window, let screen = window.screen else { return }
         let anchor = window.convertToScreen(button.convert(button.bounds, to: nil))
         let width = panel.frame.width
@@ -379,41 +322,38 @@ private final class MenuPanel: NSPanel {
         let ordered = ProcessInfo.processInfo.systemUptime
         DispatchQueue.main.async { [weak self] in
             guard let self, self.openGeneration == generation, self.panel.isVisible else { return }
-            self.beginPanel(self.state.current)
+            self.beginPanel()
             let origin = eventTime ?? started
             NSLog("Super Bar open: event to handler %.1f ms; handler to window ordered %.1f ms", (started-origin)*1000, (ordered-started)*1000)
             UserDefaults.standard.set((ordered-started)*1000, forKey: "lastMenuOrderMilliseconds")
         }
     }
     private func preparePanel(for button: NSStatusBarButton) {
-        let chrome = SuperHeader.height + SuperFooter.height
-        let height = min(720, max(300, (button.window?.screen?.visibleFrame.height ?? 800) - chrome - 36))
+        let chrome: CGFloat = 0
+        let height = max(300, (button.window?.screen?.visibleFrame.height ?? 800) - chrome - 36)
         if cachedHeight != height {
             cachedHeight = height
             let root = NSViewController()
-            root.view = NSView(frame: NSRect(x: 0, y: 0, width: 390, height: height + chrome))
+            root.view = NSView(frame: NSRect(x: 0, y: 0, width: PanelLayout.width, height: height + chrome))
             root.view.appearance = NSAppearance(named: .darkAqua)
             root.view.wantsLayer = true
             root.view.layer?.backgroundColor = NSColor.clear.cgColor
-            let tint = NSView(frame:root.view.bounds)
-            tint.wantsLayer = true; tint.layer?.backgroundColor = NSColor(srgbRed:0.035,green:0.16,blue:0.32,alpha:0.80).cgColor
+            let tint = PanelBackdrop(frame:root.view.bounds)
             tint.autoresizingMask = [.width,.height]
             root.view.addSubview(tint)
-            root.view.layer?.cornerRadius = 8
+            root.view.layer?.cornerRadius = 12
+            root.view.layer?.borderWidth = 0.5
+            root.view.layer?.borderColor = NSColor.white.withAlphaComponent(0.22).cgColor
             root.view.layer?.masksToBounds = true
-            panelHeader = header()
-            panelFooter = footer()
             let host = NSHostingView(rootView: AnyView(EmptyView()))
             // The status popover owns its size; child layout must never resize its window.
             host.sizingOptions = []
             host.wantsLayer = true
             host.layer?.backgroundColor = NSColor.clear.cgColor
-            hostedBrand = nil
+            panelReady = false
             panelHost = host
-            panelHeader!.frame = NSRect(x: 0, y: height + SuperFooter.height, width: 390, height: SuperHeader.height)
-            panelFooter!.frame = NSRect(x: 0, y: 0, width: 390, height: SuperFooter.height)
-            host.frame = NSRect(x: 0, y: SuperFooter.height, width: 390, height: height)
-            [panelHeader!, host, panelFooter!].forEach(root.view.addSubview)
+            host.frame = NSRect(x: 0, y: 0, width: PanelLayout.width, height: height)
+            root.view.addSubview(host)
             panel.contentViewController = root
             panel.setContentSize(root.view.frame.size)
         }
@@ -424,7 +364,7 @@ private final class MenuPanel: NSPanel {
         return false
     }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply { blueStarted ? blue.applicationShouldTerminate(sender) : .terminateNow }
-    func applicationWillTerminate(_ n: Notification) { lg.applicationWillTerminate(n); if blueStarted { blue.applicationWillTerminate(n) } }
+    func applicationWillTerminate(_ n: Notification) { powerTimer?.invalidate(); deye.stop(); tuya.stop(); lg.applicationWillTerminate(n); if blueStarted { blue.applicationWillTerminate(n) } }
 }
 
 let arguments = Array(CommandLine.arguments.dropFirst())

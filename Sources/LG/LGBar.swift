@@ -17,6 +17,10 @@ func ago(_ date: Date?) -> String {
   let menu = NSMenu()
   var settings: NSWindow?
   var devices: [Device] = []
+  var pinnedDeviceID: String {
+    get { defaults.string(forKey: "lg.pinnedDevice") ?? selected }
+    set { defaults.set(newValue, forKey: "lg.pinnedDevice") }
+  }
   var state: [String: Any] = [:]
   private var capabilityCache: [String: [String: Any]] = [:]
   var profile: [String: Any] = [:] {
@@ -253,16 +257,22 @@ func ago(_ date: Date?) -> String {
   }
   func updateStatus() {
     let size = CGFloat(BarSelection.shared.size)
-    let speed = displayValue("airFlow", windKey) as? String
-    let eco = ecoChoice.enabled
-    let set = lgNumber(displayValue("temperature", "targetTemperature")) ?? current
+    let pinned = pinnedDeviceID
+    let sample = sample(for: pinned)
+    let live = pinned == selected && connected
+    let off = sample?.power == "POWER_OFF"
+    let speed = live ? displayValue("airFlow", windKey) as? String : sample?.fan?.uppercased()
+    let eco = live ? ecoChoice.enabled : sample?.eco
+    let set = live ? (lgNumber(displayValue("temperature", "targetTemperature")) ?? current) : sample?.target
     var readings: [(text: String, isAC: Bool)] = []
-    if let sample = sample(for: selected) {
-      if shown("current", for: selected) {
-        let value = connected && !isReportedOff ? degree(set) : sample.value("current")
-        readings.append((value, true))
+    if let sample {
+      if off {
+        if shown("current", for: pinned) { readings.append(("⏻", true)) }
+        if shown("sensor", for: pinned), let room = sample.room { readings.append((degree(room), false)) }
+      } else {
+        if shown("current", for: pinned) { readings.append((degree(set), true)) }
+        if shown("sensor", for: pinned) { readings.append((sample.value("sensor"), false)) }
       }
-      if shown("sensor", for: selected) { readings.append((sample.value("sensor"), false)) }
     }
     var displayChanged = false
     defer { if displayChanged { didRender?() } }
@@ -278,20 +288,20 @@ func ago(_ date: Date?) -> String {
     let stacked = readings.count == 3
     for (index, reading) in readings.enumerated() {
       if stacked && index == 1 {
-        title.append(NSAttributedString(string: " / ", attributes: attrs))
+        title.append(NSAttributedString(string: " / ", attributes: attrs.merging([.foregroundColor: NSColor.white]) { _, new in new }))
         title.append(temperatureStack(
           room: reading.text, outside: readings[2].text, fontSize: size,
           color: textColor ?? .labelColor))
         break
       }
-      if index > 0 { title.append(NSAttributedString(string: " / ", attributes: attrs)) }
-      if reading.isAC && eco == true && !isReportedOff {
+      if index > 0 { title.append(NSAttributedString(string: " / ", attributes: attrs.merging([.foregroundColor: NSColor.white]) { _, new in new })) }
+      if reading.isAC && eco == true && !off {
         title.append(NSAttributedString(string: ecoSymbol, attributes: attrs))
       }
-      let style = attrs
-      if reading.text == "OFF" { title.append(PowerGlyph.off(size:size)) }
-      else { title.append(NSAttributedString(string:reading.text,attributes:style)) }
-      if reading.isAC && connected && !isReportedOff && shown("fanIndicator", for: selected),
+      var style = attrs
+      if reading.isAC && off { style[.foregroundColor] = NSColor.systemRed }
+      title.append(NSAttributedString(string:reading.text,attributes:style))
+      if reading.isAC && !off && shown("fanIndicator", for: pinned),
         let dots = fanIndicator.attachment(
           speed: speed, fontSize: size, color: textColor ?? .labelColor)
       {
@@ -382,6 +392,8 @@ func ago(_ date: Date?) -> String {
                                          "sensor": "room temperature", "fanIndicator": "fan indicator",
                                          "ecoIndicator": "eco indicator"]
   func toggleVisibility(_ key: String) {
+    pinnedDeviceID = selected
+    BarSelection.shared.pin(.lg)
     let visible = !shown(key, for: selected)
     defaults.set(visible, forKey: "lg.fields." + selected + "." + key)
     if visible && (key == "current" || key == "sensor") { rememberField(key) }
@@ -420,6 +432,7 @@ func ago(_ date: Date?) -> String {
   }
   func selectDevice(_ id: String) {
     guard id != selected, devices.contains(where: { $0.id == id }) else { return }
+    if defaults.string(forKey: "lg.pinnedDevice") == nil { pinnedDeviceID = selected }
     selected = id
     reset()
     state = snapshots[id] ?? [:]
@@ -696,7 +709,7 @@ func ago(_ date: Date?) -> String {
     let nine = WeekHistory.nine(now, calendar)
     let boundaryDue =
       abs(now.timeIntervalSince(nine)) <= 900
-      && (lastEnergy.map { now.timeIntervalSince($0) >= 300 } ?? true)
+      && (lastEnergy.map { now.timeIntervalSince($0) >= HistoryPolling.recent } ?? true)
     guard weekHistory.due(at: now) || boundaryDue else { return }
     let gen = generation
     let id = selected
@@ -740,15 +753,23 @@ func ago(_ date: Date?) -> String {
           weekHistory.lastAttempt = Date()
           weekHistory.save(key)
           let lastOffset = now < nine ? -2 : -1
-          let result = try await usage(lastOffset - 9, lastOffset)
+          let firstMissing = ((lastOffset - ChartHistory.dayCount + 1)...lastOffset).first { offset in
+            let day = WeekHistory.dayKey(calendar.date(byAdding: .day, value: offset, to: today)!, calendar)
+            return !weekHistory.days.contains { $0.day == day && $0.wh != nil }
+          } ?? lastOffset
+          let result = try await usage(firstMissing, lastOffset)
           try Task.checkCancellation()
           let end = calendar.date(byAdding: .day, value: lastOffset, to: today)!
+          let savedDays = Dictionary(weekHistory.days.map { ($0.day, $0) }, uniquingKeysWith: { _, last in last })
           weekHistory.days = WeekChart.series(
             response: result, end: end, calendar: calendar, mornings: weekHistory.mornings ?? [:],
-            use: observedUse)
+            use: observedUse).map { day in day.wh != nil ? day : savedDays[day.day] ?? day }
+          if weekHistory.days.allSatisfy({ $0.wh != nil }) {
+            weekHistory.completedThrough = WeekHistory.dayKey(end, calendar)
+          }
           weekHistory.save(key)
           weekBars = weekHistory.days
-          // Fetch the entire civil month; the chart intentionally covers only ten days.
+          // Fetch the civil month separately for the month-to-date readout.
           let first = calendar.dateInterval(of: .month, for: today)!.start
           let offset = calendar.dateComponents([.day], from: first, to: today).day!
           do {

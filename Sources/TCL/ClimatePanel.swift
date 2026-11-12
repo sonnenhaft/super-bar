@@ -5,18 +5,21 @@ struct ClimatePanel: View {
     @ObservedObject var store: ClimateStore
     @ObservedObject var history: EnergyHistory
     @ObservedObject var preferences: ReadoutPreferences
-    var contentHeight: (CGFloat) -> Void = { _ in }
-    @ObservedObject private var order = CardOrder.shared
-    let height: CGFloat
+    @ObservedObject var selection: BarSelection
     @State private var email = ""
     @State private var password = ""
     @State private var signingIn = false
+    @State private var showSignIn = false
     @State private var loginError: String?
     @State private var horizontalPicker = false
     @State private var verticalPicker = false
     var body: some View {
-        VStack(spacing: 0) {
+        VStack(spacing: 2) {
             if store.needsSignIn {
+                DeviceSelector(brand: .tcl) {
+                    DeviceChoice(action: { showSignIn.toggle() }) { Text("Sign in to TCL Home").font(.system(size: 12)) }
+                }
+                if showSignIn {
                 VStack {
                     Card {
                         SectionName("Sign in to TCL Home", "person.crop.circle")
@@ -37,66 +40,65 @@ struct ClimatePanel: View {
                              .disabled(email.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || password.isEmpty)
                         }
                     }.textFieldStyle(.roundedBorder).disabled(signingIn)
-                    Spacer()
-                }.padding(14)
-            } else if let ac = store.selected {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 8) {
-                        ForEach(order.sorted(store.devices,group:Brand.tcl.rawValue,id:{$0.id})) { device in deviceCard(device, active: device.id == ac.id) }
-                        controls(ac)
-                            .disabled(ac.online != true || ac.failed)
-                        if history.report(for:ac.name)?.days.isEmpty == false || !history.watts(for:ac.name).isEmpty {
-                            Card { EnergyChartView(history:history,device:ac.name) }
-                        }
-                    }.padding(8).reportContentHeight { contentHeight($0 + ((store.problem != nil || store.command != nil) ? 38 : 0)) }
+                }
+                }
+            } else if !store.devices.isEmpty {
+                DeviceSelector(brand: .tcl) {
+                    ForEach(store.devices) { device in
+                        deviceCard(device, active: selection.expanded == .tcl && device.id == store.selected?.id, summary: true)
+                            .frame(maxWidth: .infinity)
+                    }
+                }
+                if selection.expanded == .tcl && !selection.detailsCollapsed, let device = store.selected {
+                    deviceCard(device, active: true).padding(.leading, PanelLayout.logoColumn)
                 }
             } else {
                 VStack(spacing:8) {
                     Image(systemName:"air.conditioner.horizontal").font(.largeTitle).foregroundStyle(.secondary)
                     Text(store.refreshing ? "Loading air conditioners…" : (store.didRead ? "No air conditioners found" : "No TCL readings yet"))
-                }.frame(maxWidth:.infinity).padding(16).reportContentHeight(contentHeight)
-            }
-            if !store.needsSignIn && (store.problem != nil || store.command != nil) {
-                footer
+                }.frame(maxWidth:.infinity).padding(16)
             }
         }
-        .frame(width: 390).frame(maxHeight: .infinity)
         .tint(cobalt)
         .background(Color.clear)
         .environment(\.locale, Locale(identifier: "en_US"))
         .onDisappear { password = "" }
     }
-    private func deviceCard(_ ac: Aircon, active: Bool) -> some View {
+    @ViewBuilder var charts: some View {
+        if let ac = store.selected {
+            Text(DeviceDisplayName.clean(ac.name) + " · TCL").font(.caption).foregroundStyle(.secondary)
+            if history.report(for: ac.name)?.days.isEmpty == false || !history.watts(for: ac.name).isEmpty {
+                EnergyChartView(history: history, device: ac.name)
+            } else { Text("No history yet").font(.caption).foregroundStyle(.secondary) }
+        }
+    }
+    private func deviceCard(_ ac: Aircon, active: Bool, summary: Bool = false) -> some View {
         let pins = preferences.ordered(ac.id)
         let energy = history.cardEnergy[ac.name]
         let choices: [(ReadoutField, String, String)] = [
             (.target, "AC", tempText(ac.target)), (.indoor, "Room", tempText(ac.indoor)),
-            (.fan, "Fan", ac.fan), (.energy, "Energy", energy ?? "—")
+            (.fan, "Fan", ac.fan), (.energy, "Energy", energy ?? "—"),
+            (.eco, "Eco", ac.code("ECO") == 1 ? "ON" : "OFF")
         ]
-        let displayed = preferences.device(in: store)?.id == ac.id
-        return ClimateDeviceCard(brand: .tcl, iconVisible: displayed && pins.contains(.icon), toggleIcon: {
-            if !active { store.select(ac) }
-            preferences.set(.icon, for: ac.id, visible: !displayed || !pins.contains(.icon))
-        }, name: ac.name, selected: active, status: store.offline ? "Offline" : ac.status,
+        let displayed = selection.current == .tcl && preferences.device(in: store)?.id == ac.id
+        return ClimateDeviceCard(brand: .tcl, name: ac.name, selected: active, status: store.offline ? "Offline" : ac.status,
             metrics: choices.map { field, label, value in
                 let visible = pins.contains(field)
                 return DeviceMetric(id: field.rawValue, label: label, symbol: field.symbol, value: value,
                     visible: displayed && visible) {
-                    if !active { store.select(ac) }
                     preferences.set(field, for: ac.id, visible: !displayed || !visible)
                 }
-            }, reading: store.refreshing, readAt: store.statusDate, refresh: store.manualRefresh, select: { if !active { store.select(ac) } }, powerOn:ac.power,
+            }, reading: store.refreshing, readAt: store.statusDate, refresh: store.manualRefresh, select: { let sameDevice = store.selected?.id == ac.id; store.select(ac); selection.select(.tcl, sameDevice: sameDevice) }, powerOn: store.offline || ac.online != true || ac.failed ? nil : ac.power,
             temperatureOptions:ac.setpoints.filter { (16...26).contains($0) },
             changeTemperature:{ store.setTemperature(ac,$0) },
             turnOff:ac.power == nil ? nil : { store.set(ac,"powerSwitch",0,"Power") },
-            reorderID:ac.id, knownIDs:store.devices.map(\.id),
+            message: store.problem ?? store.command,
+            presets: AnyView(controls(ac).disabled(store.offline || ac.online != true || ac.failed)),
             directions: AnyView(HStack(spacing: 8) {
                 vane(ac, true)
                 vane(ac, false)
-            }.disabled(store.offline || ac.online != true || ac.failed))) {
-                CardMenus(degrees: ac.setpoints.filter { (16...26).contains($0) && ac.target != nil },
-                          target: ac.acTemperature, off: ac.power == nil ? nil : { store.set(ac, "powerSwitch", 0, "Power") }, eco: ac.has("ECO") ? ac.code("ECO") == 1 : nil, toggleEco: { store.set(ac, "ECO", ac.code("ECO") == 1 ? 0 : 1, "Eco") },
-                          change: { store.setTemperature(ac, $0) },
+            }.disabled(store.offline || ac.online != true || ac.failed)), summaryOnly: summary) {
+                CardMenus(eco: ac.has("ECO") ? ac.code("ECO") == 1 : nil, toggleEco: { store.set(ac, "ECO", ac.code("ECO") == 1 ? 0 : 1, "Eco") },
                           fan: ac.has(ac.fanField) ? ac.fan : "") {
                     Button("Auto") { store.autoFan(ac, enabled: true) }
                     ForEach(ac.manualFanCodes, id: \.self) { level in
@@ -131,7 +133,7 @@ struct ClimatePanel: View {
                         Image(nsImage:image).renderingMode(.template).resizable().scaledToFit().frame(width:28,height:28)
                     }
                     Image(systemName:"chevron.down").font(.system(size:7,weight:.semibold))
-                }.foregroundStyle(ice).contentShape(Rectangle())
+                }.foregroundStyle(.white).frame(width: 50, height: 34).deviceSurface(selected: false).contentShape(Rectangle())
             }.buttonStyle(.plain).help(title + ": " + value)
                 .popover(isPresented: Binding(get:{vertical ? verticalPicker : horizontalPicker},set:{if vertical { verticalPicker = $0 } else { horizontalPicker = $0 }}), arrowEdge: .bottom) {
                     let options = hasDirection ? Array(9...13) + Array(1...(vertical ? 3 : 4)) + [8] : [1, 0]
@@ -179,14 +181,4 @@ struct ClimatePanel: View {
         }
     }
 
-    private var footer: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            if let problem = store.problem {
-                Label(problem, systemImage: "exclamationmark.circle").font(.caption).foregroundStyle(.orange)
-            }
-            if let pending = store.command {
-                Text(verbatim: pending).font(.system(size: 10)).foregroundStyle(.secondary)
-            }
-        }.padding(.horizontal, 16).padding(.vertical, 8)
-    }
 }

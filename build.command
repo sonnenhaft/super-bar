@@ -9,12 +9,20 @@ trap 'rm -rf "$stage"' EXIT
 app="$stage/Super Bar.app"
 bundle="$app/Contents"
 mkdir -p "$bundle"/{MacOS,Resources} .build/modules
+# Compile a stable snapshot while other chats may be editing the workspace.
+cp -R Sources "$stage/Sources"
 sources=()
-while IFS= read -r -d '' file; do sources+=("$file"); done < <(find Sources -name '*.swift' -print0)
-step "Compiling Super Bar (optimized Swift)" xcrun swiftc -O -whole-module-optimization -swift-version 5 -target "$(uname -m)-apple-macosx15.0" -module-cache-path .build/modules -import-objc-header Sources/Bluetti/Bluetooth/BluettiPOSIX.h "${sources[@]}" -o "$bundle/MacOS/SuperBar"
+while IFS= read -r -d '' file; do sources+=("$file"); done < <(find "$stage/Sources" -name '*.swift' -print0)
+step "Compiling Super Bar (optimized Swift)" xcrun swiftc -Osize -whole-module-optimization -Xlinker -dead_strip -swift-version 5 -target "$(uname -m)-apple-macosx15.0" -module-cache-path .build/modules -import-objc-header "$stage/Sources/Bluetti/Bluetooth/BluettiPOSIX.h" "${sources[@]}" -o "$bundle/MacOS/SuperBar"
 printf "▶ Preparing resources and metadata\n"
 cp Info.plist "$bundle/"
 cp Resources/* "$bundle/Resources/"
+if [[ "${SUPER_BAR_RELEASE:-0}" != 1 ]]; then
+  printf '%s' "$PWD/.env.deye-session.json" > "$bundle/Resources/deye-session-path.txt"
+  printf '%s' "$PWD/.env.tuya-session.json" > "$bundle/Resources/tuya-session-path.txt"
+fi
+cp Scripts/TUYA-NOTICE.txt "$bundle/Resources/"
+strip -x "$bundle/MacOS/SuperBar"
 build="$(date -u +%s)"
 previous="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' 'dist/Super Bar.app/Contents/Info.plist' 2>/dev/null || true)"
 if [[ "$previous" =~ ^[0-9]+$ ]] && (( previous >= build )); then build=$((previous + 1)); fi

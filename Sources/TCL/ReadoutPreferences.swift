@@ -35,6 +35,10 @@ final class ReadoutPreferences: ObservableObject {
     private let defaults: UserDefaults
     @Published private var overrides: [String: [String]]
     private let initial: [String]
+    private var pinnedID: String? {
+        get { defaults.string(forKey: "tcl.pinnedDevice") }
+        set { defaults.set(newValue, forKey: "tcl.pinnedDevice") }
+    }
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         initial = (defaults.stringArray(forKey: "readoutFields") ?? ["target", "indoor"]) + ["icon"]
@@ -46,14 +50,21 @@ final class ReadoutPreferences: ObservableObject {
         (overrides[id] ?? initial).compactMap(ReadoutField.init(rawValue:))
     }
     func set(_ field: ReadoutField, for id: String, visible: Bool) {
+        pinnedID = id
+        BarSelection.shared.pin(.tcl)
         var values = ordered(id).filter { $0 != field }
         if visible { values.insert(field, at: 0) }
         overrides[id] = values.map(\.rawValue)
         defaults.set(overrides, forKey: "tcl.deviceFields.v2")
     }
+    func pinDevice(_ id: String) {
+        objectWillChange.send()
+        pinnedID = id
+    }
     func device(in store: ClimateStore) -> Aircon? {
-        if let ac = store.selected, !ordered(ac.id).isEmpty { return ac }
-        return store.devices.first { !ordered($0.id).isEmpty }
+        if let id = pinnedID { return store.devices.first { $0.id == id } }
+        if let ac = store.selected ?? store.devices.first { pinnedID = ac.id; return ac }
+        return nil
     }
 
 }
