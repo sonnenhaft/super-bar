@@ -1,6 +1,6 @@
-The direct HTTP protocol in tuya.py was derived from the Tuya Device Sharing
+The native HTTP protocol was derived from the Tuya Device Sharing
 SDK source: https://github.com/tuya/tuya-device-sharing-sdk
-No SDK or third-party Python package is installed or imported at runtime.
+No external SDK or package is installed or imported at runtime.
 Original protocol source license:
 
 MIT License

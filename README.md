@@ -5,9 +5,8 @@ A native macOS menu bar app for BLUETTI power stations and TCL Home and LG ThinQ
 The Mac app, iPhone app and widget use Swift and Apple's system frameworks only.
 Building and checking the apps requires Apple's developer tools (full Xcode for
 iOS), with no Python, Node, package manager or third-party SDK. The checked-in
-iOS Xcode project is edited directly, without a project generator. Standalone
-Python diagnostics and historical export scripts are separate optional tools;
-the applications and their build/check commands never invoke or bundle them.
+iOS Xcode project is edited directly, without a project generator. Python
+sources, tests and launchers have been removed from this repository.
 
 ![Super Bar menu with TCL air conditioner controls and energy history](docs/super-bar.png)
 
@@ -111,7 +110,7 @@ SUPER_BAR_DEV_CREDENTIALS=0 SUPER_BAR_RELEASE=1 ./build.command
 ```
 
 No development file vault is compiled into iOS, regardless of this environment
-variable. Diagnostic Python tools retain their separate Keychain policy.
+variable.
 
 ## Build and check
 
@@ -124,7 +123,7 @@ The optimized, ad-hoc signed app is written to `dist/Super Bar.app`. Build and i
 
 ## Native Tuya
 
-Super Bar reads Smart Life directly with Foundation, CryptoKit and Security. On first launch it imports the existing protected `.env.tuya-session.json`, including the chosen main meter, and saves its own session in macOS Keychain. No script, Python interpreter, package or SDK is bundled or invoked. Session renewal uses the saved login; sign-in is Smart Life / country 63 / EU. Only authentication, device reads, and daily/hourly statistics actions are allowed. Device commands are rejected before a request can leave the client. The original scripts below remain standalone diagnostic tools.
+Super Bar reads Smart Life directly with Foundation, CryptoKit and Security. On first launch it imports the existing protected `.env.tuya-session.json`, including the chosen main meter, and saves its own session in macOS Keychain. No script, Python interpreter, package or SDK is bundled or invoked. Session renewal uses the saved login; sign-in is Smart Life / country 63 / EU. Only authentication, device reads, and daily/hourly statistics actions are allowed. Device commands are rejected before a request can leave the client.
 
 The Deye charts compare yellow generation with blue Tuya consumption: paired
 30-day energy bars and a connected step line for today's completed-hour average
@@ -150,108 +149,6 @@ with one-minute sampling near its 09:00 accounting boundary. LG fetches missing
 completed dates, then keeps that archive until another day is complete; failed or
 missing archive data is retried at most hourly. Fast live samples for LG, TCL and
 BLUETTI still extend local power curves without additional history API requests.
-
-## Tuya CLI
-
-
-Run `Scripts/tuya.command` without flags. Smart Life is fixed; there is no app-choice
-prompt. First login asks for email, country (default 63), server region (default EU),
-and a hidden password. Every answer is saved immediately to macOS Keychain,
-even if login fails or the next prompt is interrupted. Existing private
-`.env.tuya-login.json` files migrate after a verified Keychain write.
-Press Enter to keep a saved value, including the password (stored as MD5, never
-plaintext), or type a replacement. A successful login saves the account endpoint
-returned by Tuya. Subsequent runs reuse the session and automatically log in
-again when it expires. There is no User Code or QR requirement for this route.
-Only macOS, Python 3.9+ and its standard library are required: no SDK, pip, or
-packages. The shared CLI storage calls Apple's Security/CoreFoundation APIs
-directly; credentials never travel through subprocess arguments.
-
-The script calls the mobile API directly using the protocol implemented by
-[TuyaAPI/cloud](https://github.com/TuyaAPI/cloud) and
-[ioBroker.tuya](https://github.com/Apollon77/ioBroker.tuya/blob/master/lib/appcloud.js).
-Login follows the mobile app sequence documented in the
-[Frida first-login capture](https://github.com/thekoma/aventproxy/blob/main/WHITEPAPER.md#7-phase-4-login-flow-and-session-management)
-and [Smart Life mobile client](https://github.com/reetamdan/smartlife-app-tuya/blob/main/plug_api/auth.py):
-`thing.m.user.username.token.get` v2, then `thing.m.user.email.password.login` v3,
-RSA PKCS#1 v1.5 over the password MD5, with `options` encoded as a JSON string.
-The earlier token/login v1 pair could produce a misleading `USER_PASSWD_WRONG`.
-DER/PEM keys and decimal RSA moduli are parsed separately from the padding choice.
-The app registrations/signing format may be rejected by Tuya as the service changes;
-live account compatibility has not been verified. If Tuya requires CAPTCHA or
-additional account verification, the script reports it instead of bypassing it.
-
-Devices, likely main meter, and latest cloud power are listed in kW. Power units
-and scale come from the product schema. Ambiguous meters are not selected by
-largest load; an explicit choice can be saved with `--meter ID`. `--json` emits
-structured readings without credentials or device keys. Offline/unsupported
-readings are unavailable rather than zero; measurement freshness is not verified.
-If power was reported but connection status is unknown/offline, the CLI still
-shows it explicitly as the last cloud reading, not a confirmed live measurement.
-Each successful device fetch also writes `.env.tuya-devices.json` (mode 600,
-ignored by Git), including device datapoints and product schemas for diagnosing
-unsupported meters. Account tokens, password hashes, and device local keys are
-not included in that snapshot.
-
-The CLI's Keychain item contains the session ID, access/refresh tokens where
-applicable, email, app/country settings, and the password MD5 needed for automatic
-re-login (treat this hash as a credential). Plaintext passwords and new credential
-files are not saved. The old `.env.tuya-session.json` path remains an account
-identifier and a migration source. Existing sharing sessions remain readable,
-and known local Tuya session files are discovered automatically. Network failures
-do not trigger re-login. The Python `Client` context manager exposes `devices()`.
-Exit codes: 0 = meter power available, 2 = no unambiguous meter/power, 1 = error.
-
-Checks: `python3 -B -S -m unittest discover -s Tests -p 'test_tuya*.py'`.
-
-Probe the selected meter's historical consumption with
-`Scripts/tuya-history.command 2026-11-10 2026-11-11`. With no dates it checks
-yesterday and seven days ago (Europe/Warsaw calendar). It prints requests,
-complete JSON responses, underlying network errors, and an hourly data summary
-to the terminal; credentials and request signatures are redacted. Only auth and
-read requests are permitted. `--session PATH`, `--meter ID`, `--dp ID`, and
-`--type minux|sum|avg|max` can override the defaults. The cumulative energy DP 1
-defaults to Tuya's `minux` statistic. Missing points remain `#`, and raw values
-are not assumed to be kWh. Check the device timezone and scale before comparing
-with Deye. Exit codes: 0 = numeric hourly points returned (possibly incomplete),
-2 = hourly history unconfirmed, 1 = failure. This probe does not add charts to the app.
-
-Use `Scripts/tuya-history.command --deep` to probe 15-minute and hourly history
-for 1, 7, 14, 30, and 90 days ago, daily totals for those dates, and the latest
-100 energy-DP log entries. Explicit dates override that date selection.
-`--interval 15min|hour|both` selects granularity; `--logs` adds the latest log
-sample. Each interval summary reports numeric points, expected points, and the
-sum of returned raw values. Complete groups of four quarters are compared with
-the hourly value. No missing values are filled or interpolated. Exit 0 means at
-least one requested statistics series has numeric points; it does not mean all
-intervals/dates succeeded. Empty old dates do not by themselves establish a
-retention limit. The 15-minute mobile action comes from Tuya's official
-`tuya-panel-demo/examples/airThermostat/src/components/Chart/index.tsx`.
-
-## Yearly Deye + Tuya JSON archive
-
-Run `./Scripts/export-energy-year.command --year 2026` from this checkout. It
-reuses the protected local Deye and Tuya sessions (including saved login recovery)
-and automatically includes the selected Tuya meter and devices named `main switch`,
-including the old meter. Override devices with repeated `--meter ID` arguments.
-
-The result is `generated/energy-2026.json`: all Deye daily response fields and
-intraday records, Tuya daily/hourly/15-minute energy statistics for each elapsed
-day, device schemas, coverage counts, errors, and paginated reported-DP logs.
-Missing values stay missing; today's data is partial. Logs include the history
-retained by the API and can include other years. The default limit is 1,000 log
-pages; `--max-log-pages N` changes it, and `--skip-logs` omits logs. The export
-explicitly records whether log pagination finished.
-
-Successful historical requests are cached under `generated/energy-2026-responses/`.
-Rerun the same command after interruption to resume; today's data and moving log
-pages are fetched again. `--through YYYY-MM-DD` limits the requested dates.
-`--deye-session PATH` and `--tuya-session PATH` select alternative Keychain account
-identities and, on first use, protected legacy files to migrate. No credentials
-are included in the output. Export files are created
-with mode 600 under the git-ignored `generated/` directory. Exit 2 means errors,
-interrupted provider work, or incomplete/omitted logs; an empty successful API
-response does not establish that consumption was zero or prove a retention limit.
 
 ## Credits
 

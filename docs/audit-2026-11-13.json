@@ -1,4 +1,5 @@
 {
+  "repository_policy": "Python sources, tests, launchers and bytecode were subsequently removed at the user's request. Python findings and test counts below describe the earlier audit, not a retained toolchain. Native checks now reject Python files anywhere in the checkout.",
   "date": "2026-11-13",
   "scope": [
     "macOS Swift app",
