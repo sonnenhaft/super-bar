@@ -2,6 +2,13 @@
 
 A native macOS menu bar app for BLUETTI power stations and TCL Home and LG ThinQ air conditioners. Requires macOS 15 or later.
 
+The Mac app, iPhone app and widget use Swift and Apple's system frameworks only.
+Building and checking the apps requires Apple's developer tools (full Xcode for
+iOS), with no Python, Node, package manager or third-party SDK. The checked-in
+iOS Xcode project is edited directly, without a project generator. Standalone
+Python diagnostics and historical export scripts are separate optional tools;
+the applications and their build/check commands never invoke or bundle them.
+
 ![Super Bar menu with TCL air conditioner controls and energy history](docs/super-bar.png)
 
 ## Install

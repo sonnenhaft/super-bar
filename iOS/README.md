@@ -9,8 +9,11 @@ copy any Mac account files, local paths, tokens or passwords into the bundle.
 
 Complete Xcode's first launch (license, components and an iOS Simulator runtime),
 then run `bash iOS/build.command` from the repository root. This builds an unsigned
-simulator app into `.build/ios`. The checked-in project needs no package manager;
-`python3 iOS/generate_project.py` regenerates it after adding source files.
+simulator app into `.build/ios`. Build and validation use only Xcode's tools;
+no Python, package manager, project generator or third-party packages are required.
+The checked-in Xcode project is the source of truth. Add new Swift files to the
+appropriate target in Xcode; `iOS/check.command` checks target membership and
+rejects external packages and script build phases.
 
 For an iPhone installation, select your development team in **both targets**.
 Set unique bundle identifiers and the same `SUPER_BAR_APP_GROUP` build setting
@@ -81,8 +84,7 @@ are entered separately on iPhone; Mac credentials are never silently imported.
 
 Connect simulator accounts through the app's Settings, which saves credentials
 directly in Keychain. Plaintext simulator staging has been removed, including
-temporary copies. `python3 iOS/import_simulator_sessions.py --check` only reports
-whether legacy files exist; it never reads, copies or exports their contents.
+temporary copies. No separate credential-import command is needed.
 Previously staged credentials still migrate to Keychain and are removed only
 after verified storage. The legacy LG importer is excluded from device and
 Release builds. Session values never enter the app bundle or command arguments.
