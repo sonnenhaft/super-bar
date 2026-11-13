@@ -158,10 +158,16 @@ TCL Eco applies 26° and Silent together. Section headers toggle across their fu
 
 ### Keychain migration verification (2026-11-13)
 
+Startup, polling and token renewal use non-interactive Keychain queries: when
+authorization is required they fail immediately instead of showing a system dialog.
+The panel offers **Дать доступ к Keychain**; only that explicit action permits
+interactive credential reads, on a background worker. Saved readings and other
+panel controls remain available while the user decides or after cancellation.
+
 Credential access is shared across the app process. Successful and missing reads
 are cached in memory; concurrent callers do not each reopen Keychain. A failed
 access attempt stops further uncached reads/writes until the user selects
-**Retry Keychain access** in Settings, explicitly reconnects an account, or
+**Дать доступ к Keychain**, explicitly reconnects an account, or
 restarts the app. Already loaded accounts remain usable. Saving a changed value
 still writes to Keychain and verifies it by reading the underlying Keychain item
 before updating the cache or removing an app-owned legacy file. No credential

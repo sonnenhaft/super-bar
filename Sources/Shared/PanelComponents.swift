@@ -1,5 +1,26 @@
 import SwiftUI
 
+#if !WIDGET_EXTENSION
+struct KeychainAccessButton: View {
+    @ObservedObject private var status = CredentialAccessStatus.shared
+    var alwaysVisible = false
+    var refresh: () -> Void
+    var body: some View {
+        if CredentialAccess.usesKeychain && (alwaysVisible || status.needsAuthorization) {
+            Button {
+                Task {
+                    await CredentialAccess.authorize()
+                    refresh()
+                }
+            } label: {
+                Label(status.authorizing ? "Ожидаем доступ…" : "Дать доступ к Keychain", systemImage: "key")
+            }
+            .disabled(status.authorizing)
+        }
+    }
+}
+#endif
+
 extension View {
     func superBarSurface(selected: Bool = false, padding: CGFloat = 8) -> some View {
         self.padding(padding).frame(maxWidth: .infinity, alignment: .leading)

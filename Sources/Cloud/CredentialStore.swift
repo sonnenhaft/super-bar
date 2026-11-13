@@ -1,14 +1,18 @@
 import Foundation
 import Security
+import Combine
+import LocalAuthentication
 
 protocol CredentialVault {
     func read(_ key: String) throws -> Data?
     func write(_ data: Data, key: String) throws
     var removesLegacyFiles: Bool { get }
+    func readWithUserAuthorization(_ key: String) throws -> Data?
 }
 
 extension CredentialVault {
     var removesLegacyFiles: Bool { true }
+    func readWithUserAuthorization(_ key: String) throws -> Data? { try read(key) }
 }
 
 // One vault per app process: concurrent providers share both granted reads and
@@ -19,6 +23,7 @@ final class SessionCredentialVault: CredentialVault, @unchecked Sendable {
     private let lock = NSLock()
     private var entries: [String: Entry] = [:]
     private var accessFailure: Error?
+    private var authorizationInProgress = false
 
     init(backing: any CredentialVault) { self.backing = backing }
     var removesLegacyFiles: Bool { backing.removesLegacyFiles }
@@ -29,6 +34,7 @@ final class SessionCredentialVault: CredentialVault, @unchecked Sendable {
             switch entry { case .missing: return nil; case .value(let data): return data }
         }
         if let accessFailure { throw accessFailure }
+        if authorizationInProgress { throw CredentialStorageError.authorizationInProgress }
         do {
             let data = try backing.read(key)
             entries[key] = data.map(Entry.value) ?? .missing
@@ -39,6 +45,7 @@ final class SessionCredentialVault: CredentialVault, @unchecked Sendable {
     func write(_ data: Data, key: String) throws {
         lock.lock(); defer { lock.unlock() }
         if case .value(let saved) = entries[key], saved == data { return }
+        if authorizationInProgress { throw CredentialStorageError.authorizationInProgress }
         // A write may partially succeed. Never serve the previous value after
         // an unsuccessful save, or verify a write by reading our own cache.
         entries[key] = nil
@@ -55,33 +62,91 @@ final class SessionCredentialVault: CredentialVault, @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         accessFailure = nil
     }
+
+    // Interactive reads are confined to this explicit action, never background
+    // refresh. Call off the main thread: the system dialog may wait for the user.
+    func authorizeAccess(keys: [String]) throws {
+        lock.lock()
+        guard !authorizationInProgress else { lock.unlock(); throw CredentialStorageError.authorizationInProgress }
+        authorizationInProgress = true
+        accessFailure = nil
+        let cached = Set(entries.compactMap { key, value in if case .value = value { return key }; return nil })
+        lock.unlock()
+        defer { lock.lock(); authorizationInProgress = false; lock.unlock() }
+        for key in keys {
+            if cached.contains(key) { continue }
+            do {
+                let data = try backing.readWithUserAuthorization(key)
+                lock.lock()
+                entries[key] = data.map(Entry.value) ?? .missing
+                lock.unlock()
+            } catch { lock.lock(); accessFailure = error; lock.unlock(); throw error }
+        }
+    }
+}
+
+final class CredentialAccessStatus: ObservableObject {
+    static let shared = CredentialAccessStatus()
+    @Published var needsAuthorization = false
+    @Published var authorizing = false
+    static func requireAuthorization() {
+        DispatchQueue.main.async { shared.needsAuthorization = true }
+    }
 }
 
 enum CredentialAccess {
 #if SUPER_BAR_DEV_CREDENTIALS && os(macOS)
+    static let usesKeychain = false
     static let shared = SessionCredentialVault(backing: DevelopmentCredentialVault())
 #else
+    static let usesKeychain = true
     static let shared = SessionCredentialVault(backing: KeychainCredentialVault())
 #endif
     static func retry() { shared.retryAccess() }
+    @MainActor static func authorize() async {
+        guard usesKeychain else { return }
+        let status = CredentialAccessStatus.shared
+        guard !status.authorizing else { return }
+        status.authorizing = true
+        defer { status.authorizing = false }
+        let succeeded = await Task.detached {
+            do {
+                try shared.authorizeAccess(keys: ["deye-session", "tuya-session", "tcl-session", "lg-token"])
+                return true
+            } catch { return false }
+        }.value
+        status.needsAuthorization = !succeeded
+    }
 }
 
 enum CredentialStorageError: LocalizedError {
-    case invalidData, verificationFailed
+    case invalidData, verificationFailed, authorizationInProgress
     var errorDescription: String? { "Could not read or securely save the account. Please try again." }
 }
 
 // No iCloud synchronization. iOS uses device-only after-first-unlock protection.
 // macOS uses the login Keychain and its code-signing access controls.
 struct KeychainCredentialVault: CredentialVault {
-    private func query(_ key: String) -> [String: Any] {
-        [kSecClass as String: kSecClassGenericPassword,
+    func query(_ key: String, interactive: Bool = false) -> [String: Any] {
+        let context = LAContext()
+        context.interactionNotAllowed = !interactive
+        // Also set the Security policy for existing macOS login-Keychain items;
+        // background operations must fail instead of opening an authorization UI.
+        return [kSecClass as String: kSecClassGenericPassword,
          kSecAttrService as String: "com.sonnenhaft.superbar",
          kSecAttrAccount as String: key,
+         kSecUseAuthenticationContext as String: context,
+         kSecUseAuthenticationUI as String: interactive ? kSecUseAuthenticationUIAllow : kSecUseAuthenticationUIFail,
          kSecAttrSynchronizable as String: false]
     }
     func read(_ key: String) throws -> Data? {
-        var query = query(key)
+        try read(key, interactive: false)
+    }
+    func readWithUserAuthorization(_ key: String) throws -> Data? {
+        try read(key, interactive: true)
+    }
+    private func read(_ key: String, interactive: Bool) throws -> Data? {
+        var query = query(key, interactive: interactive)
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
         var result: CFTypeRef?
@@ -103,7 +168,8 @@ struct KeychainCredentialVault: CredentialVault {
         } else if status != errSecSuccess { throw failure(status) }
     }
     private func failure(_ status: OSStatus) -> NSError {
-        NSError(domain: NSOSStatusErrorDomain, code: Int(status), userInfo: [NSLocalizedDescriptionKey: "Could not access Keychain. Unlock your device, then use Retry Keychain access in Settings."])
+        CredentialAccessStatus.requireAuthorization()
+        return NSError(domain: NSOSStatusErrorDomain, code: Int(status), userInfo: [NSLocalizedDescriptionKey: "Нажмите «Дать доступ к Keychain». Сохранённые показания доступны."])
     }
 }
 

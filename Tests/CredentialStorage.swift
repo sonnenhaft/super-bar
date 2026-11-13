@@ -1,5 +1,7 @@
 import Foundation
 import Darwin
+import Security
+import LocalAuthentication
 
 // Synthetic credentials only. These checks never access the system Keychain.
 private struct SavedSession: Codable, Equatable {
@@ -17,6 +19,15 @@ private final class TestVault: CredentialVault {
     var writeAttempts = 0
     var writes = 0
     var afterWrite: (() throws -> Void)?
+    var authorizationReads = 0
+    var authorizationFailure = false
+    var duringAuthorization: (() -> Void)?
+    func readWithUserAuthorization(_ key: String) throws -> Data? {
+        authorizationReads += 1
+        duringAuthorization?()
+        if authorizationFailure { throw VaultFailure.rejected }
+        return values[key]
+    }
     func read(_ key: String) throws -> Data? {
         reads += 1
         if readFailure || (failAfterWrite && writes > 0) { throw VaultFailure.unavailable }
@@ -76,6 +87,44 @@ private final class ConcurrentVault: CredentialVault, @unchecked Sendable {
         defer { try? FileManager.default.removeItem(at: directory) }
         func file(_ name: String) -> URL { directory.appendingPathComponent(name + ".json") }
         func exists(_ file: URL) -> Bool { FileManager.default.fileExists(atPath: file.path) }
+
+        // Verify query policy without calling the real Keychain or opening UI.
+        for interactive in [false, true] {
+            let query = KeychainCredentialVault().query("synthetic", interactive: interactive)
+            precondition(query[kSecUseAuthenticationContext as String] is LAContext)
+            precondition(query[kSecUseAuthenticationUI as String] as! String == (interactive ? kSecUseAuthenticationUIAllow : kSecUseAuthenticationUIFail) as String)
+        }
+        do {
+            let backing = TestVault()
+            let session = SessionCredentialVault(backing: backing)
+            backing.values["granted"] = Data("cached".utf8)
+            backing.values["locked"] = Data("authorized".utf8)
+            _ = try session.read("granted")
+            backing.readFailure = true
+            expectFailure({ _ = try session.read("locked") }, "Silent access must report denial")
+            precondition(backing.authorizationReads == 0)
+            let entered = DispatchSemaphore(value: 0), resume = DispatchSemaphore(value: 0), finished = DispatchSemaphore(value: 0)
+            backing.duringAuthorization = { entered.signal(); resume.wait() }
+            DispatchQueue.global().async {
+                try! session.authorizeAccess(keys: ["granted", "locked"])
+                finished.signal()
+            }
+            precondition(entered.wait(timeout: .now() + 2) == .success)
+            let cached = try session.read("granted")
+            precondition(cached == Data("cached".utf8))
+            expectFailure({ _ = try session.read("other") }, "Polling must not wait for the dialog")
+            expectFailure({ try session.write(Data(), key: "other") }, "Background writes must not wait for the dialog")
+            resume.signal()
+            precondition(finished.wait(timeout: .now() + 2) == .success)
+            precondition(backing.authorizationReads == 1)
+            let authorized = try session.read("locked")
+            precondition(authorized == Data("authorized".utf8))
+            backing.duringAuthorization = nil; backing.authorizationFailure = true
+            expectFailure({ try session.authorizeAccess(keys: ["denied"]) }, "User denial must be recoverable")
+            let reads = backing.reads
+            expectFailure({ _ = try session.read("denied") }, "Polling must not retry authorization")
+            precondition(backing.reads == reads)
+        }
 
         // File descriptors bind validation to the bytes read, never a later path target.
         for kind in ["public", "oversized", "directory", "symlink", "fifo"] {

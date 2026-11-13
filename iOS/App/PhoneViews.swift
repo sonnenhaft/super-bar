@@ -18,6 +18,7 @@ struct PhoneRoot: View {
         ScrollViewReader { scroll in
             ScrollView {
                 VStack(alignment: .leading, spacing: SuperBarPanelStyle.gap) {
+                    KeychainAccessButton { Task { await model.refresh() } }
                     sectionHeader(.climate).id(PhoneSection.climate)
                     PhoneClimateView(tcl: tcl, lg: lg, expanded: model.section == .climate,
                                      open: { model.section = .climate }, selected: $model.selectedClimate,

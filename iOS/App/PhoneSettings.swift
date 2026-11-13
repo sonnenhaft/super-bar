@@ -14,10 +14,7 @@ struct PhoneSettings: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Connections").font(.title3.bold())
-            Button("Retry Keychain access") {
-                CredentialAccess.retry()
-                Task { await model.refresh() }
-            }
+            KeychainAccessButton(alwaysVisible: true) { Task { await model.refresh() } }
             Picker("Account", selection: $provider) {
                 ForEach(["Deye", "Smart Life", "TCL Home", "LG ThinQ"], id: \.self) { Text($0) }
             }

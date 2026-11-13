@@ -29,6 +29,7 @@ struct UnifiedPanel: View {
     var body: some View {
         ScrollView(.vertical) {
             VStack(alignment: .leading, spacing: SuperBarPanelStyle.gap) {
+                KeychainAccessButton(refresh: refreshAccounts)
                 climateTitle
                 ClimateDeviceList(devices: climateDevices, selected: activeClimate, select: selectClimate) { id in
                     switch id {
@@ -63,13 +64,7 @@ struct UnifiedPanel: View {
                     }
                 }.padding(.vertical, 4)
                 if showSettings {
-                    Button("Retry Keychain access") {
-                        CredentialAccess.retry()
-                        tcl.manualRefresh()
-                        lg.manualRefresh()
-                        deye.refresh()
-                        tuya.refresh()
-                    }
+                    KeychainAccessButton(alwaysVisible: true, refresh: refreshAccounts)
                     EnergyTariffSettings()
                     Divider()
                     PanelControl(control: settings).id(selection.chartBrand).frame(height: selection.chartBrand == .lg ? SuperFooter.height : SuperFooter.height - 36)
@@ -91,6 +86,9 @@ struct UnifiedPanel: View {
             deye.showHistory(brand == .deye)
             tuya.showHistory(brand == .deye)
         }
+    }
+    private func refreshAccounts() {
+        tcl.manualRefresh(); lg.manualRefresh(); deye.refresh(); tuya.refresh()
     }
     private var activeClimate: ClimateDeviceID? {
         guard let selectedClimate = selection.climateDevice else { return nil }
