@@ -127,8 +127,7 @@ shared readings. Climate, Battery and Energy links opened their sections.
 Interactive climate controls were subsequently built and exercised on iPhone
 17e (iOS 27.2): switching TCL units and opening the widget's inline temperature
 grid worked without opening the app. The app's full 16–30 °C popover was checked
-and its placement corrected to avoid clipping. Actual simulator PNGs are in
-`screenshots/iphone-app-temperature.png` and `screenshots/iphone-widget-temperature.png`.
+and its placement corrected to avoid clipping.
 No hardware commands were submitted during this UI check. Power/temperature
 command confirmation on physical devices and execution routing on older iOS
 versions remain device-QA work; build metadata contains the app-process routing.
