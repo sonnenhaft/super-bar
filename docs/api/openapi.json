@@ -1,0 +1,4571 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Super Bar — integrated API reference",
+    "version": "1.0.0",
+    "description": "Single-file, code-derived reference for the HTTP API subset used by Super Bar: Deye, LG ThinQ, TCL and Tuya. Each operation selects its own actual service origin; paths have no artificial vendor prefixes. This is not a complete vendor contract or distribution permission. No credentials or embedded signing keys are included. Tuya RPC signatures, TCL SaaS signatures and AWS SigV4 require an authorized signing-aware client; Swagger UI alone does not produce them. BLUETTI uses BLE and has no HTTP operations here."
+  },
+  "tags": [
+    {
+      "name": "Deye",
+      "description": "Code-derived documentation of the HTTP requests consumed by Super Bar, based on its current native Swift client. This is not an official or complete Deye API contract and is distinct from the vendor developer OpenAPI product. Response schemas describe fields used by the decoder; unmodeled fields are allowed and optional fields are not promises of server availability. Obtain the appropriate authorization for any use of these services. No account data, tokens, passwords, password hashes or actual device identifiers are bundled."
+    },
+    {
+      "name": "LG ThinQ",
+      "description": "Code-derived inventory of HTTP requests used by the shared macOS/iOS LG client. This is not a complete or vendor-issued ThinQ contract. Response schemas document fields consumed by the client and remain open where device profiles or wrappers differ. No account credentials, API-key values, or real device identifiers are included. Obtain and supply your own authorized PAT and API access; this file does not grant service or distribution rights."
+    },
+    {
+      "name": "TCL",
+      "description": "Code-derived subset of the HTTP requests and response fields used by Super Bar, not an official or complete TCL/AWS API contract. Documents current mobile-client interoperability behavior and does not establish service permission or distribution rights. Dynamic regional origins must come from validated discovery; placeholders cannot be used directly. No account data, passwords, tokens, access keys, signing secrets or fixed mobile application registration IDs are embedded. App-side Keychain storage, polling and UI are not HTTP endpoints. BLUETTI Bluetooth is outside this HTTP specification."
+    },
+    {
+      "name": "Tuya",
+      "description": "Derived from the Super Bar Swift client, not an official Tuya OpenAPI contract or permission to distribute a mobile client. One real HTTP endpoint carries seven RPC actions; no synthetic REST paths are invented. Form signatures and RSA login encryption must be produced by an authorized client; importing this file into Swagger UI does not implement authentication. Credentials, signing keys and embedded app registration identifiers are intentionally omitted."
+    }
+  ],
+  "paths": {
+    "/": {
+      "get": {
+        "operationId": "discoverDeyeRegion",
+        "tags": [
+          "Deye"
+        ],
+        "summary": "Resolve the public regional origin before sign-in",
+        "security": [],
+        "parameters": [
+          {
+            "name": "User-Agent",
+            "in": "header",
+            "required": false,
+            "description": "The native client sends this public compatibility user agent.",
+            "schema": {
+              "type": "string",
+              "default": "Mozilla/5.0"
+            }
+          }
+        ],
+        "description": "The app makes an unauthenticated GET, ignores the body, and follows only validated Location URLs. This discovery request carries no credentials.",
+        "responses": {
+          "2XX": {
+            "description": "Use the current validated origin."
+          },
+          "3XX": {
+            "description": "Regional redirect. The client resolves this Location relative to the current URL and validates its origin.",
+            "headers": {
+              "Location": {
+                "description": "Absolute or relative redirect target.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Discovery failed; login is not attempted on an unvalidated origin."
+          }
+        },
+        "servers": [
+          {
+            "url": "https://deyecloud.com"
+          },
+          {
+            "url": "https://www.deyecloud.com"
+          },
+          {
+            "url": "https://eu1.deyecloud.com"
+          },
+          {
+            "url": "https://us1.deyecloud.com"
+          },
+          {
+            "url": "https://india.deyecloud.com"
+          }
+        ]
+      },
+      "post": {
+        "operationId": "tclGetAWSCredentials",
+        "summary": "Obtain temporary AWS credentials",
+        "tags": [
+          "TCL"
+        ],
+        "description": "AWS Cognito GetCredentialsForIdentity using the identity/sub and token returned by the TCL refresh flow. This observed operation is not signed by TCLIoTSigner; the identity token is carried inside Logins.",
+        "servers": [
+          {
+            "url": "https://cognito-identity.{region}.amazonaws.com",
+            "variables": {
+              "region": {
+                "default": "replace-with-discovered-region",
+                "description": "Set to cloud_region from endpoint discovery. Swift accepts ^[a-z]{2}-[a-z]+-[0-9]+$; no personal-account region is embedded here."
+              }
+            },
+            "description": "Cognito regional origin, selected from TCL endpoint discovery."
+          }
+        ],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Response fields consumed by the Swift client; additional fields may be returned.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TCL_CognitoResponse"
+                }
+              },
+              "application/x-amz-json-1.1": {
+                "schema": {
+                  "$ref": "#/components/schemas/TCL_CognitoResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Non-2xx HTTP responses are errors. The client does not assume a stable error body.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "X-Amz-Target",
+            "in": "header",
+            "required": true,
+            "description": "Cognito operation selector.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "AWSCognitoIdentityService.GetCredentialsForIdentity"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/x-amz-json-1.1": {
+              "schema": {
+                "$ref": "#/components/schemas/TCL_CognitoRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/oauth-s/oauth/token": {
+      "post": {
+        "operationId": "requestDeyeTokens",
+        "tags": [
+          "Deye"
+        ],
+        "summary": "Obtain or renew a session using query parameters",
+        "security": [],
+        "description": "Actual current-client wire format: POST with query parameters and no request body. For grant_type=password, username is the account email and password is the lowercase SHA-256 hex digest of the entered password, not plaintext. For grant_type=refresh_token, supply refresh_token instead. OpenAPI parameter required flags cannot express these cross-parameter alternatives; see x-grant-parameters. The embedded client_id value is protocol metadata, not a private developer secret.",
+        "parameters": [
+          {
+            "name": "User-Agent",
+            "in": "header",
+            "required": false,
+            "description": "The native client sends this public compatibility user agent.",
+            "schema": {
+              "type": "string",
+              "default": "Mozilla/5.0"
+            }
+          },
+          {
+            "name": "grant_type",
+            "in": "query",
+            "required": true,
+            "description": "Select the credential grant.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "password",
+                "refresh_token"
+              ]
+            }
+          },
+          {
+            "name": "client_id",
+            "in": "query",
+            "required": true,
+            "description": "Public client identifier used by the existing implementation.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "test"
+              ]
+            }
+          },
+          {
+            "name": "system",
+            "in": "query",
+            "required": true,
+            "description": "Client system identifier.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "Deye"
+              ]
+            }
+          },
+          {
+            "name": "identity_type",
+            "in": "query",
+            "required": false,
+            "description": "Sent for the password grant.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "2"
+              ]
+            }
+          },
+          {
+            "name": "username",
+            "in": "query",
+            "required": false,
+            "description": "Required for the password grant: account email. Sensitive; no example or default.",
+            "schema": {
+              "type": "string",
+              "writeOnly": true
+            }
+          },
+          {
+            "name": "password",
+            "in": "query",
+            "required": false,
+            "description": "Required for the password grant: SHA-256 password digest. Treat it as a credential.",
+            "schema": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$",
+              "writeOnly": true
+            }
+          },
+          {
+            "name": "org_id",
+            "in": "query",
+            "required": false,
+            "description": "Sent for the password grant.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "0"
+              ]
+            }
+          },
+          {
+            "name": "record_flag",
+            "in": "query",
+            "required": false,
+            "description": "Sent for the password grant.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "0"
+              ]
+            }
+          },
+          {
+            "name": "refresh_token",
+            "in": "query",
+            "required": false,
+            "description": "Required for the refresh_token grant; omit for password grant.",
+            "schema": {
+              "type": "string",
+              "writeOnly": true
+            }
+          }
+        ],
+        "x-grant-parameters": {
+          "password": [
+            "grant_type",
+            "identity_type",
+            "username",
+            "password",
+            "client_id",
+            "org_id",
+            "record_flag",
+            "system"
+          ],
+          "refresh_token": [
+            "grant_type",
+            "refresh_token",
+            "client_id",
+            "system"
+          ]
+        },
+        "responses": {
+          "2XX": {
+            "description": "Session tokens, directly or under data. Provider errors can still appear inside a 2xx body.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DEYE_TokenSetResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The client treats this unauthenticated token response as rejected credentials."
+          },
+          "401": {
+            "description": "Authentication rejected."
+          },
+          "403": {
+            "description": "The client treats this unauthenticated token response as rejected credentials."
+          },
+          "default": {
+            "description": "Unexpected token response; credentials are not printed in the client error."
+          }
+        },
+        "servers": [
+          {
+            "url": "https://deyecloud.com"
+          },
+          {
+            "url": "https://www.deyecloud.com"
+          },
+          {
+            "url": "https://eu1.deyecloud.com"
+          },
+          {
+            "url": "https://us1.deyecloud.com"
+          },
+          {
+            "url": "https://india.deyecloud.com"
+          }
+        ]
+      }
+    },
+    "/maintain-s/operating/station/search": {
+      "post": {
+        "operationId": "searchDeyeStations",
+        "tags": [
+          "Deye"
+        ],
+        "summary": "Find a station for the connected account",
+        "parameters": [
+          {
+            "name": "User-Agent",
+            "in": "header",
+            "required": false,
+            "description": "The native client sends this public compatibility user agent.",
+            "schema": {
+              "type": "string",
+              "default": "Mozilla/5.0"
+            }
+          },
+          {
+            "name": "order.direction",
+            "in": "query",
+            "required": true,
+            "description": "Sort direction sent by this client.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "DESC"
+              ]
+            }
+          },
+          {
+            "name": "order.property",
+            "in": "query",
+            "required": true,
+            "description": "Sort property sent by this client.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "id"
+              ]
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "required": true,
+            "description": "The current client queries only the first page.",
+            "schema": {
+              "type": "integer",
+              "enum": [
+                1
+              ]
+            }
+          },
+          {
+            "name": "size",
+            "in": "query",
+            "required": true,
+            "description": "Requested page size.",
+            "schema": {
+              "type": "integer",
+              "enum": [
+                100
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "The current client sends an empty JSON object.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "maxProperties": 0
+              },
+              "example": {}
+            }
+          }
+        },
+        "responses": {
+          "2XX": {
+            "description": "Station rows in one of the shapes accepted by the current decoder.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DEYE_StationSearchResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized; the client attempts bounded credential recovery."
+          },
+          "default": {
+            "description": "Unexpected HTTP response. On authenticated requests, HTTP 401 triggers one bounded session recovery and retry. Other non-2xx statuses are rejected. Error body content is service-specific."
+          }
+        },
+        "servers": [
+          {
+            "url": "https://deyecloud.com"
+          },
+          {
+            "url": "https://www.deyecloud.com"
+          },
+          {
+            "url": "https://eu1.deyecloud.com"
+          },
+          {
+            "url": "https://us1.deyecloud.com"
+          },
+          {
+            "url": "https://india.deyecloud.com"
+          }
+        ],
+        "security": [
+          {
+            "DEYE_DeyeBearer": []
+          }
+        ]
+      }
+    },
+    "/maintain-s/operating/system/{stationId}": {
+      "get": {
+        "operationId": "getDeyeSystemStatistics",
+        "tags": [
+          "Deye"
+        ],
+        "summary": "Read current station generation and status",
+        "parameters": [
+          {
+            "name": "stationId",
+            "in": "path",
+            "required": true,
+            "description": "Station identifier obtained from station search; no user-specific identifier is included.",
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 1
+            }
+          },
+          {
+            "name": "User-Agent",
+            "in": "header",
+            "required": false,
+            "description": "The native client sends this public compatibility user agent.",
+            "schema": {
+              "type": "string",
+              "default": "Mozilla/5.0"
+            }
+          }
+        ],
+        "responses": {
+          "2XX": {
+            "description": "Current statistics, directly or under data.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DEYE_SystemStatisticsResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized; the client attempts bounded credential recovery."
+          },
+          "default": {
+            "description": "Unexpected HTTP response. On authenticated requests, HTTP 401 triggers one bounded session recovery and retry. Other non-2xx statuses are rejected. Error body content is service-specific."
+          }
+        },
+        "servers": [
+          {
+            "url": "https://deyecloud.com"
+          },
+          {
+            "url": "https://www.deyecloud.com"
+          },
+          {
+            "url": "https://eu1.deyecloud.com"
+          },
+          {
+            "url": "https://us1.deyecloud.com"
+          },
+          {
+            "url": "https://india.deyecloud.com"
+          }
+        ],
+        "security": [
+          {
+            "DEYE_DeyeBearer": []
+          }
+        ]
+      }
+    },
+    "/maintain-s/history/batteryPower/{stationId}/stats/daily": {
+      "get": {
+        "operationId": "getDeyeDailyHistory",
+        "tags": [
+          "Deye"
+        ],
+        "summary": "Read daily generation total and power samples",
+        "parameters": [
+          {
+            "name": "stationId",
+            "in": "path",
+            "required": true,
+            "description": "Station identifier obtained from station search; no user-specific identifier is included.",
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 1
+            }
+          },
+          {
+            "name": "User-Agent",
+            "in": "header",
+            "required": false,
+            "description": "The native client sends this public compatibility user agent.",
+            "schema": {
+              "type": "string",
+              "default": "Mozilla/5.0"
+            }
+          },
+          {
+            "name": "year",
+            "in": "query",
+            "required": true,
+            "description": "Calendar year selected by the app.",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "month",
+            "in": "query",
+            "required": true,
+            "description": "Calendar month selected by the app.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 12
+            }
+          },
+          {
+            "name": "day",
+            "in": "query",
+            "required": true,
+            "description": "Calendar day selected by the app; must be valid for the selected month and year.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 31
+            }
+          }
+        ],
+        "responses": {
+          "2XX": {
+            "description": "Daily total and records, directly or under data.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DEYE_DailyHistoryResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized; the client attempts bounded credential recovery."
+          },
+          "default": {
+            "description": "Unexpected HTTP response. On authenticated requests, HTTP 401 triggers one bounded session recovery and retry. Other non-2xx statuses are rejected. Error body content is service-specific."
+          }
+        },
+        "servers": [
+          {
+            "url": "https://deyecloud.com"
+          },
+          {
+            "url": "https://www.deyecloud.com"
+          },
+          {
+            "url": "https://eu1.deyecloud.com"
+          },
+          {
+            "url": "https://us1.deyecloud.com"
+          },
+          {
+            "url": "https://india.deyecloud.com"
+          }
+        ],
+        "security": [
+          {
+            "DEYE_DeyeBearer": []
+          }
+        ]
+      }
+    },
+    "/devices": {
+      "get": {
+        "operationId": "lgListDevices",
+        "summary": "List account devices",
+        "tags": [
+          "LG ThinQ"
+        ],
+        "responses": {
+          "2XX": {
+            "description": "Successful JSON response. Both an unwrapped payload and a response envelope are accepted by the current client.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/LG_DeviceList"
+                    },
+                    {
+                      "$ref": "#/components/schemas/LG_DeviceListEnvelope"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Non-2xx HTTP status, or a provider error object in a successful HTTP response. No fixed error body is assumed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LG_ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "servers": [
+          {
+            "url": "https://api-{region}.lgthinq.com",
+            "variables": {
+              "region": {
+                "default": "kic",
+                "enum": [
+                  "kic",
+                  "eic",
+                  "aic"
+                ],
+                "description": "Account region selected by the user: Asia/Pacific, Europe, or Americas respectively."
+              }
+            }
+          }
+        ],
+        "security": [
+          {
+            "LG_ThinQPAT": [],
+            "LG_ThinQAPIKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/LG_Country"
+          },
+          {
+            "$ref": "#/components/parameters/LG_ClientID"
+          },
+          {
+            "$ref": "#/components/parameters/LG_MessageID"
+          },
+          {
+            "$ref": "#/components/parameters/LG_ServicePhase"
+          }
+        ]
+      }
+    },
+    "/devices/{deviceId}/profile": {
+      "get": {
+        "operationId": "lgGetDeviceProfile",
+        "summary": "Read device capabilities",
+        "tags": [
+          "LG ThinQ"
+        ],
+        "responses": {
+          "2XX": {
+            "description": "Successful JSON response. Both an unwrapped payload and a response envelope are accepted by the current client.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/LG_DeviceProfile"
+                    },
+                    {
+                      "$ref": "#/components/schemas/LG_DeviceProfileEnvelope"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Non-2xx HTTP status, or a provider error object in a successful HTTP response. No fixed error body is assumed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LG_ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "servers": [
+          {
+            "url": "https://api-{region}.lgthinq.com",
+            "variables": {
+              "region": {
+                "default": "kic",
+                "enum": [
+                  "kic",
+                  "eic",
+                  "aic"
+                ],
+                "description": "Account region selected by the user: Asia/Pacific, Europe, or Americas respectively."
+              }
+            }
+          }
+        ],
+        "security": [
+          {
+            "LG_ThinQPAT": [],
+            "LG_ThinQAPIKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/LG_Country"
+          },
+          {
+            "$ref": "#/components/parameters/LG_ClientID"
+          },
+          {
+            "$ref": "#/components/parameters/LG_MessageID"
+          },
+          {
+            "$ref": "#/components/parameters/LG_ServicePhase"
+          },
+          {
+            "$ref": "#/components/parameters/LG_DeviceID"
+          }
+        ]
+      }
+    },
+    "/devices/{deviceId}/state": {
+      "get": {
+        "operationId": "lgGetDeviceState",
+        "summary": "Read device state",
+        "tags": [
+          "LG ThinQ"
+        ],
+        "responses": {
+          "2XX": {
+            "description": "Successful JSON response. Both an unwrapped payload and a response envelope are accepted by the current client.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/LG_DeviceState"
+                    },
+                    {
+                      "$ref": "#/components/schemas/LG_DeviceStateEnvelope"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Non-2xx HTTP status, or a provider error object in a successful HTTP response. No fixed error body is assumed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LG_ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "servers": [
+          {
+            "url": "https://api-{region}.lgthinq.com",
+            "variables": {
+              "region": {
+                "default": "kic",
+                "enum": [
+                  "kic",
+                  "eic",
+                  "aic"
+                ],
+                "description": "Account region selected by the user: Asia/Pacific, Europe, or Americas respectively."
+              }
+            }
+          }
+        ],
+        "security": [
+          {
+            "LG_ThinQPAT": [],
+            "LG_ThinQAPIKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/LG_Country"
+          },
+          {
+            "$ref": "#/components/parameters/LG_ClientID"
+          },
+          {
+            "$ref": "#/components/parameters/LG_MessageID"
+          },
+          {
+            "$ref": "#/components/parameters/LG_ServicePhase"
+          },
+          {
+            "$ref": "#/components/parameters/LG_DeviceID"
+          }
+        ]
+      }
+    },
+    "/devices/{deviceId}/control": {
+      "post": {
+        "operationId": "lgControlDevice",
+        "summary": "Send supported device controls",
+        "tags": [
+          "LG ThinQ"
+        ],
+        "responses": {
+          "2XX": {
+            "description": "Successful JSON response. Both an unwrapped payload and a response envelope are accepted by the current client.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/LG_ControlResult"
+                    },
+                    {
+                      "$ref": "#/components/schemas/LG_ControlResultEnvelope"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Non-2xx HTTP status, or a provider error object in a successful HTTP response. No fixed error body is assumed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LG_ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LG_ControlBody"
+              }
+            }
+          }
+        },
+        "description": "Changes a real device. Only submit supported capability values for devices you are authorized to control. Super Bar follows a successful response with state polling. A 2xx response may contain no body.",
+        "servers": [
+          {
+            "url": "https://api-{region}.lgthinq.com",
+            "variables": {
+              "region": {
+                "default": "kic",
+                "enum": [
+                  "kic",
+                  "eic",
+                  "aic"
+                ],
+                "description": "Account region selected by the user: Asia/Pacific, Europe, or Americas respectively."
+              }
+            }
+          }
+        ],
+        "security": [
+          {
+            "LG_ThinQPAT": [],
+            "LG_ThinQAPIKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/LG_Country"
+          },
+          {
+            "$ref": "#/components/parameters/LG_ClientID"
+          },
+          {
+            "$ref": "#/components/parameters/LG_MessageID"
+          },
+          {
+            "$ref": "#/components/parameters/LG_ServicePhase"
+          },
+          {
+            "$ref": "#/components/parameters/LG_DeviceID"
+          },
+          {
+            "$ref": "#/components/parameters/LG_ConditionalControl"
+          }
+        ]
+      }
+    },
+    "/devices/energy/{deviceId}/profile": {
+      "get": {
+        "operationId": "lgGetEnergyProfile",
+        "summary": "Read energy-history capabilities",
+        "tags": [
+          "LG ThinQ"
+        ],
+        "responses": {
+          "2XX": {
+            "description": "Successful JSON response. Both an unwrapped payload and a response envelope are accepted by the current client.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/LG_EnergyProfile"
+                    },
+                    {
+                      "$ref": "#/components/schemas/LG_EnergyProfileEnvelope"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Non-2xx HTTP status, or a provider error object in a successful HTTP response. No fixed error body is assumed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LG_ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "servers": [
+          {
+            "url": "https://api-{region}.lgthinq.com",
+            "variables": {
+              "region": {
+                "default": "kic",
+                "enum": [
+                  "kic",
+                  "eic",
+                  "aic"
+                ],
+                "description": "Account region selected by the user: Asia/Pacific, Europe, or Americas respectively."
+              }
+            }
+          }
+        ],
+        "security": [
+          {
+            "LG_ThinQPAT": [],
+            "LG_ThinQAPIKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/LG_Country"
+          },
+          {
+            "$ref": "#/components/parameters/LG_ClientID"
+          },
+          {
+            "$ref": "#/components/parameters/LG_MessageID"
+          },
+          {
+            "$ref": "#/components/parameters/LG_ServicePhase"
+          },
+          {
+            "$ref": "#/components/parameters/LG_DeviceID"
+          }
+        ]
+      }
+    },
+    "/devices/energy/{deviceId}/usage": {
+      "get": {
+        "operationId": "lgGetEnergyUsage",
+        "summary": "Read daily energy usage",
+        "tags": [
+          "LG ThinQ"
+        ],
+        "responses": {
+          "2XX": {
+            "description": "Successful JSON response. Both an unwrapped payload and a response envelope are accepted by the current client.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/LG_EnergyUsage"
+                    },
+                    {
+                      "$ref": "#/components/schemas/LG_EnergyUsageEnvelope"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Non-2xx HTTP status, or a provider error object in a successful HTTP response. No fixed error body is assumed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LG_ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "description": "Requests daily usage for the chosen range. Super Bar uses Calendar.current to form day keys; the API timezone/availability is not established by this code-derived description. Requests are skipped if energyUsage is not advertised by the energy profile.",
+        "servers": [
+          {
+            "url": "https://api-{region}.lgthinq.com",
+            "variables": {
+              "region": {
+                "default": "kic",
+                "enum": [
+                  "kic",
+                  "eic",
+                  "aic"
+                ],
+                "description": "Account region selected by the user: Asia/Pacific, Europe, or Americas respectively."
+              }
+            }
+          }
+        ],
+        "security": [
+          {
+            "LG_ThinQPAT": [],
+            "LG_ThinQAPIKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/LG_Country"
+          },
+          {
+            "$ref": "#/components/parameters/LG_ClientID"
+          },
+          {
+            "$ref": "#/components/parameters/LG_MessageID"
+          },
+          {
+            "$ref": "#/components/parameters/LG_ServicePhase"
+          },
+          {
+            "$ref": "#/components/parameters/LG_DeviceID"
+          },
+          {
+            "name": "property",
+            "in": "query",
+            "required": true,
+            "description": "Energy property selected after capability discovery.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "energyUsage"
+              ]
+            }
+          },
+          {
+            "name": "period",
+            "in": "query",
+            "required": true,
+            "description": "Period used by the current client.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "DAILY"
+              ]
+            }
+          },
+          {
+            "name": "startDate",
+            "in": "query",
+            "required": true,
+            "description": "First requested local calendar day, formatted yyyyMMdd.",
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9]{8}$"
+            }
+          },
+          {
+            "name": "endDate",
+            "in": "query",
+            "required": true,
+            "description": "Last requested local calendar day, formatted yyyyMMdd. The same day is used for both bounds when reading a single day.",
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9]{8}$"
+            }
+          }
+        ]
+      }
+    },
+    "/account/login": {
+      "post": {
+        "operationId": "tclLogin",
+        "summary": "Authenticate a TCL Home account",
+        "tags": [
+          "TCL"
+        ],
+        "description": "POST JSON login used by the current adapter. A documented description of observed client behavior is not authorization to impersonate a mobile application. Supply an authorized client registration and credentials; no registration value is embedded here.",
+        "servers": [
+          {
+            "url": "https://sg.account.tcl.com",
+            "description": "Account login origin used by the current Swift adapter."
+          }
+        ],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Response fields consumed by the Swift client; additional fields may be returned.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TCL_LoginResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Non-2xx HTTP responses are errors. The client does not assume a stable error body.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "clientId",
+            "in": "query",
+            "required": true,
+            "description": "Authorized TCL account client registration; the Swift adapter currently supplies a fixed mobile client ID.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "User-Agent",
+            "in": "header",
+            "required": true,
+            "description": "Mobile user agent sent by the adapter.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "th_platform",
+            "in": "header",
+            "required": true,
+            "description": "Mobile platform string.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "th_version",
+            "in": "header",
+            "required": true,
+            "description": "TCL Home client version.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "th_appbulid",
+            "in": "header",
+            "required": true,
+            "description": "Client build string; header spelling matches the Swift code.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TCL_LoginRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v3/global/cloud_url_get": {
+      "post": {
+        "operationId": "tclDiscoverCloud",
+        "summary": "Discover regional TCL origins",
+        "tags": [
+          "TCL"
+        ],
+        "description": "Uses SSO credentials to discover cloud_url, device_url and cloud_region. Redirects are rejected by the client; only validated explicit service origins are used.",
+        "servers": [
+          {
+            "url": "https://prod-center.aws.tcljd.com",
+            "description": "Regional endpoint discovery origin used by the current Swift adapter."
+          }
+        ],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Response fields consumed by the Swift client; additional fields may be returned.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TCL_DiscoveryResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Non-2xx HTTP responses are errors. The client does not assume a stable error body.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TCL_DiscoveryRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v3/auth/refresh_tokens": {
+      "post": {
+        "operationId": "tclRefreshSession",
+        "summary": "Exchange SSO credentials for cloud tokens",
+        "tags": [
+          "TCL"
+        ],
+        "description": "Obtains the SaaS token used by inventory/statistics and the Cognito identity token used for AWS credentials.",
+        "servers": [
+          {
+            "url": "https://{cloudHost}",
+            "description": "Use the host from discovery data.cloud_url. The Swift client accepts HTTPS origins under .tcljd.com or .tcl.com only; it rejects custom ports, userinfo, paths beyond /, query and fragment. The placeholder is deliberately non-routable.",
+            "variables": {
+              "cloudHost": {
+                "default": "cloud.example.invalid",
+                "description": "Validated discovered cloud_url hostname, without scheme or path."
+              }
+            }
+          }
+        ],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Response fields consumed by the Swift client; additional fields may be returned.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TCL_RefreshResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Non-2xx HTTP responses are errors. The client does not assume a stable error body.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TCL_RefreshRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v3/user/get_things": {
+      "post": {
+        "operationId": "tclListDevices",
+        "summary": "Read device inventory",
+        "tags": [
+          "TCL"
+        ],
+        "description": "POSTs an empty JSON object. The adapter filters returned rows to air conditioners. sign is lowercase hex MD5(timestamp + nonce + SaaS token), concatenated without separators. Swagger UI does not compute this signature.",
+        "servers": [
+          {
+            "url": "https://{deviceHost}",
+            "description": "Use the host from discovery data.device_url with the same origin validation as cloud_url. The placeholder is deliberately non-routable.",
+            "variables": {
+              "deviceHost": {
+                "default": "devices.example.invalid",
+                "description": "Validated discovered device_url hostname, without scheme or path."
+              }
+            }
+          }
+        ],
+        "security": [
+          {
+            "TCL_TCLSaaSToken": [],
+            "TCL_TCLRequestSignature": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Response fields consumed by the Swift client; additional fields may be returned.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TCL_InventoryResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Non-2xx HTTP responses are errors. The client does not assume a stable error body.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/TCL_Timestamp"
+          },
+          {
+            "$ref": "#/components/parameters/TCL_Nonce"
+          },
+          {
+            "$ref": "#/components/parameters/TCL_Language"
+          },
+          {
+            "$ref": "#/components/parameters/TCL_PlatformAndroid"
+          },
+          {
+            "name": "appversion",
+            "in": "header",
+            "required": true,
+            "description": "Adapter mobile application version.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "thomeversion",
+            "in": "header",
+            "required": true,
+            "description": "Adapter TCL Home version.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "maxProperties": 0
+              }
+            }
+          }
+        }
+      }
+    },
+    "/things/{deviceId}/shadow": {
+      "get": {
+        "operationId": "tclReadShadow",
+        "summary": "Read an air-conditioner shadow",
+        "tags": [
+          "TCL"
+        ],
+        "description": "Uses AWS4-HMAC-SHA256 with temporary Cognito credentials, signing scope date/region/iotdata/aws4_request. Sign host, x-amz-date and x-amz-security-token; additionally sign content-type for JSON bodies. The signer SHA-256 hashes the body and separately URI-encodes the already escaped wire path (including percent signs). Swagger UI cannot generate or refresh SigV4 signatures from this declaration; send through a signing-aware client.",
+        "servers": [
+          {
+            "url": "https://data-ats.iot.{region}.amazonaws.com",
+            "variables": {
+              "region": {
+                "default": "replace-with-discovered-region",
+                "description": "Set to cloud_region from endpoint discovery. Swift accepts ^[a-z]{2}-[a-z]+-[0-9]+$; no personal-account region is embedded here."
+              }
+            },
+            "description": "IoT data origin constructed by TCLIoTSigner from the discovered region."
+          }
+        ],
+        "security": [
+          {
+            "TCL_AWSSigV4": [],
+            "TCL_AWSSessionToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Response fields consumed by the Swift client; additional fields may be returned.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TCL_Shadow"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Non-2xx HTTP responses are errors. The client does not assume a stable error body.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/TCL_DeviceId"
+          },
+          {
+            "$ref": "#/components/parameters/TCL_AmzDate"
+          }
+        ]
+      }
+    },
+    "/topics/%24aws/things/{deviceId}/shadow/update": {
+      "post": {
+        "operationId": "tclPublishDesiredState",
+        "summary": "Publish desired air-conditioner settings",
+        "tags": [
+          "TCL"
+        ],
+        "description": "Uses AWS4-HMAC-SHA256 with temporary Cognito credentials, signing scope date/region/iotdata/aws4_request. Sign host, x-amz-date and x-amz-security-token; additionally sign content-type for JSON bodies. The signer SHA-256 hashes the body and separately URI-encodes the already escaped wire path (including percent signs). Swagger UI cannot generate or refresh SigV4 signatures from this declaration; send through a signing-aware client. The literal %24 encodes the $ in the reserved MQTT topic on the HTTP wire. A successful publish acknowledges transport only. The adapter polls GET shadow every two seconds for up to 32 seconds and checks reported values before considering a control command confirmed.",
+        "servers": [
+          {
+            "url": "https://data-ats.iot.{region}.amazonaws.com",
+            "variables": {
+              "region": {
+                "default": "replace-with-discovered-region",
+                "description": "Set to cloud_region from endpoint discovery. Swift accepts ^[a-z]{2}-[a-z]+-[0-9]+$; no personal-account region is embedded here."
+              }
+            },
+            "description": "IoT data origin constructed by TCLIoTSigner from the discovered region."
+          }
+        ],
+        "security": [
+          {
+            "TCL_AWSSigV4": [],
+            "TCL_AWSSessionToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Publish accepted at the HTTP layer. The client ignores the response body; verify the shadow for device confirmation."
+          },
+          "default": {
+            "description": "Non-2xx AWS IoT response; no stable response-body schema is assumed."
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/TCL_DeviceId"
+          },
+          {
+            "$ref": "#/components/parameters/TCL_AmzDate"
+          },
+          {
+            "name": "qos",
+            "in": "query",
+            "required": true,
+            "description": "QoS used for the publish request and included in the signature.",
+            "schema": {
+              "type": "integer",
+              "enum": [
+                1
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TCL_PublishRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/ac/statistics/electricity/summary": {
+      "get": {
+        "operationId": "tclReadElectricitySummary",
+        "summary": "Read daily or candidate hourly energy statistics",
+        "tags": [
+          "TCL"
+        ],
+        "description": "Device and product identifiers are supplied in headers. timeType=2 is used for daily kWh grouped by month; timeType=1 is probed for explicitly timestamped hourly kWh and is accepted only when hourly sums reconcile with daily totals. Current adapter accounting uses Asia/Manila. sign is MD5(timestamp + nonce + SaaS token); Swagger UI does not compute it.",
+        "servers": [
+          {
+            "url": "https://{deviceHost}",
+            "description": "Use the host from discovery data.device_url with the same origin validation as cloud_url. The placeholder is deliberately non-routable.",
+            "variables": {
+              "deviceHost": {
+                "default": "devices.example.invalid",
+                "description": "Validated discovered device_url hostname, without scheme or path."
+              }
+            }
+          }
+        ],
+        "security": [
+          {
+            "TCL_TCLSaaSToken": [],
+            "TCL_TCLRequestSignature": [],
+            "TCL_TCLSSOToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Response fields consumed by the Swift client; additional fields may be returned.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TCL_EnergySummaryResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Non-2xx HTTP responses are errors. The client does not assume a stable error body.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/TCL_Timestamp"
+          },
+          {
+            "$ref": "#/components/parameters/TCL_Nonce"
+          },
+          {
+            "$ref": "#/components/parameters/TCL_Language"
+          },
+          {
+            "$ref": "#/components/parameters/TCL_PlatformIOS"
+          },
+          {
+            "name": "timeType",
+            "in": "query",
+            "required": true,
+            "description": "2: daily summary groups; 1: candidate hourly entries, subject to device-dependent interpretation.",
+            "schema": {
+              "type": "integer",
+              "enum": [
+                1,
+                2
+              ]
+            }
+          },
+          {
+            "name": "appVersion",
+            "in": "header",
+            "required": true,
+            "description": "Client application version; casing matches the v1 adapter.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "thomeversion",
+            "in": "header",
+            "required": true,
+            "description": "TCL Home version.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "appId",
+            "in": "header",
+            "required": true,
+            "description": "Authorized application registration; no mobile app registration value is embedded.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "appPackageName",
+            "in": "header",
+            "required": true,
+            "description": "Mobile application package name sent by the client.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "countryCode",
+            "in": "header",
+            "required": true,
+            "description": "Current adapter sends PH.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "timeZone",
+            "in": "header",
+            "required": true,
+            "description": "Current adapter sends Asia/Manila.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "productKey",
+            "in": "header",
+            "required": true,
+            "description": "Product identifier from inventory productKey/product_key.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "deviceId",
+            "in": "header",
+            "required": true,
+            "description": "Device identifier from inventory deviceId/device_id/id.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/v3/ac/{deviceId}/power/consumption/info/": {
+      "get": {
+        "operationId": "tclReadLegacyElectricity",
+        "summary": "Read legacy weekly energy statistics",
+        "tags": [
+          "TCL"
+        ],
+        "description": "Fallback when the v1 daily summary fails or yields no usable readings. The trailing slash is present in requests sent by EnergySync. sign is MD5(timestamp + nonce + SaaS token); Swagger UI does not compute it.",
+        "servers": [
+          {
+            "url": "https://{deviceHost}",
+            "description": "Use the host from discovery data.device_url with the same origin validation as cloud_url. The placeholder is deliberately non-routable.",
+            "variables": {
+              "deviceHost": {
+                "default": "devices.example.invalid",
+                "description": "Validated discovered device_url hostname, without scheme or path."
+              }
+            }
+          }
+        ],
+        "security": [
+          {
+            "TCL_TCLSaaSToken": [],
+            "TCL_TCLRequestSignature": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Response fields consumed by the Swift client; additional fields may be returned.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TCL_LegacyEnergyResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Non-2xx HTTP responses are errors. The client does not assume a stable error body.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/TCL_Timestamp"
+          },
+          {
+            "$ref": "#/components/parameters/TCL_Nonce"
+          },
+          {
+            "$ref": "#/components/parameters/TCL_Language"
+          },
+          {
+            "$ref": "#/components/parameters/TCL_DeviceId"
+          },
+          {
+            "$ref": "#/components/parameters/TCL_PlatformAndroid"
+          },
+          {
+            "name": "week",
+            "in": "query",
+            "required": true,
+            "description": "Inclusive seven-day range formatted yyyyMMdd-yyyyMMdd; computed in Asia/Manila.",
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9]{8}-[0-9]{8}$"
+            }
+          },
+          {
+            "name": "appversion",
+            "in": "header",
+            "required": true,
+            "description": "Mobile application version.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "User-Agent",
+            "in": "header",
+            "required": true,
+            "description": "Mobile user agent sent by the adapter.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api.json": {
+      "post": {
+        "operationId": "tuyaMobileRpc",
+        "tags": [
+          "Tuya"
+        ],
+        "summary": "Call one supported Smart Life RPC action",
+        "description": "sid and sign are body form fields, not Bearer tokens or query API keys. Login actions omit sid. postData is JSON text, not a nested form object. Action-specific payload/result contracts are recorded in x-rpc-actions and reusable component schemas.",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/TUYA_UsernameTokenForm"
+                  },
+                  {
+                    "$ref": "#/components/schemas/TUYA_PasswordLoginForm"
+                  },
+                  {
+                    "$ref": "#/components/schemas/TUYA_ListHomesForm"
+                  },
+                  {
+                    "$ref": "#/components/schemas/TUYA_ListDevicesForm"
+                  },
+                  {
+                    "$ref": "#/components/schemas/TUYA_ListSchemasForm"
+                  },
+                  {
+                    "$ref": "#/components/schemas/TUYA_DailyHistoryForm"
+                  },
+                  {
+                    "$ref": "#/components/schemas/TUYA_HourlyHistoryForm"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "RPC envelope; inspect success before using result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TUYA_ResponseEnvelope"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Non-2xx responses or malformed payloads are rejected; no stable vendor error-body contract is assumed."
+          }
+        },
+        "x-rpc-actions": [
+          {
+            "action": "thing.m.user.username.token.get",
+            "version": "2.0",
+            "requestSchema": {
+              "$ref": "#/components/schemas/TUYA_UsernameTokenForm"
+            },
+            "postDataSchema": {
+              "$ref": "#/components/schemas/TUYA_UsernameTokenPayload"
+            },
+            "resultSchema": {
+              "$ref": "#/components/schemas/TUYA_UsernameTokenResult"
+            },
+            "requiresSession": false,
+            "requiresGroup": false
+          },
+          {
+            "action": "thing.m.user.email.password.login",
+            "version": "3.0",
+            "requestSchema": {
+              "$ref": "#/components/schemas/TUYA_PasswordLoginForm"
+            },
+            "postDataSchema": {
+              "$ref": "#/components/schemas/TUYA_PasswordLoginPayload"
+            },
+            "resultSchema": {
+              "$ref": "#/components/schemas/TUYA_PasswordLoginResult"
+            },
+            "requiresSession": false,
+            "requiresGroup": false
+          },
+          {
+            "action": "tuya.m.location.list",
+            "version": "2.1",
+            "requestSchema": {
+              "$ref": "#/components/schemas/TUYA_ListHomesForm"
+            },
+            "postDataSchema": null,
+            "resultSchema": {
+              "$ref": "#/components/schemas/TUYA_HomesResult"
+            },
+            "requiresSession": true,
+            "requiresGroup": false
+          },
+          {
+            "action": "tuya.m.my.group.device.list",
+            "version": "2.0",
+            "requestSchema": {
+              "$ref": "#/components/schemas/TUYA_ListDevicesForm"
+            },
+            "postDataSchema": null,
+            "resultSchema": {
+              "$ref": "#/components/schemas/TUYA_DevicesResult"
+            },
+            "requiresSession": true,
+            "requiresGroup": true
+          },
+          {
+            "action": "tuya.m.device.ref.info.my.list",
+            "version": "2.0",
+            "requestSchema": {
+              "$ref": "#/components/schemas/TUYA_ListSchemasForm"
+            },
+            "postDataSchema": null,
+            "resultSchema": {
+              "$ref": "#/components/schemas/TUYA_SchemasResult"
+            },
+            "requiresSession": true,
+            "requiresGroup": true
+          },
+          {
+            "action": "tuya.m.dp.rang.stat.day.list",
+            "version": "2.0",
+            "requestSchema": {
+              "$ref": "#/components/schemas/TUYA_DailyHistoryForm"
+            },
+            "postDataSchema": {
+              "$ref": "#/components/schemas/TUYA_DailyHistoryPayload"
+            },
+            "resultSchema": {
+              "$ref": "#/components/schemas/TUYA_DailyHistoryResult"
+            },
+            "requiresSession": true,
+            "requiresGroup": false
+          },
+          {
+            "action": "tuya.m.dp.rang.stat.hour.list",
+            "version": "1.0",
+            "requestSchema": {
+              "$ref": "#/components/schemas/TUYA_HourlyHistoryForm"
+            },
+            "postDataSchema": {
+              "$ref": "#/components/schemas/TUYA_HourlyHistoryPayload"
+            },
+            "resultSchema": {
+              "$ref": "#/components/schemas/TUYA_HourlyHistoryResult"
+            },
+            "requiresSession": true,
+            "requiresGroup": false
+          }
+        ],
+        "servers": [
+          {
+            "url": "https://{host}",
+            "description": "Initial host is a1.tuyaeu.com. The authenticated login can return another host under tuyaeu.com, tuyaus.com, tuyacn.com, tuyain.com, iotbing.com or lifeaiot.com; Super Bar requires HTTPS and validates this allowlist.",
+            "variables": {
+              "host": {
+                "default": "a1.tuyaeu.com"
+              }
+            }
+          }
+        ]
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "DEYE_DeyeBearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "User session access token returned by the token endpoint. It is not embedded in this specification."
+      },
+      "LG_ThinQPAT": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "Personal access token",
+        "description": "User-supplied ThinQ PAT, provisioned outside this application at https://connect-pat.lgthinq.com/tokens. The application has no LG password-login endpoint."
+      },
+      "LG_ThinQAPIKey": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "x-api-key",
+        "description": "Supply an authorized API key for the integration. Deliberately no embedded value, default, or example."
+      },
+      "TCL_TCLSaaSToken": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "accessToken",
+        "description": "SaaS token from TCL refresh. Never publish a real value in this document."
+      },
+      "TCL_TCLRequestSignature": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "sign",
+        "description": "Per-request lowercase MD5(timestamp + nonce + SaaS token). Requires a signing-aware client; Swagger UI does not calculate this."
+      },
+      "TCL_TCLSSOToken": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "ssoToken",
+        "description": "SSO token returned by TCL account login; required by the current v1 statistics adapter."
+      },
+      "TCL_AWSSigV4": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "Authorization",
+        "description": "AWS4-HMAC-SHA256 Authorization generated per request by TCLIoTSigner from temporary Cognito credentials. Do not paste a persistent access secret here. No automatic signing is provided by OpenAPI/Swagger UI."
+      },
+      "TCL_AWSSessionToken": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "x-amz-security-token",
+        "description": "Temporary Cognito SessionToken included in SigV4 signed headers."
+      }
+    },
+    "schemas": {
+      "DEYE_NonNegativeNumber": {
+        "anyOf": [
+          {
+            "type": "number",
+            "minimum": 0
+          },
+          {
+            "type": "string"
+          }
+        ],
+        "description": "The client accepts a finite, non-negative JSON number or a numeric string; booleans and invalid numeric strings are ignored."
+      },
+      "DEYE_ErrorEnvelope": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "error": {
+            "type": "string"
+          },
+          "code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "number"
+              }
+            ]
+          }
+        },
+        "additionalProperties": true,
+        "description": "Optional provider error fields inspected by the client, including errors returned with a successful HTTP status. This is not a complete error contract."
+      },
+      "DEYE_TokenSet": {
+        "type": "object",
+        "properties": {
+          "access_token": {
+            "type": "string",
+            "description": "Access token. A leading Bearer prefix, if present, is removed by the client."
+          },
+          "refresh_token": {
+            "type": "string"
+          },
+          "expires_in": {
+            "$ref": "#/components/schemas/DEYE_NonNegativeNumber"
+          }
+        },
+        "additionalProperties": true,
+        "description": "A usable login response must supply a non-empty access_token. expires_in is interpreted as seconds from the current time. No credential examples are included."
+      },
+      "DEYE_Station": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/DEYE_NonNegativeNumber"
+          },
+          "stationId": {
+            "$ref": "#/components/schemas/DEYE_NonNegativeNumber"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": true,
+        "description": "The client selects the first row and accepts id, or stationId as fallback, when it is a positive integer. Fields are optional here because this specification records the consumed subset rather than a vendor guarantee."
+      },
+      "DEYE_StationRows": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/DEYE_Station"
+        }
+      },
+      "DEYE_SystemStatistics": {
+        "type": "object",
+        "properties": {
+          "generationPower": {
+            "$ref": "#/components/schemas/DEYE_NonNegativeNumber"
+          },
+          "generationValue": {
+            "$ref": "#/components/schemas/DEYE_NonNegativeNumber"
+          },
+          "networkStatus": {
+            "type": "string"
+          },
+          "lastUpdateTime": {
+            "$ref": "#/components/schemas/DEYE_NonNegativeNumber"
+          },
+          "collectionTime": {
+            "$ref": "#/components/schemas/DEYE_NonNegativeNumber"
+          }
+        },
+        "additionalProperties": true,
+        "description": "generationPower is consumed as watts and generationValue as daily kWh. lastUpdateTime, or collectionTime as fallback, is a Unix timestamp in seconds or milliseconds; the client divides values above 1e12 by 1000."
+      },
+      "DEYE_HistoryRecord": {
+        "type": "object",
+        "properties": {
+          "dateTime": {
+            "$ref": "#/components/schemas/DEYE_NonNegativeNumber"
+          },
+          "generationPower": {
+            "$ref": "#/components/schemas/DEYE_NonNegativeNumber"
+          }
+        },
+        "additionalProperties": true,
+        "description": "dateTime is a Unix timestamp in seconds or milliseconds. generationPower is consumed as watts. The client retains valid records belonging to the requested calendar day."
+      },
+      "DEYE_DailyHistory": {
+        "type": "object",
+        "properties": {
+          "statistics": {
+            "type": "object",
+            "properties": {
+              "generationValue": {
+                "$ref": "#/components/schemas/DEYE_NonNegativeNumber"
+              }
+            },
+            "additionalProperties": true,
+            "description": "Daily generationValue is consumed as kWh."
+          },
+          "records": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DEYE_HistoryRecord"
+            }
+          }
+        },
+        "additionalProperties": true,
+        "description": "The app queries year/month/day using Asia/Manila for its existing accounting model. This documents client behavior, not a vendor-wide timezone promise."
+      },
+      "DEYE_StationList": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/DEYE_StationRows"
+          },
+          "records": {
+            "$ref": "#/components/schemas/DEYE_StationRows"
+          }
+        },
+        "additionalProperties": true,
+        "description": "After one object-valued data envelope is removed, the client accepts rows under data or records, or a direct array."
+      },
+      "DEYE_TokenSetResponse": {
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/DEYE_TokenSet"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "data": {
+                "$ref": "#/components/schemas/DEYE_TokenSet"
+              },
+              "success": {
+                "type": "boolean"
+              },
+              "error": {
+                "type": "string"
+              },
+              "code": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "number"
+                  }
+                ]
+              }
+            },
+            "additionalProperties": true,
+            "description": "An object-valued data envelope is unwrapped once by the client."
+          }
+        ],
+        "description": "Both the direct object and an object-valued data envelope are accepted by the current decoder."
+      },
+      "DEYE_SystemStatisticsResponse": {
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/DEYE_SystemStatistics"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "data": {
+                "$ref": "#/components/schemas/DEYE_SystemStatistics"
+              },
+              "success": {
+                "type": "boolean"
+              },
+              "error": {
+                "type": "string"
+              },
+              "code": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "number"
+                  }
+                ]
+              }
+            },
+            "additionalProperties": true,
+            "description": "An object-valued data envelope is unwrapped once by the client."
+          }
+        ],
+        "description": "Both the direct object and an object-valued data envelope are accepted by the current decoder."
+      },
+      "DEYE_DailyHistoryResponse": {
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/DEYE_DailyHistory"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "data": {
+                "$ref": "#/components/schemas/DEYE_DailyHistory"
+              },
+              "success": {
+                "type": "boolean"
+              },
+              "error": {
+                "type": "string"
+              },
+              "code": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "number"
+                  }
+                ]
+              }
+            },
+            "additionalProperties": true,
+            "description": "An object-valued data envelope is unwrapped once by the client."
+          }
+        ],
+        "description": "Both the direct object and an object-valued data envelope are accepted by the current decoder."
+      },
+      "DEYE_StationSearchResponse": {
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/DEYE_StationRows"
+          },
+          {
+            "$ref": "#/components/schemas/DEYE_StationList"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "data": {
+                "$ref": "#/components/schemas/DEYE_StationList"
+              },
+              "success": {
+                "type": "boolean"
+              },
+              "error": {
+                "type": "string"
+              },
+              "code": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "number"
+                  }
+                ]
+              }
+            },
+            "additionalProperties": true
+          }
+        ]
+      },
+      "LG_ProviderError": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "description": "Provider error code; the client does not constrain its type."
+          }
+        },
+        "additionalProperties": true
+      },
+      "LG_ErrorEnvelope": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/LG_ProviderError"
+          }
+        },
+        "additionalProperties": true,
+        "description": "Optional provider error envelope. Non-2xx HTTP responses are rejected before JSON decoding; their body shape is not guaranteed."
+      },
+      "LG_DeviceInfo": {
+        "type": "object",
+        "properties": {
+          "deviceId": {
+            "type": "string",
+            "description": "Opaque identifier returned by the provider."
+          },
+          "deviceType": {
+            "type": "string",
+            "description": "Super Bar currently retains devices whose type is DEVICE_AIR_CONDITIONER."
+          },
+          "alias": {
+            "type": "string",
+            "description": "Provider/device display name."
+          }
+        },
+        "additionalProperties": true
+      },
+      "LG_Device": {
+        "type": "object",
+        "properties": {
+          "deviceId": {
+            "type": "string",
+            "description": "Opaque device identifier; the client also accepts deviceInfo.deviceId."
+          },
+          "deviceInfo": {
+            "$ref": "#/components/schemas/LG_DeviceInfo"
+          },
+          "deviceType": {
+            "type": "string",
+            "description": "Fallback device type when deviceInfo is absent."
+          },
+          "alias": {
+            "type": "string",
+            "description": "Fallback display name when deviceInfo is absent."
+          }
+        },
+        "additionalProperties": true
+      },
+      "LG_DeviceList": {
+        "anyOf": [
+          {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LG_Device"
+            }
+          },
+          {
+            "type": "object",
+            "properties": {
+              "devices": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/LG_Device"
+                }
+              }
+            },
+            "additionalProperties": true
+          }
+        ],
+        "description": "The client accepts a direct list or recursively finds a devices array in an object. No response member is asserted to be universally required."
+      },
+      "LG_DeviceProfile": {
+        "type": "object",
+        "additionalProperties": true,
+        "description": "Device-specific capability tree. The client recursively locates groups/properties, checks mode containing w, writable=true, or value.w/writeValues, and reads enum/range limits. Nesting and available fields vary by device."
+      },
+      "LG_TemperatureState": {
+        "type": "object",
+        "properties": {
+          "unit": {
+            "type": "string",
+            "description": "Temperature unit. Super Bar selects Celsius entries when multiple units are returned."
+          },
+          "currentTemperature": {
+            "type": "number"
+          },
+          "currentTemperatureC": {
+            "type": "number"
+          },
+          "targetTemperature": {
+            "type": "number"
+          },
+          "targetTemperatureC": {
+            "type": "number"
+          },
+          "minTargetTemperature": {
+            "type": "number"
+          },
+          "maxTargetTemperature": {
+            "type": "number"
+          }
+        },
+        "additionalProperties": true
+      },
+      "LG_DeviceState": {
+        "type": "object",
+        "properties": {
+          "temperature": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LG_TemperatureState"
+              },
+              {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/LG_TemperatureState"
+                }
+              }
+            ]
+          },
+          "operation": {
+            "type": "object",
+            "properties": {
+              "airConOperationMode": {
+                "type": "string",
+                "description": "POWER_ON and POWER_OFF are recognized by the client; other values remain unknown."
+              }
+            },
+            "additionalProperties": true
+          },
+          "airFlow": {
+            "type": "object",
+            "properties": {
+              "windStrength": {
+                "type": "string"
+              },
+              "windStrengthDetail": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": true
+          },
+          "powerSave": {
+            "type": "object",
+            "properties": {
+              "powerSaveEnabled": {
+                "anyOf": [
+                  {
+                    "type": "boolean"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "additionalProperties": true
+          }
+        },
+        "additionalProperties": true,
+        "description": "Partial view of state fields read by Super Bar. These groups may also occur inside provider-specific wrappers. No field is guaranteed for every device."
+      },
+      "LG_ControlBody": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "description": "Map from a supported capability group to property/value changes. Super Bar validates each change against the device profile, sends one group per request, and polls state to confirm it. A successful HTTP response alone does not confirm a physical change.",
+        "properties": {
+          "operation": {
+            "type": "object",
+            "properties": {
+              "airConOperationMode": {
+                "type": "string",
+                "enum": [
+                  "POWER_ON",
+                  "POWER_OFF"
+                ]
+              }
+            },
+            "additionalProperties": true
+          },
+          "temperature": {
+            "type": "object",
+            "properties": {
+              "targetTemperature": {
+                "type": "number",
+                "description": "Use the range exposed by this device profile."
+              },
+              "unit": {
+                "type": "string",
+                "enum": [
+                  "C"
+                ],
+                "description": "Super Bar sends Celsius controls."
+              }
+            },
+            "additionalProperties": true
+          },
+          "airFlow": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "windStrength or windStrengthDetail, as exposed by the device profile."
+          },
+          "powerSave": {
+            "type": "object",
+            "properties": {
+              "powerSaveEnabled": {
+                "anyOf": [
+                  {
+                    "type": "boolean"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "additionalProperties": true
+          }
+        }
+      },
+      "LG_ControlResult": {
+        "type": "object",
+        "additionalProperties": true,
+        "description": "The client ignores the control response payload and confirms changes by reading device state. A zero-length successful body is also accepted."
+      },
+      "LG_EnergyProfile": {
+        "type": "object",
+        "properties": {
+          "property": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The client recursively searches for this list and only requests usage when it includes energyUsage."
+          }
+        },
+        "additionalProperties": true,
+        "description": "Capability payload; property may be nested inside additional provider objects."
+      },
+      "LG_EnergyUsageRow": {
+        "type": "object",
+        "properties": {
+          "energyUsage": {
+            "type": "number",
+            "description": "Interpreted by this implementation as watt-hours; only finite nonnegative values are used."
+          },
+          "date": {},
+          "usageDate": {},
+          "usedDate": {},
+          "useDate": {},
+          "periodDate": {},
+          "startDate": {},
+          "dateTime": {}
+        },
+        "additionalProperties": true,
+        "description": "The client accepts multiple date field names and takes the first eight numeric characters as the calendar day. Provider date representation and additional runtime counters remain open."
+      },
+      "LG_EnergyUsage": {
+        "type": "object",
+        "properties": {
+          "dataList": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LG_EnergyUsageRow"
+            }
+          },
+          "result": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "total": {
+            "type": "number"
+          },
+          "energyUsage": {
+            "type": "number"
+          }
+        },
+        "additionalProperties": true,
+        "description": "The client recursively finds dataList. The desktop decoder also accepts result/total and several alternate aggregate forms; this partial schema leaves provider-specific wrappers and fields open."
+      },
+      "LG_DeviceListEnvelope": {
+        "type": "object",
+        "properties": {
+          "response": {
+            "$ref": "#/components/schemas/LG_DeviceList"
+          },
+          "error": {
+            "$ref": "#/components/schemas/LG_ProviderError"
+          }
+        },
+        "additionalProperties": true,
+        "description": "ThinQ response envelope. The Swift client unwraps response when present; an error member is treated as failure even for a 2xx HTTP status."
+      },
+      "LG_DeviceProfileEnvelope": {
+        "type": "object",
+        "properties": {
+          "response": {
+            "$ref": "#/components/schemas/LG_DeviceProfile"
+          },
+          "error": {
+            "$ref": "#/components/schemas/LG_ProviderError"
+          }
+        },
+        "additionalProperties": true,
+        "description": "ThinQ response envelope. The Swift client unwraps response when present; an error member is treated as failure even for a 2xx HTTP status."
+      },
+      "LG_DeviceStateEnvelope": {
+        "type": "object",
+        "properties": {
+          "response": {
+            "$ref": "#/components/schemas/LG_DeviceState"
+          },
+          "error": {
+            "$ref": "#/components/schemas/LG_ProviderError"
+          }
+        },
+        "additionalProperties": true,
+        "description": "ThinQ response envelope. The Swift client unwraps response when present; an error member is treated as failure even for a 2xx HTTP status."
+      },
+      "LG_ControlResultEnvelope": {
+        "type": "object",
+        "properties": {
+          "response": {
+            "$ref": "#/components/schemas/LG_ControlResult"
+          },
+          "error": {
+            "$ref": "#/components/schemas/LG_ProviderError"
+          }
+        },
+        "additionalProperties": true,
+        "description": "ThinQ response envelope. The Swift client unwraps response when present; an error member is treated as failure even for a 2xx HTTP status."
+      },
+      "LG_EnergyProfileEnvelope": {
+        "type": "object",
+        "properties": {
+          "response": {
+            "$ref": "#/components/schemas/LG_EnergyProfile"
+          },
+          "error": {
+            "$ref": "#/components/schemas/LG_ProviderError"
+          }
+        },
+        "additionalProperties": true,
+        "description": "ThinQ response envelope. The Swift client unwraps response when present; an error member is treated as failure even for a 2xx HTTP status."
+      },
+      "LG_EnergyUsageEnvelope": {
+        "type": "object",
+        "properties": {
+          "response": {
+            "$ref": "#/components/schemas/LG_EnergyUsage"
+          },
+          "error": {
+            "$ref": "#/components/schemas/LG_ProviderError"
+          }
+        },
+        "additionalProperties": true,
+        "description": "ThinQ response envelope. The Swift client unwraps response when present; an error member is treated as failure even for a 2xx HTTP status."
+      },
+      "TCL_LoginRequest": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "username": {
+            "type": "string",
+            "format": "email",
+            "description": "TCL Home account email."
+          },
+          "password": {
+            "type": "string",
+            "format": "password",
+            "writeOnly": true,
+            "description": "Lowercase hexadecimal MD5 of the entered password, computed by the client. This hash is a credential, not a public identifier.",
+            "pattern": "^[0-9a-f]{32}$"
+          },
+          "equipment": {
+            "type": "integer",
+            "enum": [
+              2
+            ]
+          },
+          "osType": {
+            "type": "integer",
+            "enum": [
+              1
+            ]
+          },
+          "clientVersion": {
+            "type": "string",
+            "description": "Adapter currently sends its emulated mobile client version."
+          },
+          "osVersion": {
+            "type": "string",
+            "description": "Mobile OS version string sent by the adapter."
+          },
+          "deviceModel": {
+            "type": "string",
+            "description": "Mobile client model string."
+          },
+          "captchaRule": {
+            "type": "integer",
+            "enum": [
+              2
+            ]
+          },
+          "channel": {
+            "type": "string",
+            "enum": [
+              "app"
+            ]
+          }
+        },
+        "required": [
+          "username",
+          "password",
+          "equipment",
+          "osType",
+          "clientVersion",
+          "osVersion",
+          "deviceModel",
+          "captchaRule",
+          "channel"
+        ]
+      },
+      "TCL_LoginResponse": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "status": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              }
+            ],
+            "description": "Client accepts stringification equal to 1 as successful login."
+          },
+          "token": {
+            "type": "string",
+            "format": "password",
+            "description": "Sensitive authentication material. Supply only for an account and integration you are authorized to use."
+          },
+          "user": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "username": {
+                "type": "string",
+                "description": "SSO user identifier returned by the service."
+              }
+            }
+          }
+        },
+        "description": "The client requires a successful status, nonempty token and user.username before accepting the session. Error envelopes may differ."
+      },
+      "TCL_DiscoveryRequest": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "ssoId": {
+            "type": "string",
+            "description": "SSO user identifier from login user.username."
+          },
+          "ssoToken": {
+            "type": "string",
+            "format": "password",
+            "writeOnly": true,
+            "description": "Sensitive authentication material. Supply only for an account and integration you are authorized to use."
+          }
+        },
+        "required": [
+          "ssoId",
+          "ssoToken"
+        ]
+      },
+      "TCL_DiscoveryResponse": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "data": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "cloud_url": {
+                "type": "string",
+                "format": "uri",
+                "description": "HTTPS origin for session refresh."
+              },
+              "device_url": {
+                "type": "string",
+                "format": "uri",
+                "description": "HTTPS origin for device inventory and statistics."
+              },
+              "cloud_region": {
+                "type": "string",
+                "pattern": "^[a-z]{2}-[a-z]+-[0-9]+$",
+                "description": "AWS region used for Cognito and IoT data requests."
+              }
+            }
+          }
+        }
+      },
+      "TCL_RefreshRequest": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "userId": {
+            "type": "string",
+            "description": "SSO user identifier."
+          },
+          "ssoToken": {
+            "type": "string",
+            "format": "password",
+            "writeOnly": true,
+            "description": "Sensitive authentication material. Supply only for an account and integration you are authorized to use."
+          },
+          "appId": {
+            "type": "string",
+            "description": "Authorized TCL application registration. The Swift adapter currently supplies a fixed mobile registration; this specification does not publish its value or grant permission to reuse it."
+          }
+        },
+        "required": [
+          "userId",
+          "ssoToken",
+          "appId"
+        ]
+      },
+      "TCL_RefreshResponse": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "data": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "saasToken": {
+                "type": "string",
+                "format": "password",
+                "description": "Sensitive authentication material. Supply only for an account and integration you are authorized to use."
+              },
+              "saas_token": {
+                "type": "string",
+                "format": "password",
+                "description": "Sensitive authentication material. Supply only for an account and integration you are authorized to use."
+              },
+              "cognitoToken": {
+                "type": "string",
+                "format": "password",
+                "description": "Sensitive authentication material. Supply only for an account and integration you are authorized to use."
+              },
+              "cognito_token": {
+                "type": "string",
+                "format": "password",
+                "description": "Sensitive authentication material. Supply only for an account and integration you are authorized to use."
+              }
+            },
+            "description": "The adapter accepts camelCase or snake_case token fields. A SaaS token is required; Cognito token is required when inventory is nonempty and shadows are needed."
+          }
+        }
+      },
+      "TCL_Device": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "deviceId": {
+            "type": "string"
+          },
+          "device_id": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "productKey": {
+            "type": "string"
+          },
+          "product_key": {
+            "type": "string"
+          },
+          "nickName": {
+            "type": "string"
+          },
+          "nick_name": {
+            "type": "string"
+          },
+          "deviceName": {
+            "type": "string"
+          },
+          "device_name": {
+            "type": "string"
+          },
+          "deviceType": {
+            "type": "string"
+          },
+          "device_type": {
+            "type": "string"
+          },
+          "category": {
+            "type": "string"
+          },
+          "isOnline": {
+            "oneOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "description": "The adapter accepts numeric 0/1 or string true/false when decoding availability."
+          },
+          "is_online": {
+            "oneOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "description": "The adapter accepts numeric 0/1 or string true/false when decoding availability."
+          }
+        },
+        "description": "Inventory rows vary by device. The adapter matches air-conditioner type/name and accepts several field-name aliases; no field is declared universally required."
+      },
+      "TCL_InventoryResponse": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TCL_Device"
+            }
+          }
+        }
+      },
+      "TCL_CognitoRequest": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "IdentityId": {
+            "type": "string",
+            "description": "Identity from the sub claim of the TCL-supplied Cognito token."
+          },
+          "Logins": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "cognito-identity.amazonaws.com": {
+                "type": "string",
+                "format": "password",
+                "writeOnly": true,
+                "description": "Sensitive authentication material. Supply only for an account and integration you are authorized to use."
+              }
+            },
+            "required": [
+              "cognito-identity.amazonaws.com"
+            ]
+          }
+        },
+        "required": [
+          "IdentityId",
+          "Logins"
+        ]
+      },
+      "TCL_CognitoResponse": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "IdentityId": {
+            "type": "string"
+          },
+          "Credentials": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "AccessKeyId": {
+                "type": "string",
+                "description": "Temporary access-key identifier; sensitive session metadata."
+              },
+              "SecretKey": {
+                "type": "string",
+                "format": "password",
+                "description": "Sensitive authentication material. Supply only for an account and integration you are authorized to use."
+              },
+              "SessionToken": {
+                "type": "string",
+                "format": "password",
+                "description": "Sensitive authentication material. Supply only for an account and integration you are authorized to use."
+              },
+              "Expiration": {
+                "type": "number",
+                "description": "Epoch seconds. The adapter renews before expiration and caps reuse at 300 seconds."
+              }
+            }
+          }
+        }
+      },
+      "TCL_ReportedState": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "powerSwitch": {
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string",
+                "description": "Numeric string accepted by the Swift decoder."
+              }
+            ]
+          },
+          "currentTemperature": {
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string",
+                "description": "Numeric string accepted by the Swift decoder."
+              }
+            ]
+          },
+          "targetTemperature": {
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string",
+                "description": "Numeric string accepted by the Swift decoder."
+              }
+            ]
+          },
+          "workMode": {
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string",
+                "description": "Numeric string accepted by the Swift decoder."
+              }
+            ]
+          },
+          "ECO": {
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string",
+                "description": "Numeric string accepted by the Swift decoder."
+              }
+            ]
+          },
+          "windSpeed": {
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string",
+                "description": "Numeric string accepted by the Swift decoder."
+              }
+            ]
+          },
+          "windSpeed7Gear": {
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string",
+                "description": "Numeric string accepted by the Swift decoder."
+              }
+            ]
+          },
+          "windSpeedAutoSwitch": {
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string",
+                "description": "Numeric string accepted by the Swift decoder."
+              }
+            ]
+          },
+          "verticalSwitch": {
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string",
+                "description": "Numeric string accepted by the Swift decoder."
+              }
+            ]
+          },
+          "verticalDirection": {
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string",
+                "description": "Numeric string accepted by the Swift decoder."
+              }
+            ]
+          },
+          "horizontalSwitch": {
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string",
+                "description": "Numeric string accepted by the Swift decoder."
+              }
+            ]
+          },
+          "horizontalDirection": {
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string",
+                "description": "Numeric string accepted by the Swift decoder."
+              }
+            ]
+          },
+          "turbo": {
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string",
+                "description": "Numeric string accepted by the Swift decoder."
+              }
+            ]
+          },
+          "silenceSwitch": {
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string",
+                "description": "Numeric string accepted by the Swift decoder."
+              }
+            ]
+          },
+          "highTemperatureWind": {
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string",
+                "description": "Numeric string accepted by the Swift decoder."
+              }
+            ]
+          }
+        },
+        "description": "Device-specific telemetry and capabilities. Missing values and -1 can mean unsupported/unavailable. Additional device fields are deliberately preserved."
+      },
+      "TCL_DesiredState": {
+        "type": "object",
+        "minProperties": 1,
+        "additionalProperties": false,
+        "description": "Fields the adapter can publish after checking their presence and valid range in the latest reported shadow. Companion fields may be added when changing fan/swing settings. Accepted bounds in a particular device can be narrower.",
+        "properties": {
+          "powerSwitch": {
+            "type": "integer",
+            "enum": [
+              0,
+              1
+            ]
+          },
+          "ECO": {
+            "type": "integer",
+            "enum": [
+              0,
+              1
+            ]
+          },
+          "verticalSwitch": {
+            "type": "integer",
+            "enum": [
+              0,
+              1
+            ]
+          },
+          "horizontalSwitch": {
+            "type": "integer",
+            "enum": [
+              0,
+              1
+            ]
+          },
+          "turbo": {
+            "type": "integer",
+            "enum": [
+              0,
+              1
+            ]
+          },
+          "silenceSwitch": {
+            "type": "integer",
+            "enum": [
+              0,
+              1
+            ]
+          },
+          "highTemperatureWind": {
+            "type": "integer",
+            "enum": [
+              0
+            ]
+          },
+          "targetTemperature": {
+            "type": "integer",
+            "minimum": 16,
+            "maximum": 30
+          },
+          "workMode": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 4,
+            "description": "0 auto; 1 cool; 2 dry; 3 fan; 4 heat."
+          },
+          "windSpeed": {
+            "type": "integer",
+            "enum": [
+              0,
+              2,
+              3,
+              4,
+              5,
+              6
+            ]
+          },
+          "windSpeed7Gear": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 7
+          },
+          "windSpeedAutoSwitch": {
+            "type": "integer",
+            "enum": [
+              0,
+              1
+            ]
+          },
+          "verticalDirection": {
+            "type": "integer",
+            "enum": [
+              1,
+              2,
+              3,
+              8,
+              9,
+              10,
+              11,
+              12,
+              13
+            ]
+          },
+          "horizontalDirection": {
+            "type": "integer",
+            "enum": [
+              1,
+              2,
+              3,
+              4,
+              8,
+              9,
+              10,
+              11,
+              12,
+              13
+            ]
+          }
+        }
+      },
+      "TCL_Shadow": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "state": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "reported": {
+                "$ref": "#/components/schemas/TCL_ReportedState"
+              },
+              "desired": {
+                "type": "object",
+                "additionalProperties": true,
+                "description": "Pending desired values from the service; may include fields outside the adapter command allowlist."
+              }
+            }
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "reported": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "properties": {
+                    "timestamp": {
+                      "type": "number",
+                      "description": "Epoch seconds for the corresponding reported field."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "version": {
+            "type": "integer"
+          },
+          "timestamp": {
+            "type": "number"
+          }
+        }
+      },
+      "TCL_PublishRequest": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "state": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "desired": {
+                "$ref": "#/components/schemas/TCL_DesiredState"
+              }
+            },
+            "required": [
+              "desired"
+            ]
+          },
+          "clientToken": {
+            "type": "string",
+            "description": "Correlation value generated as mobile_ followed by a UUID."
+          }
+        },
+        "required": [
+          "state",
+          "clientToken"
+        ]
+      },
+      "TCL_EnergyEntry": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "time": {
+            "type": "string",
+            "description": "Daily yyyy-MM-dd, full local date/time, or hour text for nested hourly rows."
+          },
+          "date": {
+            "type": "string",
+            "description": "Date alternative to time."
+          },
+          "hour": {
+            "oneOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "string"
+              }
+            ]
+          },
+          "totalElectricity": {
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string",
+                "description": "Numeric string accepted by the Swift decoder."
+              }
+            ]
+          },
+          "electricity": {
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string",
+                "description": "Numeric string accepted by the Swift decoder."
+              }
+            ]
+          },
+          "consumption": {
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string",
+                "description": "Numeric string accepted by the Swift decoder."
+              }
+            ]
+          },
+          "dataList": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TCL_EnergyEntry"
+            }
+          },
+          "ecoDetails": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TCL_EnergyEntry"
+            }
+          },
+          "consumptionDetails": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TCL_EnergyEntry"
+            }
+          }
+        },
+        "description": "Values are interpreted as nonnegative kWh. Numeric strings are accepted. Nested rows allow several device-specific response layouts."
+      },
+      "TCL_EnergySummaryResponse": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "code": {
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string",
+                "description": "Numeric string accepted by the Swift decoder."
+              }
+            ]
+          },
+          "data": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "ecoDetails": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "properties": {
+                    "dataList": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/TCL_EnergyEntry"
+                      }
+                    }
+                  }
+                }
+              },
+              "dataList": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/TCL_EnergyEntry"
+                }
+              },
+              "consumptionDetails": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/TCL_EnergyEntry"
+                }
+              }
+            }
+          }
+        },
+        "description": "Client requires code 0. For timeType=2, daily values are under data.ecoDetails[].dataList[]. For timeType=1, nested entries must include explicit local dates/hours and reconcile with independently retrieved daily totals before use."
+      },
+      "TCL_LegacyEnergyResponse": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "code": {
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string",
+                "description": "Numeric string accepted by the Swift decoder."
+              }
+            ]
+          },
+          "data": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "consumptionDetails": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "properties": {
+                    "date": {
+                      "type": "string",
+                      "format": "date"
+                    },
+                    "consumption": {
+                      "oneOf": [
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "string",
+                          "description": "Numeric string accepted by the Swift decoder."
+                        }
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "description": "Client requires code 0 and nonnegative consumption kWh for valid yyyy-MM-dd dates."
+      },
+      "TUYA_SignedForm": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "a": {
+            "type": "string",
+            "description": "RPC action; only the seven actions declared below are used."
+          },
+          "v": {
+            "type": "string",
+            "description": "Action version."
+          },
+          "deviceId": {
+            "type": "string",
+            "description": "Client-generated device identifier, not the target appliance ID."
+          },
+          "os": {
+            "type": "string",
+            "enum": [
+              "Android"
+            ]
+          },
+          "lang": {
+            "type": "string",
+            "enum": [
+              "en"
+            ]
+          },
+          "clientId": {
+            "type": "string",
+            "description": "Mobile application registration identifier. Supply only an authorized registration; the embedded identifier is intentionally omitted."
+          },
+          "time": {
+            "type": "string",
+            "pattern": "^[0-9]+$",
+            "description": "Unix time in seconds, serialized as text."
+          },
+          "et": {
+            "type": "string",
+            "enum": [
+              "0.0.1"
+            ]
+          },
+          "ttid": {
+            "type": "string",
+            "enum": [
+              "smart_life"
+            ]
+          },
+          "appVersion": {
+            "type": "string",
+            "enum": [
+              "3.8.5"
+            ]
+          },
+          "appRnVersion": {
+            "type": "string",
+            "enum": [
+              "5.11"
+            ]
+          },
+          "platform": {
+            "type": "string",
+            "enum": [
+              "Android"
+            ]
+          },
+          "requestId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Fresh lower-case UUID."
+          },
+          "sign": {
+            "type": "string",
+            "description": "Request-specific HMAC-SHA256 signature computed by TuyaCrypto.signature. Swagger UI does not calculate this. No signing material is included.",
+            "writeOnly": true
+          },
+          "sid": {
+            "type": "string",
+            "description": "Session credential from the login response; omitted by the two login actions.",
+            "writeOnly": true
+          },
+          "gid": {
+            "type": "string",
+            "description": "Group identifier from the home listing; sent for device and schema discovery."
+          },
+          "postData": {
+            "type": "string",
+            "description": "Optional JSON object serialized with sorted keys and unescaped slashes, then URL-form-encoded as one string. The action descriptors identify its object schema."
+          }
+        },
+        "required": [
+          "a",
+          "v",
+          "deviceId",
+          "os",
+          "lang",
+          "clientId",
+          "time",
+          "et",
+          "ttid",
+          "appVersion",
+          "appRnVersion",
+          "platform",
+          "requestId",
+          "sign"
+        ]
+      },
+      "TUYA_UsernameTokenPayload": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "countryCode": {
+            "type": "string"
+          },
+          "username": {
+            "type": "string",
+            "format": "email",
+            "description": "Account email."
+          },
+          "isUid": {
+            "type": "boolean",
+            "enum": [
+              false
+            ]
+          }
+        },
+        "required": [
+          "countryCode",
+          "username",
+          "isUid"
+        ]
+      },
+      "TUYA_PasswordLoginPayload": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "countryCode": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string",
+            "format": "email"
+          },
+          "passwd": {
+            "type": "string",
+            "description": "RSA-encrypted saved password MD5 produced using the preceding token response, not a plaintext password.",
+            "writeOnly": true
+          },
+          "ifencrypt": {
+            "type": "integer",
+            "enum": [
+              1
+            ]
+          },
+          "options": {
+            "type": "string",
+            "description": "JSON string with group=1 and mfaCode empty as sent by this client."
+          },
+          "token": {
+            "type": "string",
+            "description": "Login challenge token.",
+            "writeOnly": true
+          }
+        },
+        "required": [
+          "countryCode",
+          "email",
+          "passwd",
+          "ifencrypt",
+          "options",
+          "token"
+        ]
+      },
+      "TUYA_HistoryBase": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "devId": {
+            "type": "string",
+            "description": "Target meter identifier."
+          },
+          "dpId": {
+            "type": "integer",
+            "description": "Energy datapoint ID selected from the product schema."
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "minux"
+            ]
+          },
+          "auto": {
+            "type": "integer",
+            "enum": [
+              2
+            ]
+          }
+        },
+        "required": [
+          "devId",
+          "dpId",
+          "type",
+          "auto"
+        ]
+      },
+      "TUYA_DailyHistoryPayload": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/TUYA_HistoryBase"
+          },
+          {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "startDay": {
+                "type": "string",
+                "pattern": "^[0-9]{8}$"
+              },
+              "endDay": {
+                "type": "string",
+                "pattern": "^[0-9]{8}$"
+              }
+            },
+            "required": [
+              "startDay",
+              "endDay"
+            ]
+          }
+        ]
+      },
+      "TUYA_HourlyHistoryPayload": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/TUYA_HistoryBase"
+          },
+          {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "date": {
+                "type": "string",
+                "pattern": "^[0-9]{8}$",
+                "description": "Meter-local yyyyMMdd."
+              }
+            },
+            "required": [
+              "date"
+            ]
+          }
+        ]
+      },
+      "TUYA_UsernameTokenResult": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "token": {
+            "type": "string",
+            "description": "Login challenge credential."
+          },
+          "pbKey": {
+            "type": "string",
+            "description": "Base64 public key, possibly PEM wrapped."
+          },
+          "publicKey": {
+            "type": "string",
+            "description": "Alternate RSA public key representation."
+          },
+          "exponent": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ]
+          }
+        },
+        "description": "Fields consumed by TuyaCrypto.password; key representation varies."
+      },
+      "TUYA_PasswordLoginResult": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "sid": {
+            "type": "string",
+            "description": "Session credential; sensitive."
+          },
+          "domain": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "mobileApiUrl": {
+                "type": "string",
+                "format": "uri",
+                "description": "Regional API URL validated against the client host allowlist."
+              }
+            }
+          }
+        }
+      },
+      "TUYA_Home": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "groupId": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ]
+          },
+          "id": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ]
+          }
+        }
+      },
+      "TUYA_HomesResult": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/TUYA_Home"
+        }
+      },
+      "TUYA_Device": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "devId": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "category": {
+            "type": "string"
+          },
+          "productId": {
+            "type": "string"
+          },
+          "timezoneId": {
+            "type": "string"
+          },
+          "dpMaxTime": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ]
+          },
+          "isOnline": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "string"
+              }
+            ]
+          },
+          "dataPointInfo": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "dps": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "additionalProperties": true
+                  },
+                  {
+                    "type": "string",
+                    "description": "JSON-encoded object."
+                  }
+                ]
+              }
+            }
+          },
+          "dps": {
+            "anyOf": [
+              {
+                "type": "object",
+                "additionalProperties": true
+              },
+              {
+                "type": "string",
+                "description": "JSON-encoded object."
+              }
+            ]
+          },
+          "moduleMap": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "description": "Raw vendor device fields; derived watts/kWh in Swift are not response fields. Additional online flags and device-specific values may occur."
+      },
+      "TUYA_DevicesResult": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/TUYA_Device"
+        }
+      },
+      "TUYA_ProductSchema": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "id": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ]
+          },
+          "schemaInfo": {
+            "anyOf": [
+              {
+                "type": "object",
+                "additionalProperties": true,
+                "properties": {
+                  "schema": {
+                    "anyOf": [
+                      {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "additionalProperties": true
+                        }
+                      },
+                      {
+                        "type": "string",
+                        "description": "JSON-encoded schema array."
+                      }
+                    ]
+                  }
+                }
+              },
+              {
+                "type": "string",
+                "description": "JSON-encoded schemaInfo object."
+              }
+            ]
+          }
+        }
+      },
+      "TUYA_SchemasResult": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/TUYA_ProductSchema"
+        }
+      },
+      "TUYA_HistoryValues": {
+        "type": "object",
+        "additionalProperties": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "description": "Date/hour keys map to kWh as numeric values or numeric strings. Missing and invalid entries are ignored by the client."
+      },
+      "TUYA_DailyHistoryResult": {
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/TUYA_HistoryValues"
+          },
+          {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "result": {
+                "$ref": "#/components/schemas/TUYA_HistoryValues"
+              }
+            },
+            "required": [
+              "result"
+            ]
+          }
+        ]
+      },
+      "TUYA_HourlyHistoryResult": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/TUYA_HistoryValues"
+          }
+        ],
+        "description": "Keys use yyyyMMddHH in the meter timezone. The client ignores the unfinished current hour."
+      },
+      "TUYA_UsernameTokenForm": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/TUYA_SignedForm"
+          },
+          {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "a": {
+                "type": "string",
+                "enum": [
+                  "thing.m.user.username.token.get"
+                ]
+              },
+              "v": {
+                "type": "string",
+                "enum": [
+                  "2.0"
+                ]
+              },
+              "postData": {
+                "type": "string",
+                "description": "Serialize UsernameTokenPayload as JSON text before signing and form encoding.",
+                "x-json-schema": {
+                  "$ref": "#/components/schemas/TUYA_UsernameTokenPayload"
+                }
+              }
+            },
+            "required": [
+              "postData"
+            ]
+          }
+        ]
+      },
+      "TUYA_PasswordLoginForm": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/TUYA_SignedForm"
+          },
+          {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "a": {
+                "type": "string",
+                "enum": [
+                  "thing.m.user.email.password.login"
+                ]
+              },
+              "v": {
+                "type": "string",
+                "enum": [
+                  "3.0"
+                ]
+              },
+              "postData": {
+                "type": "string",
+                "description": "Serialize PasswordLoginPayload as JSON text before signing and form encoding.",
+                "x-json-schema": {
+                  "$ref": "#/components/schemas/TUYA_PasswordLoginPayload"
+                }
+              }
+            },
+            "required": [
+              "postData"
+            ]
+          }
+        ]
+      },
+      "TUYA_ListHomesForm": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/TUYA_SignedForm"
+          },
+          {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "a": {
+                "type": "string",
+                "enum": [
+                  "tuya.m.location.list"
+                ]
+              },
+              "v": {
+                "type": "string",
+                "enum": [
+                  "2.1"
+                ]
+              }
+            },
+            "required": [
+              "sid"
+            ]
+          }
+        ]
+      },
+      "TUYA_ListDevicesForm": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/TUYA_SignedForm"
+          },
+          {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "a": {
+                "type": "string",
+                "enum": [
+                  "tuya.m.my.group.device.list"
+                ]
+              },
+              "v": {
+                "type": "string",
+                "enum": [
+                  "2.0"
+                ]
+              }
+            },
+            "required": [
+              "sid",
+              "gid"
+            ]
+          }
+        ]
+      },
+      "TUYA_ListSchemasForm": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/TUYA_SignedForm"
+          },
+          {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "a": {
+                "type": "string",
+                "enum": [
+                  "tuya.m.device.ref.info.my.list"
+                ]
+              },
+              "v": {
+                "type": "string",
+                "enum": [
+                  "2.0"
+                ]
+              }
+            },
+            "required": [
+              "sid",
+              "gid"
+            ]
+          }
+        ]
+      },
+      "TUYA_DailyHistoryForm": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/TUYA_SignedForm"
+          },
+          {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "a": {
+                "type": "string",
+                "enum": [
+                  "tuya.m.dp.rang.stat.day.list"
+                ]
+              },
+              "v": {
+                "type": "string",
+                "enum": [
+                  "2.0"
+                ]
+              },
+              "postData": {
+                "type": "string",
+                "description": "Serialize DailyHistoryPayload as JSON text before signing and form encoding.",
+                "x-json-schema": {
+                  "$ref": "#/components/schemas/TUYA_DailyHistoryPayload"
+                }
+              }
+            },
+            "required": [
+              "sid",
+              "postData"
+            ]
+          }
+        ]
+      },
+      "TUYA_HourlyHistoryForm": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/TUYA_SignedForm"
+          },
+          {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "a": {
+                "type": "string",
+                "enum": [
+                  "tuya.m.dp.rang.stat.hour.list"
+                ]
+              },
+              "v": {
+                "type": "string",
+                "enum": [
+                  "1.0"
+                ]
+              },
+              "postData": {
+                "type": "string",
+                "description": "Serialize HourlyHistoryPayload as JSON text before signing and form encoding.",
+                "x-json-schema": {
+                  "$ref": "#/components/schemas/TUYA_HourlyHistoryPayload"
+                }
+              }
+            },
+            "required": [
+              "sid",
+              "postData"
+            ]
+          }
+        ]
+      },
+      "TUYA_ResponseEnvelope": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "errorCode": {
+            "type": "string"
+          },
+          "result": {
+            "description": "RPC-dependent result. On successful responses see x-rpc-actions for the corresponding schema. May be null on failure.",
+            "nullable": true,
+            "anyOf": [
+              {
+                "type": "object",
+                "additionalProperties": true
+              },
+              {
+                "type": "array",
+                "items": {}
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "boolean"
+              }
+            ]
+          }
+        },
+        "description": "Business errors can arrive with HTTP 200 and success=false. USER_SESSION_INVALID/EXPIRED trigger one renewal attempt; MFA/captcha failures require confirmation in Smart Life."
+      }
+    },
+    "parameters": {
+      "LG_DeviceID": {
+        "name": "deviceId",
+        "in": "path",
+        "required": true,
+        "description": "Opaque device identifier from the device inventory.",
+        "schema": {
+          "type": "string"
+        }
+      },
+      "LG_Country": {
+        "name": "x-country",
+        "in": "header",
+        "required": true,
+        "schema": {
+          "type": "string"
+        },
+        "description": "Account country code selected in app settings."
+      },
+      "LG_ClientID": {
+        "name": "x-client-id",
+        "in": "header",
+        "required": true,
+        "schema": {
+          "type": "string"
+        },
+        "description": "Client identifier generated once by Super Bar and persisted in preferences; supply your own client identifier."
+      },
+      "LG_MessageID": {
+        "name": "x-message-id",
+        "in": "header",
+        "required": true,
+        "schema": {
+          "type": "string"
+        },
+        "description": "Per-request random UUID bytes encoded as unpadded URL-safe Base64 by the current client."
+      },
+      "LG_ServicePhase": {
+        "name": "x-service-phase",
+        "in": "header",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "enum": [
+            "OP"
+          ]
+        },
+        "description": "Service phase sent by Super Bar."
+      },
+      "LG_ConditionalControl": {
+        "name": "x-conditional-control",
+        "in": "header",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "enum": [
+            "true"
+          ]
+        },
+        "description": "Sent for control POST requests."
+      },
+      "TCL_Timestamp": {
+        "name": "timestamp",
+        "in": "header",
+        "required": true,
+        "description": "Current Unix timestamp in milliseconds, as a decimal string.",
+        "schema": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        }
+      },
+      "TCL_Nonce": {
+        "name": "nonce",
+        "in": "header",
+        "required": true,
+        "description": "Fresh lowercase UUID used in the TCL request signature.",
+        "schema": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "TCL_Language": {
+        "name": "Accept-Language",
+        "in": "header",
+        "required": true,
+        "description": "Language requested by the adapter.",
+        "schema": {
+          "type": "string",
+          "enum": [
+            "en"
+          ]
+        }
+      },
+      "TCL_PlatformAndroid": {
+        "name": "platform",
+        "in": "header",
+        "required": true,
+        "description": "Platform header sent for inventory and legacy statistics.",
+        "schema": {
+          "type": "string",
+          "enum": [
+            "android"
+          ]
+        }
+      },
+      "TCL_PlatformIOS": {
+        "name": "platform",
+        "in": "header",
+        "required": true,
+        "description": "Platform header sent for v1 electricity statistics.",
+        "schema": {
+          "type": "string",
+          "enum": [
+            "ios"
+          ]
+        }
+      },
+      "TCL_DeviceId": {
+        "name": "deviceId",
+        "in": "path",
+        "required": true,
+        "description": "Inventory deviceId/device_id, percent-encoded once as a path segment.",
+        "schema": {
+          "type": "string"
+        }
+      },
+      "TCL_AmzDate": {
+        "name": "x-amz-date",
+        "in": "header",
+        "required": true,
+        "description": "UTC request-signing timestamp in AWS SigV4 basic format.",
+        "schema": {
+          "type": "string",
+          "pattern": "^[0-9]{8}T[0-9]{6}Z$"
+        }
+      }
+    }
+  },
+  "x-source-files": [
+    "Sources/Cloud/CloudSupport.swift",
+    "Sources/Deye/DeyeCloud.swift",
+    "Sources/Deye/DeyeReading.swift",
+    "Sources/LG/LGBar.swift",
+    "Sources/LG/LGDeviceState.swift",
+    "Sources/LG/ThinQ.swift",
+    "Sources/LG/WeekChart.swift",
+    "Sources/TCL/DeviceService.swift",
+    "Sources/TCL/EnergyHistory.swift",
+    "Sources/TCL/EnergyPeriod.swift",
+    "Sources/TCL/EnergySync.swift",
+    "Sources/TCL/TCLCloud.swift",
+    "Sources/Tuya/TuyaCloud.swift",
+    "Sources/Tuya/TuyaCrypto.swift",
+    "Sources/Tuya/TuyaReading.swift",
+    "iOS/App/PhoneClimateView.swift",
+    "iOS/App/PhoneLG.swift"
+  ],
+  "x-providers": {
+    "deye": {
+      "title": "Super Bar — Deye client API subset",
+      "description": "Code-derived documentation of the HTTP requests consumed by Super Bar, based on its current native Swift client. This is not an official or complete Deye API contract and is distinct from the vendor developer OpenAPI product. Response schemas describe fields used by the decoder; unmodeled fields are allowed and optional fields are not promises of server availability. Obtain the appropriate authorization for any use of these services. No account data, tokens, passwords, password hashes or actual device identifiers are bundled.",
+      "sourceFiles": [
+        "Sources/Deye/DeyeCloud.swift",
+        "Sources/Deye/DeyeReading.swift",
+        "Sources/Cloud/CloudSupport.swift"
+      ],
+      "x-client-policy": {
+        "redirects": "Authenticated redirects are blocked. Before login the app manually follows at most five public regional redirects and validates each HTTPS origin against the listed servers.",
+        "credentials": "The current app stores sessions and renewal password hashes in Keychain. Credential parameters on the token endpoint are sent in the query string by the existing client; never log or share those request URLs.",
+        "history": "Historical requests are read-only. Unavailable daily responses are recorded as missing data rather than zero."
+      }
+    },
+    "lg": {
+      "title": "Super Bar — LG ThinQ API subset",
+      "description": "Code-derived inventory of HTTP requests used by the shared macOS/iOS LG client. This is not a complete or vendor-issued ThinQ contract. Response schemas document fields consumed by the client and remain open where device profiles or wrappers differ. No account credentials, API-key values, or real device identifiers are included. Obtain and supply your own authorized PAT and API access; this file does not grant service or distribution rights.",
+      "sourceFiles": [
+        "Sources/LG/ThinQ.swift",
+        "Sources/LG/LGBar.swift",
+        "Sources/LG/LGDeviceState.swift",
+        "Sources/LG/WeekChart.swift",
+        "iOS/App/PhoneLG.swift",
+        "iOS/App/PhoneClimateView.swift"
+      ]
+    },
+    "tcl": {
+      "title": "Super Bar — TCL adapter HTTP API",
+      "description": "Code-derived subset of the HTTP requests and response fields used by Super Bar, not an official or complete TCL/AWS API contract. Documents current mobile-client interoperability behavior and does not establish service permission or distribution rights. Dynamic regional origins must come from validated discovery; placeholders cannot be used directly. No account data, passwords, tokens, access keys, signing secrets or fixed mobile application registration IDs are embedded. App-side Keychain storage, polling and UI are not HTTP endpoints. BLUETTI Bluetooth is outside this HTTP specification.",
+      "sourceFiles": [
+        "Sources/TCL/TCLCloud.swift",
+        "Sources/TCL/DeviceService.swift",
+        "Sources/TCL/EnergySync.swift",
+        "Sources/TCL/EnergyHistory.swift",
+        "Sources/TCL/EnergyPeriod.swift"
+      ]
+    },
+    "tuya": {
+      "title": "Super Bar — Tuya Smart Life mobile API subset",
+      "description": "Derived from the Super Bar Swift client, not an official Tuya OpenAPI contract or permission to distribute a mobile client. One real HTTP endpoint carries seven RPC actions; no synthetic REST paths are invented. Form signatures and RSA login encryption must be produced by an authorized client; importing this file into Swagger UI does not implement authentication. Credentials, signing keys and embedded app registration identifiers are intentionally omitted.",
+      "sourceFiles": [
+        "Sources/Tuya/TuyaCloud.swift",
+        "Sources/Tuya/TuyaCrypto.swift",
+        "Sources/Tuya/TuyaReading.swift"
+      ],
+      "x-credential-policy": "No real credentials, signing material, private host names or personal device examples are included."
+    }
+  }
+}

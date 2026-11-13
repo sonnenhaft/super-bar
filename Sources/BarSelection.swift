@@ -7,6 +7,7 @@ final class BarSelection: ObservableObject {
     static let sizeRange = 9...24
     static let shared = BarSelection()
     private let defaults: UserDefaults
+    @Published var climateDevice: ClimateDeviceID?
     @Published var current: Brand = .tcl
     @Published var expanded: Brand = .tcl { didSet { chartOverride = nil } }
     @Published var chartOverride: Brand? {

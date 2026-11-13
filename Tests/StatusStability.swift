@@ -46,6 +46,45 @@ import AppKit
         }
         let ecoOff = Aircon(["id": "eco", "name": "Test", "reported": ["ECO": 1, "targetTemperature": 26]])!
         precondition(ecoOff.ecoChanges?.count == 1 && ecoOff.ecoChanges?.first?.1 == 0)
+        func fanUnit(_ report: JSONObject) -> Aircon {
+            Aircon(["id": "fan", "name": "Test", "reported": report])!
+        }
+        let classicFan = fanUnit(["windSpeed": 4, "turbo": 0, "silenceSwitch": 0])
+        precondition(classicFan.fanSpeedOptions.map(\.id) == [7, 6, 5, 4, 3, 2, 1, 0])
+        precondition(classicFan.fanSpeedOptions.map(\.symbol) == [.turbo, .high, .mediumHigh, .medium, .mediumLow, .low, .quiet, .automatic],
+                     "Each available TCL speed gets the matching reference icon in descending order")
+        precondition(classicFan.currentFanLevel == 4 && classicFan.currentFanSymbol == .medium && classicFan.fan == "Medium")
+        precondition(classicFan.fanSymbol(-1) == .unknown && classicFan.fanSymbol(8) == .unknown)
+        let limitedFan = fanUnit(["windSpeed": 6])
+        precondition(limitedFan.fanSpeedOptions.map(\.id) == [6, 5, 4, 3, 2, 0],
+                     "Unsupported Turbo and Quiet controls must not appear")
+        precondition(limitedFan.currentFanSymbol == .high && limitedFan.fan == "High")
+        let sevenMinimum = fanUnit(["windSpeed7Gear": 1])
+        precondition(sevenMinimum.fanSpeedOptions.map(\.id) == [7, 6, 5, 4, 3, 2, 1, 0])
+        precondition(sevenMinimum.fanSymbol(1) == .minimum && sevenMinimum.currentFanSymbol == .minimum && sevenMinimum.fan == "Minimum")
+        precondition(sevenMinimum.selectedFanOption == 1)
+        let quietAvailable = fanUnit(["windSpeed7Gear": 1, "silenceSwitch": 0])
+        precondition(quietAvailable.fanSymbol(1) == .quiet && quietAvailable.fanLabel(1) == "Quiet")
+        precondition(quietAvailable.currentFanLevel == 1 && quietAvailable.currentFanSymbol == .minimum && quietAvailable.fan == "Minimum")
+        precondition(quietAvailable.selectedFanOption == nil,
+                     "Minimum fan must not highlight Quiet before its mode flag is enabled")
+        let quietActive = fanUnit(["windSpeed7Gear": 1, "silenceSwitch": 1, "windSpeedAutoSwitch": 1])
+        precondition(quietActive.currentFanSymbol == .quiet && quietActive.fan == "Quiet" && quietActive.selectedFanOption == 1,
+                     "An active Quiet flag takes precedence over the underlying automatic flag")
+        let turboActive = fanUnit(["windSpeed7Gear": 1, "silenceSwitch": 1, "turbo": 1, "windSpeedAutoSwitch": 1])
+        precondition(turboActive.currentFanSymbol == .turbo && turboActive.fan == "Turbo" && turboActive.selectedFanOption == 7,
+                     "Turbo mode retains precedence if a transitional report contains conflicting flags")
+        for report: JSONObject in [["windSpeed": 0], ["windSpeed7Gear": 6, "windSpeedAutoSwitch": 1]] {
+            let automatic = fanUnit(report)
+            precondition(automatic.currentFanLevel == 0 && automatic.currentFanSymbol == .automatic && automatic.fan == "Auto")
+        }
+        for report: JSONObject in [[:], ["windSpeed": -1], ["windSpeed": 99], ["windSpeed7Gear": 99]] {
+            let unknown = fanUnit(report)
+            precondition(unknown.currentFanLevel == nil && unknown.currentFanSymbol == .unknown && unknown.selectedFanOption == nil,
+                         "Missing or unknown readings must not display a remembered/default fan speed")
+        }
+        precondition(fanUnit([:]).fanSpeedOptions.isEmpty && fanUnit(["windSpeed": -1]).fanSpeedOptions.isEmpty)
+        precondition(TCLCoolingPreset.turbo.fanSymbol == .turbo && TCLCoolingPreset.quiet.fanSymbol == .quiet)
         precondition(DeyeReading.power(3314) == "3,3 kW")
         precondition(DeyeReading.power(800) == "0,8 kW")
         precondition(DeyeReading.power(799) == "799 W")
@@ -159,14 +198,72 @@ import AppKit
         precondition(historyRequests == 2, "Fast TCL status polling must not request history")
         syncTCL(chartDay.addingTimeInterval(900))
         precondition(historyRequests == 3, "TCL summary refreshes at 15 minutes; hourly history stays cached")
-        let presetAC = Aircon(["id":"preset","name":"Test","reported":[
-            "powerSwitch":1,"workMode":1,"targetTemperature":22,"windSpeed":2,
+        func presetUnit(_ report: JSONObject) -> Aircon {
+            Aircon(["id":"preset","name":"Test","reported":report])!
+        }
+        let classicReport: JSONObject = [
+            "powerSwitch":0,"workMode":0,"targetTemperature":26,"windSpeed":2,
+            "turbo":0,"silenceSwitch":1,"ECO":1,"highTemperatureWind":1,
             "verticalDirection":9,"horizontalDirection":9,"verticalSwitch":1,"horizontalSwitch":1
-        ]])!
-        let high = try! DeviceService.desired(CoolingPreset.high.fields(for:presetAC)!,report:presetAC.report)
-        precondition(high["verticalDirection"] == 13 && high["horizontalDirection"] == 11 && high["verticalSwitch"] == 0 && high["horizontalSwitch"] == 0)
-        let low = try! DeviceService.desired(CoolingPreset.low.fields(for:presetAC)!,report:presetAC.report)
-        precondition(low["verticalDirection"] == 2 && low["horizontalDirection"] == 1 && low["verticalSwitch"] == 1 && low["horizontalSwitch"] == 1)
+        ]
+        let presetAC = presetUnit(classicReport)
+        let turbo = try! DeviceService.desired(TCLCoolingPreset.turbo.fields(for:presetAC)!,report:classicReport)
+        precondition(turbo["targetTemperature"] == 16 && turbo["powerSwitch"] == 1 && turbo["workMode"] == 1)
+        precondition(turbo["windSpeed"] == 6 && turbo["turbo"] == 1 && turbo["silenceSwitch"] == 0,
+                     "16° Turbo must enable the turbo flag, not merely select ordinary High speed")
+        precondition(turbo["ECO"] == 0 && turbo["highTemperatureWind"] == 0)
+        precondition(turbo["verticalDirection"] == 13 && turbo["horizontalDirection"] == 11 && turbo["verticalSwitch"] == 0 && turbo["horizontalSwitch"] == 0)
+        let turboReport = classicReport.merging(turbo.mapValues { $0 as Any }) { _, new in new }
+        precondition(TCLCoolingPreset.turbo.isSelected(on: presetUnit(turboReport)))
+        var ordinaryHigh = turboReport
+        ordinaryHigh["turbo"] = 0
+        precondition(!TCLCoolingPreset.turbo.isSelected(on: presetUnit(ordinaryHigh)),
+                     "An ordinary High reading must not highlight the Turbo preset")
+
+        let quiet = try! DeviceService.desired(TCLCoolingPreset.quiet.fields(for:presetUnit(turboReport))!,report:turboReport)
+        precondition(quiet["targetTemperature"] == 22 && quiet["powerSwitch"] == 1 && quiet["workMode"] == 1)
+        precondition(quiet["windSpeed"] == 2 && quiet["silenceSwitch"] == 1 && quiet["turbo"] == 0,
+                     "22° Quiet must enable silence and clear a previously active Turbo mode")
+        precondition(quiet["ECO"] == 0 && quiet["highTemperatureWind"] == 0)
+        precondition(quiet["verticalDirection"] == 2 && quiet["horizontalDirection"] == 1 && quiet["verticalSwitch"] == 1 && quiet["horizontalSwitch"] == 1)
+        let quietReport = turboReport.merging(quiet.mapValues { $0 as Any }) { _, new in new }
+        precondition(TCLCoolingPreset.quiet.isSelected(on: presetUnit(quietReport)))
+        var ordinaryLow = quietReport
+        ordinaryLow["silenceSwitch"] = 0
+        precondition(!TCLCoolingPreset.quiet.isSelected(on: presetUnit(ordinaryLow)),
+                     "An ordinary Low reading must not highlight the Quiet preset")
+
+        var sevenGearReport = classicReport
+        sevenGearReport["windSpeed7Gear"] = 0
+        sevenGearReport["windSpeedAutoSwitch"] = 1
+        for (preset, level) in [(TCLCoolingPreset.turbo, 7), (.quiet, 1)] {
+            let fields = try! DeviceService.desired(preset.fields(for:presetUnit(sevenGearReport))!,report:sevenGearReport)
+            precondition(fields["windSpeed7Gear"] == level && fields["windSpeedAutoSwitch"] == 0,
+                         "Seven-gear presets must select the actual Turbo/Quiet gear and leave automatic fan mode")
+            precondition(fields["turbo"] == (level == 7 ? 1 : 0) && fields["silenceSwitch"] == (level == 1 ? 1 : 0))
+            let confirmed = sevenGearReport.merging(fields.mapValues { $0 as Any }) { _, new in new }
+            precondition(preset.isSelected(on: presetUnit(confirmed)))
+            sevenGearReport = confirmed
+        }
+        sevenGearReport.removeValue(forKey: "turbo")
+        sevenGearReport.removeValue(forKey: "silenceSwitch")
+        precondition(TCLCoolingPreset.turbo.fields(for:presetUnit(sevenGearReport)) != nil,
+                     "Seven-gear devices encode Turbo directly and need no legacy turbo flag")
+        precondition(TCLCoolingPreset.quiet.fields(for:presetUnit(sevenGearReport)) == nil,
+                     "Minimum gear alone must not promise Quiet when the silence flag is unsupported")
+        var unsupported = classicReport
+        unsupported.removeValue(forKey: "turbo")
+        precondition(TCLCoolingPreset.turbo.fields(for:presetUnit(unsupported)) == nil && TCLCoolingPreset.quiet.fields(for:presetUnit(unsupported)) != nil)
+        unsupported = classicReport
+        unsupported.removeValue(forKey: "silenceSwitch")
+        precondition(TCLCoolingPreset.quiet.fields(for:presetUnit(unsupported)) == nil && TCLCoolingPreset.turbo.fields(for:presetUnit(unsupported)) != nil)
+        var limitedRange = classicReport
+        limitedRange["lowerTemperatureLimit"] = 17
+        limitedRange["upperTemperatureLimit"] = 21
+        precondition(TCLCoolingPreset.turbo.fields(for:presetUnit(limitedRange)) == nil && TCLCoolingPreset.quiet.fields(for:presetUnit(limitedRange)) == nil)
+        precondition(TCLCoolingPreset.turbo.label == "16° Turbo" && TCLCoolingPreset.quiet.label == "22° Quiet")
+        precondition(LGCoolingPreset.high.label == "16° High" && LGCoolingPreset.low.label == "22° Low",
+                     "TCL's protocol-specific presets must not change LG fan modes")
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
         try! DeviceService.ensure(directory)
@@ -178,7 +275,11 @@ import AppKit
             while climate.refreshing && Date() < cutoff { RunLoop.current.run(until: Date().addingTimeInterval(0.01)) }
             precondition(!climate.refreshing)
         }
-        precondition(climate.needsSignIn)
+        precondition(!climate.needsSignIn, "File absence must not imply missing Keychain credentials")
+        inventory = .failure(TCLCloudError.signInRequired)
+        fetchInventory()
+        precondition(climate.needsSignIn, "A missing secure session must reveal sign-in")
+        inventory = .success([])
         fetchInventory()
         precondition(climate.selected == nil && !climate.needsSignIn, "Authenticated empty inventory reopened login")
         inventory = .failure(ACError("Connection interrupted"))

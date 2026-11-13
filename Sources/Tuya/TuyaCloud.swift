@@ -20,16 +20,20 @@ actor TuyaCloud {
         var meter_id: String?
     }
     static let allowed: Set<String> = ["thing.m.user.username.token.get", "thing.m.user.email.password.login", "tuya.m.location.list", "tuya.m.my.group.device.list", "tuya.m.device.ref.info.my.list", "tuya.m.dp.rang.stat.day.list", "tuya.m.dp.rang.stat.hour.list"]
-    private let file: URL, source: URL?
+    private let credentials: CloudCredentialStore
+    private let source: URL?
     private let network: URLSession
+    private let ownsSession: Bool
     private var account: Session?
     private var failedLogin = false
     private var homes: [String] = []
     private var schemas: [String: [String: Any]] = [:]
     private var discoveryAt: Date?
-    init(file: URL = PrivateJSONFile.appFile("Tuya/session.json"), source: URL? = PrivateJSONFile.importFile("tuya"), network: URLSession? = nil) {
-        self.file = file; self.source = source; self.network = network ?? CloudRedirects.session()
+    init(file: URL = PrivateJSONFile.appFile("Tuya/session.json"), source: URL? = PrivateJSONFile.importFile("tuya"), network: URLSession? = nil, vault: any CredentialVault = CloudCredentialStore.defaultVault) {
+        self.credentials = CloudCredentialStore(file: file, key: "tuya-session", vault: vault); self.source = source
+        self.ownsSession = network == nil; self.network = network ?? CloudRedirects.session()
     }
+    deinit { if ownsSession { network.invalidateAndCancel() } }
     static func endpoint(_ value: String) throws -> URL {
         guard let c = URLComponents(string: value), c.scheme == "https", c.user == nil, c.password == nil,
               c.port == nil || c.port == 443, c.query == nil, c.fragment == nil,
@@ -40,13 +44,14 @@ actor TuyaCloud {
     }
     private func load() throws {
         guard account == nil else { return }
-        let origin = FileManager.default.fileExists(atPath: file.path) ? file : source
-        guard let origin, let saved = try? PrivateJSONFile.read(Session.self, from: origin), saved.app == "smartlife", saved.mode == "mobile", !saved.email.isEmpty else { throw TuyaError.signIn }
-        _ = try Self.endpoint(saved.endpoint)
+        guard let saved = try credentials.load(Session.self, importFile: source, validate: { saved in
+            guard saved.app == "smartlife", saved.mode == "mobile", !saved.email.isEmpty else { throw TuyaError.signIn }
+            _ = try Self.endpoint(saved.endpoint)
+            return saved
+        }) else { throw TuyaError.signIn }
         account = saved
-        if origin != file { try save() }
     }
-    private func save() throws { if let account { try PrivateJSONFile.write(account, to: file) } }
+    private func save() throws { if let account { try credentials.save(account) } }
     static func form(_ fields: [String: String]) -> Data {
         let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._~"))
         return Data(fields.sorted { $0.key < $1.key }.map { key, value in
@@ -65,7 +70,7 @@ actor TuyaCloud {
         request.httpMethod = "POST"; request.httpBody = Self.form(fields)
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         let bytes: Data, response: URLResponse
-        do { (bytes, response) = try await network.data(for: request) }
+        do { (bytes, response) = try await CloudResponse.data(for: request, using: network) }
         catch { if Task.isCancelled { throw CancellationError() }; throw TuyaError.message("Could not connect to Tuya.") }
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
               let json = try? JSONSerialization.jsonObject(with: bytes) as? [String: Any] else { throw TuyaError.message("Invalid Tuya response.") }
@@ -102,13 +107,18 @@ actor TuyaCloud {
     }
     func signIn(email: String, password: String) async throws {
         try? load()
-        var next = account ?? Session()
-        next.email = email.trimmingCharacters(in: .whitespacesAndNewlines)
+        let previous = account, previousFailure = failedLogin
+        let email = email.trimmingCharacters(in: .whitespacesAndNewlines)
+        let sameAccount = previous?.email.caseInsensitiveCompare(email) == .orderedSame
+        var next = sameAccount ? previous! : Session()
+        next.email = email
+        guard sameAccount || !password.isEmpty else { throw TuyaError.message("Enter the password when connecting a different Smart Life account.") }
         if !password.isEmpty { next.password_md5 = TuyaCrypto.md5(password) }
+        next.sid = ""
         account = next
-        try save() // Remember input even if authentication fails.
-        failedLogin = false
-        try await login()
+        failedLogin = true // A concurrent read must not reuse the previous account's SID.
+        do { try await login() }
+        catch { account = previous; failedLogin = previousFailure; throw error }
         homes = []; schemas = [:]; discoveryAt = nil
     }
     func snapshot() async throws -> TuyaSnapshot {

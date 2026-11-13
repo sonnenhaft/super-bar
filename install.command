@@ -38,19 +38,8 @@ expected="$(shasum -a 256 "$source_app/Contents/MacOS/SuperBar" | cut -d ' ' -f 
 actual="$(shasum -a 256 "$stage/Super Bar.app/Contents/MacOS/SuperBar" | cut -d ' ' -f 1)"
 [[ "$actual" == "$expected" ]] || { echo 'The build is damaged; installation cancelled.' >&2; exit 1; }
 step "Closing previous menu bar apps" "$stage/lifecycle" stop
-# Existing LG configuration wins. Copy a project token once, never embed it in the app.
-config="$HOME/Library/Application Support/LGBar"
-if [[ "${SUPER_BAR_SKIP_TOKEN_MIGRATION:-0}" != 1 && -s token.txt ]]; then
-  mkdir -p "$config"
-  chmod 700 "$config"
-  if [[ ! -e "$config/token.txt" ]]; then
-    # noclobber protects an existing credential even if it appears concurrently.
-    (umask 077; set -o noclobber; cat token.txt > "$config/token.txt")
-  elif [[ ! -s "$config/token.txt" ]]; then
-    echo "LG token.txt in Application Support is empty. Fill it using LG settings, or remove the empty file and try installation again." >&2
-    exit 1
-  fi
-fi
+# The app migrates legacy credentials directly into Keychain after launch.
+# Never create a new plaintext credential copy during installation.
 if [[ -d "$dest" ]]; then mv "$dest" "$stage/previous.app"; fi
 if ! mv "$stage/Super Bar.app" "$dest"; then
   if [[ -d "$stage/previous.app" ]] && ! mv "$stage/previous.app" "$dest"; then

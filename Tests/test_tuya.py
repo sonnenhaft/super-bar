@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import os
 from pathlib import Path
 import stat
 import sys
@@ -14,6 +15,7 @@ import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
+from credential_fixtures import isolate_credentials, clear_credentials
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'Scripts'))
 import tuya_wire
@@ -98,6 +100,7 @@ class PowerTests(unittest.TestCase):
 
 class SessionTests(unittest.TestCase):
     def setUp(self):
+        isolate_credentials(self)
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.path = Path(self.temp.name) / 'session.json'
@@ -106,13 +109,36 @@ class SessionTests(unittest.TestCase):
         self.store.save()
 
     def test_atomic_save_private_and_refresh_survives_restart(self):
-        self.assertEqual(stat.S_IMODE(self.path.stat().st_mode), 0o600)
+        self.assertFalse(self.path.exists())
         token = dict(self.store.data['token_info'], access_token='rotated', refresh_token='rotated-refresh')
         self.store.update_token(token)
         restarted = tuya.SessionStore(self.path).load()
         self.assertEqual(restarted['token_info'], token)
 
+    def test_valid_session_also_migrates_old_login_hash(self):
+        settings = tuya.LoginSettings(self.path)
+        saved = {'email': 'test@example.com', 'password_md5': hashlib.md5(b'synthetic').hexdigest()}
+        settings.path.write_text(json.dumps(saved))
+        settings.path.chmod(0o600)
+        with patch.object(tuya, 'password_login', side_effect=AssertionError('must not prompt')):
+            tuya.ensure_login(self.store)
+        self.assertFalse(settings.path.exists())
+        self.assertEqual(settings.load(), saved)
+
+    def test_login_migration_failure_is_not_treated_as_missing_account(self):
+        settings = tuya.LoginSettings(self.path)
+        settings.path.write_text(json.dumps({'email': 'test@example.com'}))
+        settings.path.chmod(0o600)
+        from credential_fixtures import credential_store
+        self.credential_backing.failure = credential_store.CredentialError('synthetic denial')
+        with patch.object(tuya, 'password_login', side_effect=AssertionError('must not prompt')):
+            with self.assertRaises(tuya.TuyaError):
+                tuya.ensure_login(self.store)
+        self.assertTrue(settings.path.exists())
+
     def test_rejects_public_or_symlink_session(self):
+        clear_credentials(self)
+        self.path.write_text(json.dumps(session()))
         self.path.chmod(0o644)
         with self.assertRaises(tuya.TuyaError):
             self.store.load()
@@ -221,6 +247,7 @@ class SessionTests(unittest.TestCase):
 
 class AutoLoginTests(unittest.TestCase):
     def setUp(self):
+        isolate_credentials(self)
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
@@ -232,11 +259,13 @@ class AutoLoginTests(unittest.TestCase):
 
     def test_import_existing_session_without_prompt(self):
         self.source.write_text(json.dumps(session()))
+        self.source.chmod(0o600)
         with patch.object(tuya, 'password_login') as login:
             tuya.ensure_login(self.store)
         login.assert_not_called()
         self.assertEqual(self.store.load()['token_info']['access_token'], 'test-access')
-        self.assertEqual(stat.S_IMODE(self.store.path.stat().st_mode), 0o600)
+        self.assertFalse(self.store.path.exists())
+        self.assertTrue(self.source.exists(), 'External imports are not owned by this tool')
 
     def test_saved_session_takes_precedence_over_discovery(self):
         self.store.data = session()
@@ -264,19 +293,38 @@ class AutoLoginTests(unittest.TestCase):
         invalid = session()
         invalid['endpoint'] = 'https://attacker.example'
         self.source.write_text(json.dumps(invalid))
+        self.source.chmod(0o600)
         self.assertIsNone(tuya.load_available_session(self.store))
         self.assertFalse(self.store.path.exists())
 
     def test_multiple_accounts_are_not_silently_mixed(self):
         self.source.write_text(json.dumps(session()))
+        self.source.chmod(0o600)
         second = self.root / 'another.json'
         data = session()
         data['token_info']['uid'] = 'another-user'
         second.write_text(json.dumps(data))
+        second.chmod(0o600)
         with patch.object(tuya, 'session_candidates', return_value=[self.source, second]):
             with self.assertRaises(tuya.TuyaError):
                 tuya.load_available_session(self.store)
         self.assertFalse(self.store.path.exists())
+
+    def test_discovery_rejects_public_symlink_and_fifo_credentials(self):
+        self.source.write_text(json.dumps(session()))
+        self.source.chmod(0o644)
+        self.assertIsNone(tuya.load_available_session(self.store))
+        self.source.chmod(0o600)
+        link = self.source.with_name('link.json')
+        link.symlink_to(self.source)
+        with patch.object(tuya, 'session_candidates', return_value=[link]):
+            self.assertIsNone(tuya.load_available_session(self.store))
+        fifo = self.source.with_name('fifo.json')
+        os.mkfifo(fifo, 0o600)
+        with patch.object(tuya, 'session_candidates', return_value=[fifo]):
+            self.assertIsNone(tuya.load_available_session(self.store))
+        self.assertFalse(self.credential_backing.values)
+        self.assertTrue(self.source.exists())
 
     def test_reauthorization_preserves_meter(self):
         self.store.data = dict(session(), meter_id='meter1')

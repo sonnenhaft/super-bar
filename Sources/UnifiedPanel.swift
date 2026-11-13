@@ -28,12 +28,20 @@ struct UnifiedPanel: View {
     private var blue: BlueBarDelegate { batteries.model }
     var body: some View {
         ScrollView(.vertical) {
-            VStack(alignment: .leading, spacing: 8) {
-                sectionTitle("Climate", summary: climateSummary, brand: climateBrand)
-                climate
-                if selection.openBrand == .tcl { charts }
-                thinQ
-                if selection.openBrand == .lg { charts }
+            VStack(alignment: .leading, spacing: SuperBarPanelStyle.gap) {
+                climateTitle
+                ClimateDeviceList(devices: climateDevices, selected: activeClimate, select: selectClimate) { id in
+                    switch id {
+                    case .tcl:
+                        climate
+                        charts
+                    case .lg:
+                        thinQ
+                        charts
+                    }
+                }
+                if tcl.needsSignIn && activeClimate == nil { climate }
+                if climateDevices.isEmpty && !tcl.needsSignIn { thinQ }
                 Divider().padding(.vertical, 3)
                 sectionTitle("Battery", summary: batterySummary, brand: .bluetti)
                 batteryControls
@@ -55,11 +63,18 @@ struct UnifiedPanel: View {
                     }
                 }.padding(.vertical, 4)
                 if showSettings {
+                    Button("Retry Keychain access") {
+                        CredentialAccess.retry()
+                        tcl.manualRefresh()
+                        lg.manualRefresh()
+                        deye.refresh()
+                        tuya.refresh()
+                    }
                     EnergyTariffSettings()
                     Divider()
                     PanelControl(control: settings).id(selection.chartBrand).frame(height: selection.chartBrand == .lg ? SuperFooter.height : SuperFooter.height - 36)
                 }
-            }.padding(14).fixedSize(horizontal: false, vertical: true)
+            }.padding(SuperBarPanelStyle.appInset).fixedSize(horizontal: false, vertical: true)
                 .reportContentHeight { height in
                     measuredHeight = height
                     contentHeight(min(height, availableHeight))
@@ -77,20 +92,51 @@ struct UnifiedPanel: View {
             tuya.showHistory(brand == .deye)
         }
     }
-    private var climateBrand: Brand { selection.expanded == .lg ? .lg : .tcl }
-    private var climateSummary: String {
-        if climateBrand == .lg {
-            let sample = lg.sample(for: lg.selected)
-            return summary(name: lg.devices.first(where: { $0.id == lg.selected })?.name ?? "", target: sample?.target, room: sample?.room, on: sample?.power.map { $0 == "POWER_ON" })
+    private var activeClimate: ClimateDeviceID? {
+        guard let selectedClimate = selection.climateDevice else { return nil }
+        switch selectedClimate {
+        case .tcl(let id): return selection.openBrand == .tcl && tcl.selected?.id == id ? selectedClimate : nil
+        case .lg(let id): return selection.openBrand == .lg && lg.selected == id ? selectedClimate : nil
         }
-        guard let ac = tcl.selected else { return "" }
-        return summary(name: ac.name, target: ac.target, room: ac.indoor, on: ac.online == true && !tcl.offline ? ac.power : nil)
     }
-    private func summary(name: String, target: Double?, room: Double?, on: Bool?) -> String {
-        var parts = [DeviceDisplayName.clean(name)]
-        if on == true, let target { parts.append("Set " + tempText(target)) }
-        if on != nil, let room { parts.append("Room " + tempText(room)) }
-        return parts.joined(separator: " · ")
+    private var climateDevices: [ClimateDeviceItem] {
+        tcl.devices.map { ac in
+            ClimateDeviceItem(id: .tcl(ac.id), name: ac.name, room: tempText(ac.indoor),
+                target: ac.power == true ? tempText(ac.target) : "",
+                power: ac.online == true && !ac.failed && !tcl.offline ? ac.power : nil)
+        } + lg.devices.map { device in
+            let sample = lg.sample(for: device.id)
+            return ClimateDeviceItem(id: .lg(device.id), name: device.name, room: degree(sample?.room),
+                target: sample?.power == "POWER_ON" ? degree(sample?.target) : "",
+                power: sample?.power.map { $0 == "POWER_ON" })
+        }
+    }
+    private func selectClimate(_ id: ClimateDeviceID) {
+        if activeClimate == id {
+            selection.climateDevice = nil
+            selection.detailsCollapsed = true
+            return
+        }
+        selection.climateDevice = id
+        switch id {
+        case .tcl(let rawID):
+            guard let ac = tcl.devices.first(where: { $0.id == rawID }) else { return }
+            tcl.select(ac)
+            selection.activate(.tcl)
+        case .lg(let rawID):
+            lg.selectDevice(rawID)
+            selection.activate(.lg)
+        }
+    }
+    private var climateTitle: some View {
+        Button {
+            guard let selectedClimate = selection.climateDevice else { return }
+            if activeClimate != nil { selection.detailsCollapsed = true }
+            else { selectClimate(selectedClimate) }
+        } label: {
+            PanelSectionHeading(title: "Climate", expanded: activeClimate != nil)
+                .frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+        }.buttonStyle(.plain).padding(.bottom, 2)
     }
     private var batterySummary: String {
         guard let card = blue.stationRows.first(where: { $0.key == blue.selectedKnownStation?.key })?.details.card else { return "" }
@@ -102,8 +148,7 @@ struct UnifiedPanel: View {
             else { selection.select(brand, sameDevice: true) }
         } label: {
             HStack(spacing: 6) {
-                Text(title).font(.system(size: 19, weight: .bold))
-                Image(systemName: selection.openBrand == brand ? "chevron.down" : "chevron.right").font(.system(size: 11, weight: .semibold))
+                PanelSectionHeading(title: title, expanded: selection.openBrand == brand)
             Spacer(minLength: 4)
             if brand == .deye {
                 HStack(spacing: 4) {
@@ -153,7 +198,6 @@ struct UnifiedPanel: View {
             case .lg: thinQ.charts
             case .deye:
                 solar.charts
-                if let reading = deye.reading { EnergyValueView(reading: reading, consumptionDays: tuya.chartHistory?.days ?? []) }
             case .tuya: meter.charts
             case .bluetti:
                 if blue.lastGood != nil {

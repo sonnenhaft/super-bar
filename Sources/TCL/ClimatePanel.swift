@@ -11,14 +11,10 @@ struct ClimatePanel: View {
     @State private var signingIn = false
     @State private var showSignIn = false
     @State private var loginError: String?
-    @State private var horizontalPicker = false
-    @State private var verticalPicker = false
     var body: some View {
         VStack(spacing: 2) {
             if store.needsSignIn {
-                DeviceSelector(brand: .tcl) {
-                    DeviceChoice(action: { showSignIn.toggle() }) { Text("Sign in to TCL Home").font(.system(size: 12)) }
-                }
+                DeviceChoice(action: { showSignIn.toggle() }) { Text("Sign in to TCL Home").font(.system(size: 12)) }
                 if showSignIn {
                 VStack {
                     Card {
@@ -43,14 +39,8 @@ struct ClimatePanel: View {
                 }
                 }
             } else if !store.devices.isEmpty {
-                DeviceSelector(brand: .tcl) {
-                    ForEach(store.devices) { device in
-                        deviceCard(device, active: selection.expanded == .tcl && device.id == store.selected?.id, summary: true)
-                            .frame(maxWidth: .infinity)
-                    }
-                }
                 if selection.expanded == .tcl && !selection.detailsCollapsed, let device = store.selected {
-                    deviceCard(device, active: true).padding(.leading, PanelLayout.logoColumn)
+                    deviceCard(device, active: true)
                 }
             } else {
                 VStack(spacing:8) {
@@ -66,7 +56,7 @@ struct ClimatePanel: View {
     }
     @ViewBuilder var charts: some View {
         if let ac = store.selected {
-            Text(DeviceDisplayName.clean(ac.name) + " · TCL").font(.caption).foregroundStyle(.secondary)
+            Text(DeviceDisplayName.clean(ac.name)).font(.caption).foregroundStyle(.secondary)
             EnergyChartView(history: history, device: ac.name)
         }
     }
@@ -97,86 +87,26 @@ struct ClimatePanel: View {
                 vane(ac, false)
             }.disabled(store.offline || ac.online != true || ac.failed)), summaryOnly: summary) {
                 CardMenus(eco: ac.ecoChanges != nil ? ac.code("ECO") == 1 : nil, toggleEco: { store.toggleEco(ac) },
-                          fan: ac.has(ac.fanField) ? ac.fan : "") {
-                    Button("Auto") { store.autoFan(ac, enabled: true) }
-                    ForEach(ac.manualFanCodes, id: \.self) { level in
-                        Button(ac.fanLabel(level)) { store.setFan(ac, level: level) }
-                    }
-                }.disabled(store.offline || ac.online != true || ac.failed)
+                          fan: "", fanControl: ac.has(ac.fanField) ? AnyView(
+                            PanelFanSpeedPicker(options: ac.fanSpeedOptions, selected: ac.selectedFanOption,
+                                currentSymbol: ac.currentFanSymbol, currentName: ac.fan) { level in
+                                if level == 0 { store.autoFan(ac, enabled: true) }
+                                else { store.setFan(ac, level: level) }
+                            }) : nil) { EmptyView() }
+                    .disabled(store.offline || ac.online != true || ac.failed)
             }
     }
     @ViewBuilder private func controls(_ ac: Aircon) -> some View {
-        CoolingPresetRow(enabled: { $0.fields(for: ac) != nil }, selected: { $0.isSelected(on: ac) },
-                         apply: { store.preset(ac, $0) })
+        CoolingPresetRow<TCLCoolingPreset>(label: { "\($0.degrees)°" }, enabled: { $0.fields(for: ac) != nil }, selected: { $0.isSelected(on: ac) },
+                         apply: { store.preset(ac, $0) }, icon: { $0.fanSymbol }, accessibilityName: { $0.label })
     }
 
-    private func vane(_ ac: Aircon, _ vertical: Bool) -> some View {
+    @ViewBuilder private func vane(_ ac: Aircon, _ vertical: Bool) -> some View {
         let axis = vertical ? "vertical" : "horizontal"
-        let direction = axis + "Direction", motor = axis + "Switch"
-        let title = vertical ? "Vertical" : "Horizontal"
-        let hasDirection = ac.has(direction)
-        let stops = vertical ? verticalStops : horizontalStops
-        let swings = vertical ? ["Up and down", "Upper zone", "Lower zone"] : ["Left to right", "Left zone", "Center zone", "Right zone"]
-        let code = ac.code(direction)
-        let stopped = ac.code(motor) == 0
-        let selected = hasDirection ? (stopped && !(9...13).contains(code ?? -1) ? 8 : code) : ac.code(motor)
-        let value = selected == (hasDirection ? 8 : 0) ? "Stopped" : ac.vane(vertical)
-        return Group {
-            if ac.power != false, hasDirection, let selected,
-               TCLAirflowArtwork.image("TCL-" + axis + "-" + String(selected)) != nil {
-            HStack(spacing:0) {
-            Button { if vertical { verticalPicker.toggle() } else { horizontalPicker.toggle() } } label: {
-                HStack(spacing:1) {
-                    if let image = TCLAirflowArtwork.image("TCL-" + axis + "-" + String(selected)) {
-                        Image(nsImage:image).renderingMode(.template).resizable().scaledToFit().frame(width:28,height:28)
-                    }
-                    Image(systemName:"chevron.down").font(.system(size:7,weight:.semibold))
-                }.foregroundStyle(.white).frame(width: 50, height: 34).deviceSurface(selected: false).contentShape(Rectangle())
-            }.buttonStyle(.plain).help(title + ": " + value)
-                .popover(isPresented: Binding(get:{vertical ? verticalPicker : horizontalPicker},set:{if vertical { verticalPicker = $0 } else { horizontalPicker = $0 }}), arrowEdge: .bottom) {
-                    let options = hasDirection ? Array(9...13) + Array(1...(vertical ? 3 : 4)) + [8] : [1, 0]
-                    VStack(spacing: 8) {
-                        ForEach(0..<2) { row in
-                            HStack(spacing: 8) {
-                                let split = (options.count + 1) / 2
-                                ForEach(Array(options.dropFirst(row * split).prefix(split)), id: \.self) { option in
-                                    let label = option == (hasDirection ? 8 : 0) ? "Stop" :
-                                        ((9...13).contains(option) ? stops[option - 9] :
-                                        (swings.indices.contains(option - 1) ? swings[option - 1] : "Swing"))
-                                    Button {
-                                        store.set(ac, hasDirection ? direction : motor, option, title)
-                                        if vertical { verticalPicker = false } else { horizontalPicker = false }
-                                    } label: {
-                                        ZStack(alignment: .topTrailing) {
-                                            airflowIcon(axis:axis, option:option)
-                                                .frame(width:32,height:32).padding(8)
-                                            if selected == option {
-                                                Image(systemName:"checkmark.circle.fill").foregroundStyle(.white, cobalt).font(.system(size:13))
-                                            }
-                                        }.background(selected == option ? cobalt.opacity(0.7) : Color(nsColor:BarTheme.panel),
-                                                     in: RoundedRectangle(cornerRadius:4))
-                                            .overlay(RoundedRectangle(cornerRadius:4).strokeBorder(selected == option ? Color.white : .clear, lineWidth:1.5))
-                                    }.buttonStyle(.plain).help(label).accessibilityLabel(label)
-                                        .accessibilityAddTraits(selected == option ? .isSelected : [])
-                                }
-                            }
-                        }
-                    }.padding(12).foregroundStyle(ice).background(Color(nsColor:BarTheme.background))
-                }
-        }.disabled(!hasDirection && !ac.has(motor))
-            .accessibilityLabel(title + " air direction").accessibilityValue(value)
-            .help(title + ": " + value)
+        if ac.power != false, ac.has(axis + "Direction") || ac.has(axis + "Switch") {
+            TCLAirflowPicker(ac: ac, vertical: vertical) { field, value in
+                store.set(ac, field, value, "Air direction")
             }
         }
     }
-
-    @ViewBuilder private func airflowIcon(axis:String, option:Int) -> some View {
-        let name = "TCL-\(axis)-\(option)"
-        if let image = TCLAirflowArtwork.image(name) {
-            Image(nsImage:image).renderingMode(.template).resizable().scaledToFit()
-        } else {
-            Image(systemName:"stop.circle").resizable().scaledToFit()
-        }
-    }
-
 }

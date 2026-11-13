@@ -15,17 +15,19 @@ import getpass
 import hashlib
 import json
 import math
-import os
 from pathlib import Path
-import stat
 import sys
-import tempfile
 import time
 from datetime import datetime, timedelta
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlsplit, urljoin
 from urllib.request import Request, build_opener, HTTPRedirectHandler
 from zoneinfo import ZoneInfo
+
+if __package__:
+    from .credential_store import CredentialError, JSONCredentialStore
+else:
+    from credential_store import CredentialError, JSONCredentialStore
 
 
 SESSION = Path(__file__).resolve().parent.parent / '.env.deye-session.json'
@@ -230,26 +232,20 @@ def unwrap(data):
 
 
 def save_session(client):
-    fd, name = tempfile.mkstemp(prefix='.env.deye-', dir=SESSION.parent)
     try:
-        with os.fdopen(fd, 'w') as file:
-            json.dump({'base': client.base, 'token': client.token,
-                       'refresh_token': client.refresh_token, 'expires_at': client.expires_at,
-                       'email': client.email, 'password_sha256': client.password_sha256}, file)
-        os.replace(name, SESSION)  # mkstemp creates mode 0600; atomic replacement
-    finally:
-        if os.path.exists(name):
-            os.unlink(name)
+        JSONCredentialStore(SESSION, 'deye-session', validate_saved_session).save(session_data(client))
+    except CredentialError as error:
+        raise DeyeError(str(error)) from None
 
 
-def load_session():
-    if not SESSION.exists():
-        return None
-    info = SESSION.lstat()
-    if not stat.S_ISREG(info.st_mode) or info.st_mode & 0o077:
-        raise DeyeError(f'Файл сессии должен быть обычным файлом с правами 600: {SESSION}')
+def session_data(client):
+    return {'base': client.base, 'token': client.token,
+            'refresh_token': client.refresh_token, 'expires_at': client.expires_at,
+            'email': client.email, 'password_sha256': client.password_sha256}
+
+
+def client_from_session(data):
     try:
-        data = json.loads(SESSION.read_text())
         if not isinstance(data['token'], str) or not data['token']:
             raise ValueError()
         client = Client(data['base'], data['token'])
@@ -262,13 +258,24 @@ def load_session():
             expiry = float(data['expires_at'])
             if math.isfinite(expiry):
                 client.expires_at = expiry
-        # If a previous local version saved a plaintext password, migrate it in place.
+        # Migrate historical raw passwords to hashes before entering Keychain.
         if isinstance(data.get('password'), str) and data['password']:
             client.password_sha256 = hashlib.sha256(data['password'].encode()).hexdigest()
-            save_session(client)
         return client
     except (ValueError, KeyError, TypeError):
         raise DeyeError('Некорректный файл сессии. Запусти с --login.') from None
+
+
+def validate_saved_session(data):
+    return session_data(client_from_session(data))
+
+
+def load_session():
+    try:
+        data = JSONCredentialStore(SESSION, 'deye-session', validate_saved_session).load()
+        return client_from_session(data) if data is not None else None
+    except CredentialError as error:
+        raise DeyeError(str(error)) from None
 
 
 def fmt(value, divisor=1):
@@ -365,7 +372,7 @@ def main():
         else:
             prompt_login(client)
         save_session(client)
-        print('Сессия сохранена локально с правами 600; следующие входы и обновления — автоматически.')
+        print('Сессия сохранена в macOS Keychain; следующие входы и обновления — автоматически.')
     elif args.base and checked_base(args.base) != client.base:
         raise DeyeError('Для смены сервера используй --login --base URL.')
     if args.station is not None and args.station <= 0:

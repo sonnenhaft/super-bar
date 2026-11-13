@@ -1,4 +1,4 @@
-import AppKit
+import Foundation
 import Combine
 
 @MainActor final class DeyeStore: ObservableObject {
@@ -19,12 +19,15 @@ import Combine
     }
     private let cloud: DeyeCloud
     @Published private(set) var needsSignIn = false
-    init(defaults: UserDefaults = .standard) {
+    init(defaults: UserDefaults = .standard, cloud: DeyeCloud = DeyeCloud(file: PrivateJSONFile.appFile("Deye/session.json"), importFile: PrivateJSONFile.importFile("deye"))) {
         self.defaults = defaults
-        cloud = DeyeCloud(file: PrivateJSONFile.appFile("Deye/session.json"), importFile: PrivateJSONFile.importFile("deye"))
+        self.cloud = cloud
         pinned = defaults.bool(forKey: "deye.showPower")
-        if let data = defaults.data(forKey: "deye.lastReading") { reading = try? JSONDecoder().decode(DeyeReading.self, from: data) }
+        if let data = defaults.data(forKey: "deye.lastReading"), data.count <= 8 * 1024 * 1024 {
+            reading = try? JSONDecoder().decode(DeyeReading.self, from: data)
+        }
     }
+    deinit { task?.cancel() }
     var readout: String? { pinned ? DeyeReading.power(reading?.power_w) : nil }
     var status: String {
         if let problem { return problem }
@@ -33,7 +36,15 @@ import Combine
         return reading.status + " · " + (reading.date.map { ReadingAge.label($0) } ?? "Time unknown")
     }
     func start() { refresh() }
-    func stop() { task?.cancel(); task = nil }
+    func stop() { task?.cancel() }
+    // iOS foreground/background work awaits the same operation used by the Mac menu.
+    func refreshAndWait() async {
+        refresh()
+        while let task {
+            await withTaskCancellationHandler { await task.value } onCancel: { task.cancel() }
+            if Task.isCancelled { return }
+        }
+    }
     func refresh() {
         guard !refreshing else { return }
         refreshing = true
@@ -41,6 +52,15 @@ import Combine
         let includeHistory = historyVisible && HistoryPolling.due(since: historyFetchedAt, calendar: TuyaHistory.calendar)
         if includeHistory { historyFetchedAt = Date() } // Also throttle unsuccessful attempts.
         task = Task { [weak self, cloud] in
+            defer {
+                if Task.isCancelled && includeHistory { self?.historyFetchedAt = nil }
+                self?.refreshing = false
+                self?.task = nil
+                if let self, self.pendingHistory {
+                    self.pendingHistory = false
+                    if !Task.isCancelled && self.historyVisible && !includeHistory { self.refresh() }
+                }
+            }
             do {
                 let result = try await cloud.snapshot(previous: previous, includeHistory: includeHistory)
                 guard let self, !Task.isCancelled else { return }
@@ -54,16 +74,11 @@ import Combine
                 self.needsSignIn = (error as? DeyeError)?.needsSignIn ?? false
                 self.problem = (error as? DeyeError)?.errorDescription ?? "Could not read Deye; showing saved readings."
             }
-            self?.refreshing = false
-            self?.task = nil
-            if let self, self.pendingHistory {
-                self.pendingHistory = false
-                if self.historyVisible && !includeHistory { self.refresh() }
-            }
         }
     }
     func signIn(email: String, password: String, server: String) async -> Bool {
         guard !refreshing else { return false }
+        CredentialAccess.retry()
         refreshing = true
         do {
             try await cloud.signIn(email: email, password: password, base: server)

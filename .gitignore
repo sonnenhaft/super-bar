@@ -5,7 +5,10 @@ token.txt
 .env
 .env.*
 envs/
+DevelopmentCredentials/
+**/DevelopmentCredentials/
 generated/
+invoices/
 legacy/
 *.zip
 Промт Super Bar.txt

@@ -29,9 +29,26 @@ DAYS = 'tuya.m.dp.rang.stat.day.list'
 # Official Tuya panel demo: examples/airThermostat/src/components/Chart/index.tsx
 QUARTERS = 'tuya.m.dp.path.15minute.list'
 LOGS = 'm.smart.operate.log'
-SECRET_KEYS = {'sid', 'sign', 'password', 'passwd', 'password_md5', 'token',
-               'access_token', 'refresh_token', 'localkey', 'devkey', 'secret',
-               'authorization'}
+def normalized_field(key):
+    # Providers mix camelCase, snake_case and hyphenated credential names.
+    return ''.join(character for character in str(key).casefold() if character.isalnum())
+
+
+SECRET_KEYS = {'sid', 'sign', 'signature', 'password', 'passwd', 'passwordmd5',
+               'passwordsha256', 'passwordhash', 'token', 'accesstoken', 'refreshtoken',
+               'ssotoken', 'saastoken', 'cognitotoken', 'idtoken', 'sessiontoken',
+               'localkey', 'devkey', 'devicekey', 'secret', 'secretkey', 'privatekey',
+               'accesskey', 'accesskeyid', 'secretaccesskey', 'clientsecret', 'apikey',
+               'authorization', 'cookie', 'setcookie'}
+
+
+def embedded_json(value):
+    if isinstance(value, str) and value.lstrip().startswith(('{', '[')):
+        try:
+            return json.loads(value)
+        except (ValueError, RecursionError):
+            pass
+    return None
 
 
 class NetworkError(MobileError):
@@ -51,22 +68,33 @@ class VerboseTransport:
     def remember(self, value):
         if isinstance(value, dict):
             for key, item in value.items():
-                if key.lower() in SECRET_KEYS and isinstance(item, str) and item:
+                if normalized_field(key) in SECRET_KEYS and isinstance(item, str) and item:
                     self.secrets.update((item, quote(item, safe=''), quote_plus(item)))
                 self.remember(item)
         elif isinstance(value, list):
             for item in value:
                 self.remember(item)
+        elif isinstance(value, str):
+            decoded = embedded_json(value)
+            if decoded is not None:
+                self.remember(decoded)
 
     def clean(self, value):
         if isinstance(value, dict):
-            return {key: '[REDACTED]' if key.lower() in SECRET_KEYS else self.clean(item)
+            return {key: '[REDACTED]' if normalized_field(key) in SECRET_KEYS else self.clean(item)
                     for key, item in value.items()}
         if isinstance(value, list):
             return [self.clean(item) for item in value]
         if isinstance(value, str):
-            for secret in sorted(self.secrets, key=len, reverse=True):
-                value = value.replace(secret, '[REDACTED]')
+            decoded = embedded_json(value)
+            if decoded is not None:
+                value = json.dumps(self.clean(decoded), ensure_ascii=False)
+            value = self.redact_text(value)
+        return value
+
+    def redact_text(self, value):
+        for secret in sorted(self.secrets, key=len, reverse=True):
+            value = value.replace(secret, '[REDACTED]')
         return value
 
     def log(self, label, value):
@@ -74,7 +102,7 @@ class VerboseTransport:
         rendered = json.dumps(self.clean(value), ensure_ascii=False, indent=2)
         # Also redact credentials echoed inside server messages or JSON strings.
         print(f'\n[{datetime.now().astimezone().isoformat(timespec="seconds")}] {label}\n'
-              f'{self.clean(rendered)}', flush=True)
+              f'{self.redact_text(rendered)}', flush=True)
 
     def __call__(self, url, method='POST', headers=None, data=None):
         fields = dict(parse_qsl(data.decode()))

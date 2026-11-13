@@ -36,7 +36,7 @@ struct TuyaPanel: View {
                             Button(action: model.refresh) { Image(systemName: "arrow.clockwise") }.buttonStyle(.plain)
                         }
                         HStack {
-                            Button(device.online == false ? "OFF" : device.watts.map(DisplayUnits.power) ?? "—") { model.pin(device.id) }.buttonStyle(.plain).foregroundStyle(ice).help("Show meter power in menu bar")
+                            Button(device.online == false ? "OFF" : device.watts.map(DisplayUnits.power) ?? "—") { model.pin(device.id); selection.pin(.tuya) }.buttonStyle(.plain).foregroundStyle(ice).help("Show meter power in menu bar")
                             if let value = device.voltage { Text(String(format: "%.1f V", value)) }
                             if let value = device.current { Text(String(format: "%.3f A", value)) }
                         }.monospacedDigit().font(.system(size: 13))

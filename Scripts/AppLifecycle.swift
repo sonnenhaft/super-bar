@@ -5,6 +5,18 @@ func fail(_ message: String) -> Never {
     FileHandle.standardError.write(Data((message + "\n").utf8))
     exit(1)
 }
+
+func describeErrorChain(_ error: Error) -> String {
+    var current: NSError? = error as NSError
+    var visited = Set<ObjectIdentifier>()
+    var descriptions: [String] = []
+    while let error = current, visited.insert(ObjectIdentifier(error)).inserted {
+        descriptions.append("\(error.localizedDescription) (\(error.domain) \(error.code))")
+        current = error.userInfo[NSUnderlyingErrorKey] as? NSError
+    }
+    return descriptions.joined(separator: "\nCaused by: ")
+}
+
 let args = Array(CommandLine.arguments.dropFirst())
 guard let command = args.first else { fail("No action specified.") }
 if command == "stop" {
@@ -41,8 +53,7 @@ let app: NSRunningApplication
 switch result {
 case .success(let started): app = started
 case .failure(let error):
-    let ns = error as NSError
-    fail("Launch error: \(error.localizedDescription) (\(ns.domain) \(ns.code)).")
+    fail("Launch error: \(describeErrorChain(error)).")
 }
 guard app.bundleURL?.standardizedFileURL == appURL else {
     _ = app.terminate()

@@ -1,0 +1,68 @@
+{
+  "date": "2026-11-13",
+  "scope": [
+    "macOS Swift app",
+    "iPhone Swift app",
+    "WidgetKit extension",
+    "Python credential/export tooling",
+    "local web/research tooling"
+  ],
+  "fixed": [
+    "LG API region/host allowlist and validated device URL components",
+    "Verified private legacy credential imports with no-follow bounded reads and identity-matched unlink-only cleanup",
+    "Bounded and cancellable native HTTP response collection",
+    "Transactional Tuya account switching and widget TCL command-session isolation",
+    "Cancellation of abandoned energy-store tasks and invalidation of owned URLSessions",
+    "Bounds and pruning for energy caches, live chart points and Bluetooth discoveries/stream buffers",
+    "Python credential redaction, private atomic weather-export writes and report HTML escaping"
+  ],
+  "development_credentials": {
+    "enabled_by": "SUPER_BAR_DEV_CREDENTIALS=1 ./start.command",
+    "scope": "macOS explicit development build only",
+    "storage": ".build/dev-credentials (Git-ignored)",
+    "release_and_ios": "Keychain; no automatic file fallback; dev mode rejected by release/publish"
+  },
+  "memory": {
+    "environment": "iPhone 17e Simulator, iOS 27.2, Debug; not a physical iPhone measurement",
+    "before_xcode_memory_MB": {
+      "overview": [
+        78.1,
+        78.3
+      ],
+      "after_unquantified_navigation": 82.3,
+      "observed_high": 84.4
+    },
+    "before_instruments_startup": {
+      "duration_seconds": 44.543,
+      "persistent_heap_bytes": 15270272,
+      "persistent_anonymous_vm_bytes": 10616832,
+      "persistent_heap_plus_anonymous_vm_bytes": 25887104,
+      "coreservices_vm_bytes": 8962048,
+      "leaks_count": 40,
+      "leaks_bytes": 1280,
+      "leaks_attribution": "39 Foundation NSBundle loadAndReturnError; 1 call-stack limit reached"
+    },
+    "after_xcode_memory_MB": {
+      "overview": [
+        63.9,
+        64.1
+      ],
+      "pid": 31727
+    },
+    "interpretation": "The after sample is a fresh launch and the earlier overview had more navigation. It does not establish a controlled percentage reduction. Allocations live bytes and Xcode process memory are different metrics. Changes prevent growth and release abandoned work; a large idle-footprint reduction is not proven.",
+    "macOS": "Optimized build and signature verification pass. Launch failed with NSCocoaErrorDomain 259 / OSStatus -10827; installer restored the previous app. No valid new macOS RAM measurement or fresh desktop screenshot obtained."
+  },
+  "validation": {
+    "native": "Tests/check.command passed",
+    "ios_checks": "iOS/check.command passed",
+    "python": "108 tests passed",
+    "web": "47 tests per copy and production builds passed",
+    "ios_runtime": "Xcode GUI build/run succeeded after retry; current full-width climate card photographed without hardware commands"
+  },
+  "remaining": [
+    "Local web dependencies: Vite 5.4.21 upgrade unavailable because package-registry DNS fails. Vulnerable dev-server start is guarded; static builds remain available.",
+    "Mermaid remains pinned; sandbox mitigation applied locally. Visual rendering verification blocked by local HTTP bind and browser URL restrictions.",
+    "Web/research datasets and household-specific untracked projects are excluded from the native-app push.",
+    "Simulator profiling is not a physical-device or long-duration soak test."
+  ]
+}

@@ -70,32 +70,31 @@ private final class MockDeye: URLProtocol {
         let network = URLSession(configuration: config)
         defer { network.invalidateAndCancel() }
         let previous = DeyeReading(id:61011710,name:"Leela home solana4u",power_w:nil,today_kwh:nil,status:"UNKNOWN",measured_at:nil,days:[])
-        func fixture(_ mode: String, expired: Bool = false) throws -> (DeyeCloud, URL) {
+        func fixture(_ mode: String, expired: Bool = false) throws -> (DeyeCloud, MemoryCredentialVault) {
             MockDeye.mode = mode; MockDeye.paths = []; MockDeye.grants = []; MockDeye.reads = 0
             let file = root.appendingPathComponent(UUID().uuidString + ".json")
             let account = DeyeCloud.Session(base:"https://eu1.deyecloud.com",token:"old-token",refresh_token:"old-refresh",
                                            expires_at:expired ? 1 : Date().timeIntervalSince1970 + 3600,
                                            email:"test@example.com",password_sha256:"fake-hash")
-            try JSONEncoder().encode(account).write(to: file)
-            try FileManager.default.setAttributes([.posixPermissions:0o600], ofItemAtPath:file.path)
-            return (DeyeCloud(file:file,network:network),file)
+            try PrivateJSONFile.write(account, to: file)
+            let vault = MemoryCredentialVault()
+            return (DeyeCloud(file:file,network:network,vault:vault),vault)
         }
-        let (login, loginFile) = try fixture("login")
+        let (login, loginVault) = try fixture("login")
         try await login.signIn(email:"test@example.com", password:"password", base:"https://eu1.deyecloud.com")
         precondition(MockDeye.grants == ["password"])
-        let loginJSON = try JSONSerialization.jsonObject(with:Data(contentsOf:loginFile)) as! [String:Any]
+        let loginJSON = try JSONSerialization.jsonObject(with: loginVault.read("deye-session")!) as! [String:Any]
         precondition(loginJSON["password"] == nil && loginJSON["password_sha256"] != nil)
+        precondition(loginJSON["token"] as? String == "new-token" && loginJSON["refresh_token"] as? String == "rotated")
         let (valid, _) = try fixture("valid")
         let reading = try await valid.snapshot(previous:nil,includeHistory:false)
         precondition(reading.id == 61011710 && reading.power_w == 3314 && reading.today_kwh == 2.7)
         precondition(reading.measured_at == 1794443261 && MockDeye.paths.count == 2 && MockDeye.grants.isEmpty)
-        let (renew, renewedFile) = try fixture("valid",expired:true)
+        let (renew, renewedVault) = try fixture("valid",expired:true)
         _ = try await renew.snapshot(previous:previous,includeHistory:false)
         precondition(MockDeye.grants == ["refresh_token"])
-        let saved = try JSONDecoder().decode(DeyeCloud.Session.self,from:Data(contentsOf:renewedFile))
-        precondition(saved.token == "new-token" && saved.refresh_token == "rotated")
-        let attributes = try FileManager.default.attributesOfItem(atPath: renewedFile.path)
-        precondition((attributes[.posixPermissions] as! NSNumber).intValue == 0o600)
+        let saved = try renewedVault.saved(DeyeCloud.Session.self, key: "deye-session")
+        precondition(saved.token == "new-token" && saved.refresh_token == "rotated" && saved.password_sha256 == "fake-hash")
         let (retry, _) = try fixture("401")
         _ = try await retry.snapshot(previous:previous,includeHistory:false)
         precondition(MockDeye.reads == 2 && MockDeye.grants == ["refresh_token"])
@@ -123,18 +122,23 @@ private final class MockDeye: URLProtocol {
         precondition(history.curve?.count == 2, "Retain yesterday's curve for a rolling 24-hour window")
         _ = try await partial.snapshot(previous: history, includeHistory: true)
         precondition(MockDeye.paths.filter { $0.contains("/stats/daily") }.count == 33, "Reuse older totals; refresh both curve days and retry the missing day")
-        let (_, source) = try fixture("valid")
+        MockDeye.mode = "valid"
+        let source = root.appendingPathComponent("import.json")
+        try PrivateJSONFile.write(DeyeCloud.Session(base: "https://eu1.deyecloud.com", token: "import-token"), to: source)
         let destination = root.appendingPathComponent("native/session.json")
-        let imported = DeyeCloud(file:destination,importFile:source,network:network)
+        let importedVault = MemoryCredentialVault()
+        let imported = DeyeCloud(file:destination,importFile:source,network:network,vault:importedVault)
         _ = try await imported.snapshot(previous:previous,includeHistory:false)
-        precondition(FileManager.default.fileExists(atPath:destination.path))
+        precondition(!FileManager.default.fileExists(atPath:destination.path), "Import must save only to the credential vault")
+        let importedSession = try importedVault.saved(DeyeCloud.Session.self, key: "deye-session")
+        precondition(importedSession.token == "import-token")
         try FileManager.default.removeItem(at:source)
-        let independent = DeyeCloud(file:destination,network:network)
+        let independent = DeyeCloud(file:destination,network:network,vault:importedVault)
         _ = try await independent.snapshot(previous:previous,includeHistory:false)
         precondition(DeyeCloud.number(true) == nil && DeyeCloud.number(-1) == nil && DeyeCloud.number(Double.nan) == nil && DeyeCloud.number(0) == 0)
         for invalid in ["http://eu1.deyecloud.com", "https://attacker.example", "https://user:password@eu1.deyecloud.com"] {
             do { _ = try DeyeCloud.checkedBase(invalid); fatalError("Unsafe Deye origin accepted") } catch {}
         }
-        print("Deye Swift: session import/reuse, refresh, saved login, bounded retries, partial history and private persistence passed.")
+        print("Deye Swift: session import/reuse, refresh/access tokens and password hashes in vault, bounded retries, partial history and no plaintext writes passed.")
     }
 }

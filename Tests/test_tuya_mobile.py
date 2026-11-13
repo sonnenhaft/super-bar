@@ -8,6 +8,7 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 from urllib.parse import parse_qs
+from credential_fixtures import isolate_credentials, clear_credentials
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'Scripts'))
 import tuya
@@ -37,6 +38,7 @@ def der(tag, data):
 
 class MobileTests(unittest.TestCase):
     def setUp(self):
+        isolate_credentials(self)
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.store = tuya.SessionStore(Path(self.temp.name) / 'session.json')
@@ -103,13 +105,13 @@ class MobileTests(unittest.TestCase):
             {'success': True, 'result': {'token': 'fresh', 'publicKey': base64.b64encode(raw).decode(), 'exponent': e}},
             {'success': False, 'errorCode': 'USER_PASSWD_WRONG', 'errorMsg': 'SECRET'},
         ])
-        before = self.store.path.read_text()
+        before = self.store.load()
         with self.assertRaises(mobile.MobileError) as caught:
             mobile.MobileClient(self.store, transport).login()
         self.assertEqual(transport.call_count, 2)
         self.assertIn('thing.m.user.email.password.login', str(caught.exception))
         self.assertNotIn('SECRET', str(caught.exception))
-        self.assertEqual(self.store.path.read_text(), before)
+        self.assertEqual(self.store.load(), before)
 
     def test_missing_one_time_token_stops_before_password_submission(self):
         transport = Mock(return_value={'success': True, 'result': {}})
@@ -141,7 +143,8 @@ class MobileTests(unittest.TestCase):
         saved = self.store.load()
         self.assertEqual(saved['sid'], 'new-sid')
         self.assertEqual(saved['endpoint'], 'https://a2.tuyaeu.com/api.json')
-        self.assertNotIn('fake-password', self.store.path.read_text())
+        self.assertFalse(self.store.path.exists())
+        self.assertNotIn(b'fake-password', b''.join(self.credential_backing.values.values()))
         for call in transport.call_args_list:
             form = parse_qs(call.kwargs['data'].decode())
             self.assertNotIn('sid', form)
@@ -268,7 +271,7 @@ class MobileTests(unittest.TestCase):
             devices.assert_called_once()
 
     def test_email_login_prompts_password_hidden_and_never_qr(self):
-        self.store.path.unlink()
+        clear_credentials(self)
         self.store.data = None
         def success(client):
             self.assertEqual(client.store.data['email'], 'test@example.com')
@@ -288,7 +291,7 @@ class MobileTests(unittest.TestCase):
         self.assertEqual(self.store.load()['sid'], 'new-sid')
 
     def test_failed_login_remembers_all_inputs_and_enter_reuses_them(self):
-        self.store.path.unlink()
+        clear_credentials(self)
         self.store.data = None
         with patch('builtins.input', side_effect=['remember@example.com', '63', 'EU']):
             with patch.object(tuya.getpass, 'getpass', return_value='remember-password'):
@@ -302,8 +305,8 @@ class MobileTests(unittest.TestCase):
         self.assertEqual(data['region'], 'EU')
         self.assertEqual(data['country_code'], '63')
         self.assertEqual(data['app'], 'smartlife')
-        self.assertNotIn('remember-password', settings.path.read_text())
-        self.assertEqual(settings.path.stat().st_mode & 0o777, 0o600)
+        self.assertNotIn(b'remember-password', b''.join(self.credential_backing.values.values()))
+        self.assertFalse(settings.path.exists())
         captured = []
         def rejected(client):
             captured.append(dict(client.store.data))
@@ -327,13 +330,13 @@ class MobileTests(unittest.TestCase):
         self.assertEqual(tuya.LoginSettings(self.store.path).load()['email'], 'interrupted@example.com')
 
     def test_failed_credential_edit_preserves_successful_session(self):
-        before = self.store.path.read_text()
+        before = self.store.load()
         with patch('builtins.input', side_effect=['edited@example.com', '63', 'EU']):
             with patch.object(tuya.getpass, 'getpass', return_value='edited-password'):
                 with patch.object(mobile.MobileClient, 'login', side_effect=mobile.MobileError('rejected')):
                     with self.assertRaises(mobile.MobileError):
                         tuya.password_login(self.store)
-        self.assertEqual(self.store.path.read_text(), before)
+        self.assertEqual(self.store.load(), before)
         self.assertEqual(tuya.LoginSettings(self.store.path).load()['email'], 'edited@example.com')
 
     def test_server_cannot_redirect_credentials_outside_tuya(self):

@@ -54,11 +54,9 @@ struct Aircon: Identifiable {
           [(0,"Auto"),(2,"Low"),(3,"Medium-low"),(4,"Medium"),(5,"Medium-high"),(6,"High")]
     }
     var fan: String {
-        if code("turbo") == 1 { return "Turbo" }
-        if code("silenceSwitch") == 1 { return "Silent" }
-        if fanField == "windSpeed7Gear", code("windSpeedAutoSwitch") == 1 { return "Auto" }
-        guard let n = code(fanField) else { return "—" }
-        return fanOptions.first { $0.0 == n }?.1 ?? "Code " + String(n)
+        if currentFanSymbol == .minimum { return "Minimum" }
+        if let level = currentFanLevel { return fanLabel(level) }
+        return code(fanField).map { "Code " + String($0) } ?? "—"
     }
     var manualFanCodes: [Int] {
         if fanField == "windSpeed7Gear" { return Array(1...7) }
@@ -74,9 +72,48 @@ struct Aircon: Identifiable {
         return level
     }
     func fanLabel(_ level: Int) -> String {
-        if level == 1 && has("silenceSwitch") { return "Silent" }
+        if level == 1 && has("silenceSwitch") { return "Quiet" }
         if level == 7 { return "Turbo" }
         return fanOptions.first { $0.0 == level }?.1 ?? "—"
+    }
+    func fanSymbol(_ level: Int) -> FanSpeedSymbol {
+        switch level {
+        case 0: return .automatic
+        case 1: return has("silenceSwitch") ? .quiet : .minimum
+        case 2: return .low
+        case 3: return .mediumLow
+        case 4: return .medium
+        case 5: return .mediumHigh
+        case 6: return .high
+        case 7: return .turbo
+        default: return .unknown
+        }
+    }
+    var fanSpeedOptions: [FanSpeedOption] {
+        guard has(fanField) else { return [] }
+        return (Array(manualFanCodes.reversed()) + [0]).map {
+            FanSpeedOption(id: $0, name: fanLabel($0), symbol: fanSymbol($0))
+        }
+    }
+    // Reported modes take precedence over their underlying low/high fan speed.
+    // Do not reuse the control store's remembered/default manual speed here.
+    var currentFanLevel: Int? {
+        if code("turbo") == 1 { return 7 }
+        if code("silenceSwitch") == 1 { return 1 }
+        if automaticFan { return 0 }
+        guard let level = code(fanField), fanOptions.contains(where: { $0.0 == level }) else { return nil }
+        return level
+    }
+    var currentFanSymbol: FanSpeedSymbol {
+        guard let level = currentFanLevel else { return .unknown }
+        // Seven-gear minimum is not quiet mode until the quiet flag is enabled.
+        if level == 1, code("silenceSwitch") != 1 { return .minimum }
+        return fanSymbol(level)
+    }
+    var selectedFanOption: Int? {
+        let level = currentFanLevel
+        if level == 1, has("silenceSwitch"), code("silenceSwitch") != 1 { return nil }
+        return level
     }
     // 0 is automatic. The classic fan protocol expresses quiet and turbo as
     // flags paired with low/high speed, whereas the seven-gear model has steps.
@@ -123,23 +160,25 @@ struct Aircon: Identifiable {
     }
 }
 
-enum CoolingPreset: CaseIterable, Hashable {
-    case high, low
+enum TCLCoolingPreset: CaseIterable, Hashable {
+    case turbo, quiet
 
-    var label: String { self == .high ? "16° High" : "22° Low" }
-    var degrees: Int { self == .high ? 16 : 22 }
-    var speed: String { self == .high ? "HIGH" : "LOW" }
+    var label: String { "\(degrees)° " + (self == .turbo ? "Turbo" : "Quiet") }
+    var degrees: Int { self == .turbo ? 16 : 22 }
+    var fanSymbol: FanSpeedSymbol { self == .turbo ? .turbo : .quiet }
+    private var fanLevel: Int { self == .turbo ? 7 : 1 }
 
     func fields(for ac: Aircon) -> [(String, Int)]? {
         guard ac.has("powerSwitch"), ac.has("workMode"), ac.has("targetTemperature"),
               ac.setpoints.contains(degrees) else { return nil }
         var fields = [("powerSwitch", 1), ("workMode", 1), ("targetTemperature", degrees)]
         if ac.has("ECO") { fields.append(("ECO", 0)) }
-        guard ac.has(ac.fanField) else { return nil }
-        let level = self == .high ? 6 : 2
-        fields += ac.fanChanges(level)
+        guard ac.has(ac.fanField), ac.manualFanCodes.contains(fanLevel) else { return nil }
+        // Gear 1 alone means Minimum. Quiet must enable the actual quiet flag.
+        if self == .quiet, !ac.has("silenceSwitch") { return nil }
+        fields += ac.fanChanges(fanLevel)
         guard ac.has("verticalDirection"), ac.has("horizontalDirection") else { return nil }
-        fields += self == .high ? [("verticalDirection",13),("horizontalDirection",11)] : [("verticalDirection",2),("horizontalDirection",1)]
+        fields += self == .turbo ? [("verticalDirection",13),("horizontalDirection",11)] : [("verticalDirection",2),("horizontalDirection",1)]
         return fields
     }
     func isSelected(on ac: Aircon) -> Bool {
@@ -202,9 +241,8 @@ final class ClimateStore: ObservableObject {
          fetch: (() throws -> [JSONObject])? = nil,
          apply: ((String, [(String, Int)]) throws -> JSONObject)? = nil) {
         self.directory = directory
-        let env = ProcessInfo.processInfo.environment
-        let hasSSO = !(env["TCL_SSO_ID"] ?? "").isEmpty && !(env["TCL_SSO_TOKEN"] ?? "").isEmpty
-        needsSignIn = !hasSSO && !FileManager.default.fileExists(atPath: directory.appendingPathComponent(".tcl-auth.json").path)
+        // The worker checks Keychain; file presence no longer describes auth state.
+        needsSignIn = false
         history = EnergyHistory(directory: directory)
         self.batchingDelay = batchingDelay
         let session = DeviceService.ControlSession(directory: directory)
@@ -223,6 +261,7 @@ final class ClimateStore: ObservableObject {
         }
     }
     func signIn(email: String, password: String, completion: @escaping (String?) -> Void) {
+        CredentialAccess.retry()
         worker.async {
             let result = Result { try self.session.signIn(email: email, password: password) }
             DispatchQueue.main.async {
@@ -316,11 +355,11 @@ final class ClimateStore: ObservableObject {
         if ac.power == false { edits.insert(("powerSwitch", 1), at: 0) }
         enqueue(ac, edits, label: "Temperature")
     }
-    func preset(_ ac: Aircon, _ preset: CoolingPreset) {
+    func preset(_ ac: Aircon, _ preset: TCLCoolingPreset) {
         if let fields = preset.fields(for: ac) { enqueue(ac, fields, label: preset.label) }
     }
     func toggleEco(_ ac: Aircon) {
-        if let fields = ac.ecoChanges { enqueue(ac, fields, label: ac.code("ECO") == 1 ? "Eco off" : "Eco · 26° Silent") }
+        if let fields = ac.ecoChanges { enqueue(ac, fields, label: ac.code("ECO") == 1 ? "Eco off" : "Eco · 26° Quiet") }
     }
     func fanLevel(for ac: Aircon) -> Int {
         ac.manualFanCode ?? lastManualFan[ac.id] ?? 4

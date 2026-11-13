@@ -10,6 +10,7 @@ import unittest
 from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.parse import parse_qs, urlsplit
+from credential_fixtures import isolate_credentials
 
 
 spec = importlib.util.spec_from_file_location('deye', Path(__file__).parents[1] / 'Scripts/deye.py')
@@ -19,6 +20,7 @@ spec.loader.exec_module(deye)
 
 class SessionTests(unittest.TestCase):
     def setUp(self):
+        isolate_credentials(self)
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.path = Path(self.directory.name) / 'session.json'
@@ -56,8 +58,8 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(saved.refresh_token, 'new-refresh')
         self.assertGreater(saved.expires_at, time.time())
         self.assertEqual(saved.password_sha256, self.client.password_sha256)
-        self.assertEqual(self.path.stat().st_mode & 0o777, 0o600)
-        self.assertNotIn('fake-password', self.path.read_text())
+        self.assertFalse(self.path.exists())
+        self.assertNotIn(b'fake-password', b''.join(self.credential_backing.values.values()))
 
     def test_401_refresh_then_retry_original_request(self):
         with patch.object(self.client, '_request', side_effect=[
@@ -109,6 +111,7 @@ class SessionTests(unittest.TestCase):
         client = deye.load_session()
         self.assertEqual(client.token, 'legacy')
         self.assertIsNone(client.refresh_token)
+        self.assertFalse(self.path.exists())
 
     def test_plaintext_in_existing_session_migrates(self):
         self.path.write_text(json.dumps({'base': self.client.base, 'token': 'legacy',
@@ -116,7 +119,8 @@ class SessionTests(unittest.TestCase):
         self.path.chmod(0o600)
         client = deye.load_session()
         self.assertEqual(client.password_sha256, self.client.password_sha256)
-        self.assertNotIn('password', json.loads(self.path.read_text()))
+        self.assertFalse(self.path.exists())
+        self.assertNotIn('password', json.loads(next(iter(self.credential_backing.values.values()))))
 
     def test_transport_sends_refresh_without_stale_authorization(self):
         with patch.object(deye, 'connect', return_value=io.StringIO(json.dumps({

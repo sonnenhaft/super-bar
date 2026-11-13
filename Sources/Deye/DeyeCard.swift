@@ -15,49 +15,24 @@ struct DeyeCard: View {
             if model.needsSignIn {
                 DeviceChoice(action: { showSignIn.toggle() }) { Text("Sign in to Deye Cloud").font(.system(size: 12)) }
             } else {
-                powerChoice(DeyeReading.power(model.reading?.power_w), title: "Generation", symbol: "sun.max", color: sunlight)
-                powerChoice(tuya.reading?.consumption().map(DisplayUnits.power) ?? "—", title: "Consumption", symbol: "bolt.fill", color: ice)
+                powerChoice(DeyeReading.power(model.reading?.power_w), title: "Generation", generation: true)
+                powerChoice(tuya.reading?.consumption().map(DisplayUnits.power) ?? "—", title: "Consumption", generation: false)
             }
         }
         if showSignIn { DeyeSignIn(model: model) { showSignIn = false } }
       }
     }
-    private func powerChoice(_ value: String, title: String, symbol: String, color: Color) -> some View {
+    private func powerChoice(_ value: String, title: String, generation: Bool) -> some View {
         DeviceChoice(selected: model.pinned, action: {
             model.pinned.toggle()
             selection.showEnergy()
         }) {
-            HStack(spacing: 10) {
-                Image(systemName: symbol).font(.system(size: 28)).frame(width: 29)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(title).font(.system(size: 11)).foregroundStyle(.white.opacity(0.8))
-                    Text(value).font(.system(size: 20, weight: model.pinned ? .bold : .medium)).monospacedDigit()
-                }
-                Spacer(minLength: 0)
-            }.foregroundStyle(color).frame(minHeight: 42)
+            PanelEnergyContent(title: title, value: value, generation: generation, emphasized: model.pinned)
         }.help((model.pinned ? "Hide" : "Show") + " net power in menu bar")
             .accessibilityValue(model.pinned ? "Visible in menu bar" : "Hidden from menu bar")
     }
-    @ViewBuilder var charts: some View {
+    var charts: some View { EnergyDetails(deye: model, tuya: tuya) }
 
-        if model.reading?.days.contains(where: { $0.kwh != nil }) == true || tuya.chartHistory != nil {
-            EnergyCharts(days: (model.reading?.days ?? []).map {
-                EnergyDayPoint(key: $0.day, label: String($0.day.suffix(2)), wattHours: $0.kwh.map { $0 * 1000 })
-            }, power: model.reading?.curve ?? [], color: sunlight,
-                         consumptionDays: tuya.chartHistory?.days ?? [],
-                         consumptionHours: tuya.chartHistory?.hours ?? [],
-                         consumptionEnergyIntervals: tuya.chartHistory?.energyIntervals ?? [], showConsumption: true,
-                         consumptionPower: tuya.samples)
-            if let problem = tuya.historyProblem {
-                Text(problem).font(.system(size: 10)).foregroundStyle(.secondary)
-            } else if tuya.historyRefreshing && tuya.chartHistory == nil {
-                Text("Loading consumption…").font(.system(size: 10)).foregroundStyle(.secondary)
-            }
-        } else {
-            Text(model.refreshing ? "Loading 30 days…" : "No generation history yet")
-                .font(.caption).foregroundStyle(.secondary)
-        }
-    }
 }
 
 struct DeyeSignIn: View {

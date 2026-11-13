@@ -110,7 +110,8 @@ struct TCLIoTSigner {
 }
 
 final class TCLCloud {
-    private let accountFile: URL, session: URLSession
+    private let credentials: CloudCredentialStore
+    private let session: URLSession
     private let ownsSession: Bool
     private var deviceBase: URL?
     private var saas = "", sso = ""
@@ -121,8 +122,8 @@ final class TCLCloud {
 
     // Synchronous facade for the serial cloud worker and the command-line tool.
     // URLSession delivers completions on its own queue.
-    init(directory: URL, session: URLSession? = nil) {
-        accountFile = directory.appendingPathComponent(".tcl-auth.json")
+    init(directory: URL, session: URLSession? = nil, vault: any CredentialVault = CloudCredentialStore.defaultVault) {
+        credentials = CloudCredentialStore(file: directory.appendingPathComponent(".tcl-auth.json"), key: "tcl-session", vault: vault)
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 15; config.timeoutIntervalForResource = 20
         config.httpCookieStorage = nil; config.urlCache = nil; config.urlCredentialStorage = nil
@@ -134,10 +135,13 @@ final class TCLCloud {
 
     private func send(_ req: URLRequest, service: String) throws -> Data {
         let reply = CloudReply()
-        let task = session.dataTask(with: req) { data, response, error in
-            reply.data = data; reply.response = response; reply.error = error; reply.ready.signal()
+        let task = Task { [session] in
+            do {
+                let (data, response) = try await CloudResponse.data(for: req, using: session)
+                reply.data = data; reply.response = response
+            } catch { reply.error = error }
+            reply.ready.signal()
         }
-        task.resume()
         if reply.ready.wait(timeout: .now() + min(req.timeoutInterval, 22) + 3) == .timedOut {
             task.cancel(); throw TCLCloudError.message("\(service) timed out.")
         }
@@ -169,17 +173,7 @@ final class TCLCloud {
     }
 
     private func writeAccount(_ account: Account) throws {
-        let manager = FileManager.default
-        let dir = accountFile.deletingLastPathComponent()
-        try manager.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions:0o700])
-        let pending = dir.appendingPathComponent(".tcl-auth." + UUID().uuidString)
-        let fd = open(pending.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600)
-        guard fd >= 0 else { throw TCLCloudError.message("Could not save your TCL Home session.") }
-        defer { unlink(pending.path) }
-        let file = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
-        try file.write(contentsOf: JSONEncoder().encode(account))
-        try file.close()
-        guard Darwin.rename(pending.path, accountFile.path) == 0 else { throw TCLCloudError.message("Could not save your TCL Home session.") }
+        try credentials.save(account)
     }
 
     private func login(email: String, digest: String) throws -> Account {
@@ -270,7 +264,7 @@ final class TCLCloud {
             catch TCLCloudError.expired {} catch { resetSession(); throw error }
         }
         resetSession()
-        let cached = (try? Data(contentsOf: accountFile)).flatMap { try? JSONDecoder().decode(Account.self, from: $0) }
+        let cached = try credentials.load(Account.self)
         let env = ProcessInfo.processInfo.environment
         func renewAccount() throws -> Account {
             guard let email = cached?.email, let digest = cached?.digest, !email.isEmpty, !digest.isEmpty else {

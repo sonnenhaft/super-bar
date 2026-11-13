@@ -28,17 +28,20 @@ actor DeyeCloud {
         var email: String?
         var password_sha256: String?
     }
-    private let file: URL
+    private let credentials: CloudCredentialStore
     private let importFile: URL?
     private let network: URLSession
+    private let ownsSession: Bool
     private var account: Session?
     private var recoveryFailed = false
 
-    init(file: URL, importFile: URL? = nil, network: URLSession? = nil) {
-        self.file = file
+    init(file: URL, importFile: URL? = nil, network: URLSession? = nil, vault: any CredentialVault = CloudCredentialStore.defaultVault) {
+        self.credentials = CloudCredentialStore(file: file, key: "deye-session", vault: vault)
         self.importFile = importFile
+        self.ownsSession = network == nil
         self.network = network ?? CloudRedirects.session()
     }
+    deinit { if ownsSession { network.invalidateAndCancel() } }
 
     static func checkedBase(_ value: String) throws -> String {
         guard let parts = URLComponents(string: value), parts.scheme == "https",
@@ -56,18 +59,18 @@ actor DeyeCloud {
     }
     private func load() throws {
         guard account == nil else { return }
-        let source = FileManager.default.fileExists(atPath: file.path) ? file : importFile
-        guard let source, FileManager.default.fileExists(atPath: source.path) else { throw DeyeError.signIn }
-        guard var saved = try? PrivateJSONFile.read(Session.self, from: source), !saved.token.isEmpty
-        else { throw DeyeError.signIn }
-        saved.base = try Self.checkedBase(saved.base)
-        saved.token = saved.token.replacingOccurrences(of: "Bearer ", with: "")
+        guard let saved = try credentials.load(Session.self, importFile: importFile, validate: { saved in
+            var saved = saved
+            guard !saved.token.isEmpty else { throw DeyeError.signIn }
+            saved.base = try Self.checkedBase(saved.base)
+            saved.token = saved.token.replacingOccurrences(of: "Bearer ", with: "")
+            return saved
+        }) else { throw DeyeError.signIn }
         account = saved
-        if source != file { try save() }
     }
     private func save() throws {
         guard let account else { throw DeyeError.signIn }
-        try PrivateJSONFile.write(account, to: file)
+        try credentials.save(account)
     }
     private func unwrap(_ value: Any) -> Any { (value as? [String: Any])?["data"] as? [String: Any] ?? value }
     private func request(_ path: String, body: [String: Any]? = nil, query: [String: String] = [:], authenticated: Bool = true) async throws -> Any {
@@ -84,7 +87,7 @@ actor DeyeCloud {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         }
         let data: Data, response: URLResponse
-        do { (data, response) = try await network.data(for: request) }
+        do { (data, response) = try await CloudResponse.data(for: request, using: network) }
         catch { if Task.isCancelled { throw CancellationError() }; throw DeyeError.message("Could not connect to Deye Cloud.") }
         guard let http = response as? HTTPURLResponse else { throw DeyeError.message("Invalid Deye response.") }
         if http.statusCode == 401 || (!authenticated && [400,403].contains(http.statusCode)) { throw DeyeError.unauthorized }
@@ -145,7 +148,7 @@ actor DeyeCloud {
             var request = URLRequest(url: URL(string: base + "/")!)
             request.setValue("Mozilla/5.0", forHTTPHeaderField: "User-Agent")
             let response: URLResponse
-            do { (_, response) = try await network.data(for: request) }
+            do { (_, response) = try await CloudResponse.data(for: request, using: network) }
             catch { throw DeyeError.message("Could not connect to Deye Cloud.") }
             guard let http = response as? HTTPURLResponse else { throw DeyeError.message("Invalid Deye response.") }
             if (300..<400).contains(http.statusCode), let target = http.value(forHTTPHeaderField: "Location"),

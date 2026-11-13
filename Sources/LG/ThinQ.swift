@@ -29,54 +29,77 @@ func degree(_ value: Double?) -> String {
   return v == v.rounded() ? String(format: "%.0f°", v) : String(format: "%.1f°", v)
 }
 enum TokenFile {
-  static var url: URL {
-    FileManager.default.homeDirectoryForCurrentUser
-      .appendingPathComponent("Library/Application Support/LGBar/token.txt")
+  private static var store: TokenCredentialStore {
+    #if os(macOS)
+    TokenCredentialStore(key: "lg-token", legacyFile: FileManager.default.homeDirectoryForCurrentUser
+      .appendingPathComponent("Library/Application Support/LGBar/token.txt"))
+    #else
+    TokenCredentialStore(key: "lg-token")
+    #endif
   }
-  static func read() -> String {
-    if let saved = try? String(contentsOf: url, encoding: .utf8).trimmingCharacters(
-      in: .whitespacesAndNewlines), !saved.isEmpty
-    {
-      return saved
-    }
-    // A local checkout keeps its private token outside the distributable app.
+  static func readSecure() throws -> String {
+    var source: URL?
+    #if os(macOS)
+    source = PrivateJSONFile.importFile("lg")
+    // An explicitly local checkout can import, but never delete a CLI-owned token.
     let dist = Bundle.main.bundleURL.deletingLastPathComponent()
-    if dist.lastPathComponent == "dist" {
-      let projectToken = dist.deletingLastPathComponent().appendingPathComponent("token.txt")
-      if let raw = try? String(contentsOf: projectToken, encoding: .utf8) {
-        let token = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !token.isEmpty { return token }
-      }
+    if source == nil && dist.lastPathComponent == "dist" {
+      source = dist.deletingLastPathComponent().appendingPathComponent("token.txt")
     }
-    guard let bundled = Bundle.main.url(forResource: "token", withExtension: "txt") else {
-      return ""
-    }
-    return (try? String(contentsOf: bundled, encoding: .utf8))?.trimmingCharacters(
-      in: .whitespacesAndNewlines) ?? ""
+    #endif
+    return try store.read(importFile: source) ?? ""
   }
-  static func save(_ token: String) throws {
-    let folder = url.deletingLastPathComponent()
-    try FileManager.default.createDirectory(
-      at: folder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-    try Data(token.utf8).write(to: url, options: .atomic)
-    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
-  }
+  static func read() -> String { (try? readSecure()) ?? "" }
+  static func save(_ token: String) throws { CredentialAccess.retry(); try store.save(token) }
 }
 
 final class API {
-  let token: String, country: String, region: String, client: String
-  init() {
-    token = TokenFile.read()
-    country = defaults.string(forKey: "country") ?? "PH"
-    region = defaults.string(forKey: "region") ?? "kic"
-    client = defaults.string(forKey: "client") ?? UUID().uuidString
-    defaults.set(client, forKey: "client")
+  private let network: URLSession
+  private let ownsSession: Bool
+  private let readToken: () throws -> String
+  deinit { if ownsSession { network.invalidateAndCancel() } }
+  private(set) var needsSignIn = false
+  let country: String, region: String, client: String
+  init(network: URLSession? = nil, readToken: @escaping () throws -> String = TokenFile.readSecure,
+       preferences: UserDefaults = defaults) {
+    self.ownsSession = network == nil
+    self.network = network ?? CloudRedirects.session()
+    self.readToken = readToken
+    country = preferences.string(forKey: "country") ?? "PH"
+    region = preferences.string(forKey: "region") ?? "kic"
+    client = preferences.string(forKey: "client") ?? UUID().uuidString
+    preferences.set(client, forKey: "client")
+  }
+  static func deviceComponent(_ id: String) throws -> String {
+    guard !id.isEmpty, id.utf8.count <= 512, id != ".", id != "..",
+          let value = id.addingPercentEncoding(withAllowedCharacters: .alphanumerics.union(CharacterSet(charactersIn: "-._~"))) else {
+      throw LGError(message: "Invalid LG device identifier")
+    }
+    return value
+  }
+  static func checkedURL(region: String, path: String) throws -> URL {
+    guard ["kic", "eic", "aic"].contains(region),
+          path == "devices" || path.hasPrefix("devices/"),
+          let relative = URLComponents(string: path), relative.scheme == nil, relative.host == nil,
+          relative.user == nil, relative.password == nil, relative.fragment == nil,
+          !relative.path.split(separator: "/").contains(where: { $0 == "." || $0 == ".." }) else {
+      throw LGError(message: "Invalid LG API address or region")
+    }
+    var endpoint = URLComponents()
+    endpoint.scheme = "https"
+    endpoint.host = "api-" + region + ".lgthinq.com"
+    endpoint.percentEncodedPath = "/" + relative.percentEncodedPath
+    endpoint.percentEncodedQuery = relative.percentEncodedQuery
+    guard let url = endpoint.url else { throw LGError(message: "Invalid LG API address") }
+    return url
   }
   func request(_ path: String, payload: [String: Any]? = nil) async throws -> Any {
-    guard !token.isEmpty else { throw LGError(message: "No token configured") }
-    guard let url = URL(string: "https://api-\(region).lgthinq.com/\(path)") else {
-      throw LGError(message: "Invalid API address")
-    }
+    // Validate persisted preferences at the boundary before reading/attaching the PAT.
+    let url = try Self.checkedURL(region: region, path: path)
+    // Do not mistake a locked Keychain for a missing account. Retry after unlock.
+    let token = try readToken()
+    needsSignIn = token.isEmpty
+    guard !needsSignIn else { throw LGError(message: "No token configured") }
     var r = URLRequest(url: url)
     r.timeoutInterval = 20
     r.httpMethod = payload == nil ? "GET" : "POST"
@@ -96,7 +119,7 @@ final class API {
     }
     let data: Data, response: URLResponse
     do {
-      (data, response) = try await URLSession.shared.data(for: r)
+      (data, response) = try await CloudResponse.data(for: r, using: network)
     } catch let error as URLError {
       switch error.code {
       case .cannotFindHost, .dnsLookupFailed: throw LGError(message: "DNS lookup failed")
@@ -113,9 +136,11 @@ final class API {
       throw LGError(message: "LG HTTP \(h.statusCode). Check token, country and region.")
     }
     if data.isEmpty { return [:] as [String: Any] }
-    let json = try JSONSerialization.jsonObject(with: data)
+    guard let json = try? JSONSerialization.jsonObject(with: data) else { throw LGError(message: "LG returned invalid JSON") }
     if let e = object(json)["error"] {
-      throw LGError(message: "LG: \(object(e)["code"] ?? "error")")
+      let code = object(e)["code"] as? String ?? "error"
+      let safe = code.range(of: "^[A-Za-z0-9_.-]{1,64}$", options: .regularExpression) != nil ? code : "error"
+      throw LGError(message: "LG: \(safe)")
     }
     return object(json)["response"] ?? json
   }

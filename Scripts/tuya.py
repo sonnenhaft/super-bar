@@ -28,9 +28,11 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, build_opener, HTTPRedirectHandler
 
 if __package__:
+    from .credential_store import CredentialError, JSONCredentialStore, read_legacy_file
     from .tuya_wire import gcm_encrypt, gcm_decrypt, print_qr
     from .tuya_mobile import MobileClient, MobileError as TuyaError, MobileAuthError as AuthError, validate_mobile, ENDPOINTS
 else:
+    from credential_store import CredentialError, JSONCredentialStore, read_legacy_file
     from tuya_wire import gcm_encrypt, gcm_decrypt, print_qr
     from tuya_mobile import MobileClient, MobileError as TuyaError, MobileAuthError as AuthError, validate_mobile, ENDPOINTS
 
@@ -111,6 +113,8 @@ def validate_session(data):
 
 
 class SessionStore:
+    credential_kind = 'tuya-session'
+
     def __init__(self, path=None):
         self.path = Path(SESSION if path is None else path)
         self.data = None
@@ -120,29 +124,20 @@ class SessionStore:
 
     def load(self):
         try:
-            info = self.path.lstat()
-        except FileNotFoundError:
-            return None
-        if not stat.S_ISREG(info.st_mode) or info.st_mode & 0o077:
-            raise TuyaError(f'Файл сессии должен иметь права 600: {self.path}')
-        try:
-            self.data = self.validate(json.loads(self.path.read_text()))
-        except (ValueError, UnicodeError):
-            raise TuyaError('Повреждена сессия Tuya. Открой Scripts/tuya.command.') from None
+            self.data = JSONCredentialStore(self.path, self.credential_kind, self.validate).load()
+        except CredentialError as error:
+            raise TuyaError(str(error)) from None
+        if self.credential_kind == 'tuya-session':
+            login = LoginSettings(self.path)
+            if login.path.exists():
+                login.load()  # Migrate old saved hashes even when the session is valid.
         return self.data
 
     def save(self):
-        self.validate(self.data)
-        fd, name = tempfile.mkstemp(prefix='.env.tuya-', dir=self.path.parent)
         try:
-            with os.fdopen(fd, 'w') as stream:
-                json.dump(self.data, stream)
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(name, self.path)
-        finally:
-            if os.path.exists(name):
-                os.unlink(name)
+            JSONCredentialStore(self.path, self.credential_kind, self.validate).save(self.data)
+        except CredentialError as error:
+            raise TuyaError(str(error)) from None
 
     def update_token(self, token_info):
         # Persist rotated tokens before the next API read.
@@ -152,6 +147,8 @@ class SessionStore:
 
 class LoginSettings(SessionStore):
     """Remember input independently of successful session creation."""
+    credential_kind = 'tuya-login'
+
     def __init__(self, session_path):
         super().__init__(Path(session_path).with_name('.env.tuya-login.json'))
 
@@ -167,6 +164,7 @@ class LoginSettings(SessionStore):
 
 
 class DeviceSnapshot(SessionStore):
+    """Non-secret readings remain an exportable JSON file for history tools."""
     def __init__(self, session_path):
         super().__init__(Path(session_path).with_name('.env.tuya-devices.json'))
 
@@ -174,6 +172,32 @@ class DeviceSnapshot(SessionStore):
         if not isinstance(data, dict) or not isinstance(data.get('devices'), list):
             raise TuyaError('Некорректный снимок устройств Tuya.')
         return data
+
+    def load(self):
+        try:
+            info = self.path.lstat()
+        except FileNotFoundError:
+            return None
+        if not stat.S_ISREG(info.st_mode) or info.st_mode & 0o077:
+            raise TuyaError('Снимок устройств должен быть обычным приватным файлом.')
+        try:
+            self.data = self.validate(json.loads(self.path.read_text()))
+        except (ValueError, UnicodeError):
+            raise TuyaError('Повреждён снимок устройств Tuya.') from None
+        return self.data
+
+    def save(self):
+        self.validate(self.data)
+        fd, name = tempfile.mkstemp(prefix='.tuya-readings-', dir=self.path.parent)
+        try:
+            with os.fdopen(fd, 'w') as stream:
+                json.dump(self.data, stream)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(name, self.path)
+        finally:
+            if os.path.exists(name):
+                os.unlink(name)
 
 
 def session_candidates():
@@ -198,11 +222,10 @@ def load_available_session(store):
         if path == store.path:
             continue
         try:
-            info = path.lstat()
-            if (not stat.S_ISREG(info.st_mode) or info.st_size > 1024 * 1024
-                    or info.st_uid != os.getuid()):
+            legacy = read_legacy_file(path)
+            if legacy is None:
                 continue
-            data = json.loads(path.read_text())
+            data = json.loads(legacy[0])
             if not isinstance(data, dict):
                 continue
             # Accept the existing client session format, including wrappers.
@@ -211,7 +234,7 @@ def load_available_session(store):
             data = dict(data)
             data.setdefault('client_id', CLIENT_ID)
             validate_session(data)
-        except (OSError, ValueError, TypeError, TuyaError):
+        except (OSError, ValueError, TypeError, TuyaError, CredentialError):
             continue
         if data.get('mode') == 'mobile':
             identity = (data['app'], data['email'])

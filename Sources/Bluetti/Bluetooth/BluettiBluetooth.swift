@@ -25,6 +25,7 @@ enum BluettiNativeFailure: Error {
     }
 }
 
+#if os(macOS)
 final class BluettiBluetooth {
     private static weak var active: BluettiCentral?
 
@@ -78,3 +79,4 @@ final class BluettiBluetooth {
         }
     }
 }
+#endif

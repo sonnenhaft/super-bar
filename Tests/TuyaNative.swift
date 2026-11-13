@@ -74,7 +74,8 @@ final class MockTuya: URLProtocol {
         let keyData = try Data(contentsOf: URL(fileURLWithPath: ".build/tuya-test-key.der"))
         MockTuya.key = SecKeyCreateWithData(keyData as CFData, [kSecAttrKeyType as String: kSecAttrKeyTypeRSA, kSecAttrKeyClass as String: kSecAttrKeyClassPrivate] as CFDictionary, nil)!
         let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [MockTuya.self]
-        let client = TuyaCloud(file: own, source: source, network: URLSession(configuration: config))
+        let vault = MemoryCredentialVault()
+        let client = TuyaCloud(file: own, source: source, network: URLSession(configuration: config), vault: vault)
         let first = try await client.snapshot()
         precondition(first.meter?.watts == 510 && first.meter?.voltage == 233.8 && first.meter?.current == 3.430 && first.meter?.energyKWh == 962.46)
         precondition(MockTuya.actions.count == 3)
@@ -109,16 +110,25 @@ final class MockTuya: URLProtocol {
         precondition(EnergyBalance(production: pv, consumption: stale).watts == nil)
         let lowPV = DeyeReading(id: 1, name: "PV", power_w: 100, today_kwh: 2, status: "NORMAL", measured_at: Date().timeIntervalSince1970, days: [])
         precondition(EnergyBalance(production: lowPV, consumption: first).text == "-410 W")
+        let noPV = DeyeReading(id: 1, name: "PV", power_w: 0, today_kwh: 2, status: "NORMAL", measured_at: Date().timeIntervalSince1970, days: [])
+        let sleepingPV = DeyeReading(id: 1, name: "PV", power_w: 1200, today_kwh: 2, status: "OFFLINE", measured_at: Date().addingTimeInterval(-7200).timeIntervalSince1970, days: [])
+        for production in [noPV, sleepingPV, nil] {
+            let balance = EnergyBalance(production: production, consumption: first)
+            precondition(balance.text == "510 W" && balance.watts == -510,
+                         "Zero or unavailable generation must show live household consumption without a minus or placeholder")
+            precondition(balance.color == EnergyBalance(production: lowPV, consumption: first).color)
+        }
+        precondition(EnergyBalance(production: noPV, consumption: stale).text == "—", "Never present stale household consumption as live")
         precondition(DisplayUnits.energy(28200) == "28,2 kWh" && DisplayUnits.energy(799) == "799 Wh")
         let missing = TuyaSnapshot(devices: first.devices, meterID: "not-this-meter", fetchedAt: Date())
         precondition(missing.consumption() == nil, "Never substitute another consumption meter")
         MockTuya.expire = true
         _ = try await client.snapshot()
         precondition(MockTuya.actions.filter { $0 == "thing.m.user.email.password.login" }.count == 1)
-        let account = try PrivateJSONFile.read(TuyaCloud.Session.self, from: own)
-        precondition(account.sid == "renewed" && account.meter_id == "main")
+        let account = try vault.saved(TuyaCloud.Session.self, key: "tuya-session")
+        precondition(account.sid == "renewed" && account.meter_id == "main" && account.password_md5 == TuyaCrypto.md5("password"))
         precondition(try! PrivateJSONFile.read(TuyaCloud.Session.self, from: source).sid == "original")
-        precondition(try! FileManager.default.attributesOfItem(atPath: own.path)[.posixPermissions] as? Int == 0o600)
+        precondition(!FileManager.default.fileExists(atPath: own.path), "Session renewal must never write a plaintext account file")
         let before = MockTuya.actions.count
         do { _ = try await client.request("tuya.m.device.dp.publish"); fatalError("Control method accepted") } catch TuyaError.message {}
         precondition(MockTuya.actions.count == before)
@@ -126,6 +136,26 @@ final class MockTuya: URLProtocol {
             do { _ = try TuyaCloud.endpoint(url); fatalError("Unsafe origin accepted") } catch TuyaError.message {}
         }
         precondition(try! TuyaCrypto.decimalBytes("65537") == [1,0,1])
+        let beforeAccountChange = MockTuya.actions.count
+        do { try await client.signIn(email: "other@example.test", password: ""); fatalError("A new account reused the old password") }
+        catch TuyaError.message { }
+        precondition(MockTuya.actions.count == beforeAccountChange)
+        MockTuya.rejectLogin = true
+        do { try await client.signIn(email: "other@example.test", password: "password"); fatalError("Rejected login accepted") }
+        catch TuyaError.message { }
+        let preserved = try vault.saved(TuyaCloud.Session.self, key: "tuya-session")
+        let preservedEmail = await client.savedEmail()
+        precondition(preserved.email == saved.email && preserved.sid == "renewed" && preserved.meter_id == "main")
+        precondition(preservedEmail == saved.email, "A failed account switch must not relabel the previous SID")
+        _ = try await client.snapshot()
+        MockTuya.rejectLogin = false
+        try await client.signIn(email: "other@example.test", password: "password")
+        let changed = try vault.saved(TuyaCloud.Session.self, key: "tuya-session")
+        precondition(changed.email == "other@example.test" && changed.meter_id == nil)
+        let homesBefore = MockTuya.actions.filter { $0 == "tuya.m.location.list" }.count
+        _ = try await client.snapshot()
+        precondition(MockTuya.actions.filter { $0 == "tuya.m.location.list" }.count == homesBefore + 1,
+                     "A new account must not reuse cached homes or meter selection")
         print("Tuya Swift: real RSA login round-trip, session import/renewal, cached schemas, meter scaling, freshness and read-only allowlist passed.")
     }
 }

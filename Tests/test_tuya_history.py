@@ -1,5 +1,6 @@
 import contextlib
 import io
+import json
 import unittest
 from urllib.error import URLError
 from unittest.mock import patch
@@ -10,6 +11,21 @@ from Scripts.tuya_mobile import MobileError
 
 
 class HistoryTests(unittest.TestCase):
+    def test_logs_redact_aliases_and_json_encoded_credentials(self):
+        aliases = ('accessToken', 'refresh-token', 'session_token', 'secretKey',
+                   'SecretAccessKey', 'passwordSha256', 'x_unused')
+        payload = {key: f'synthetic-{key}' for key in aliases}
+        output = io.StringIO()
+        transport = VerboseTransport({})
+        with contextlib.redirect_stdout(output):
+            transport.log('RESPONSE', {'payload': json.dumps(payload), 'watts': 42})
+            transport.log('ERROR', 'echo synthetic-accessToken')
+        text = output.getvalue()
+        for key in aliases[:-1]:
+            self.assertNotIn(f'synthetic-{key}', text)
+        self.assertIn('synthetic-x_unused', text)
+        self.assertIn('42', text)
+
     def test_quarters_validate_grid_and_do_not_confuse_hours_or_other_dates(self):
         result = {'202611110000': '0.12', '202611110015': '0.23',
                   '202611110030': '#', '202611110045': None,

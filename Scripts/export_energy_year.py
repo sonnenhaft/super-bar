@@ -23,7 +23,6 @@ else:
 
 ROOT = Path(__file__).resolve().parent.parent
 SECRET_KEYS = history.SECRET_KEYS | {
-    'password_sha256', 'local_key', 'dev_key', 'devicekey', 'privatekey',
     'email', 'username', 'phone', 'mobile', 'ip', 'ipaddress',
 }
 
@@ -34,9 +33,12 @@ def utcnow():
 
 def clean(value):
     if isinstance(value, dict):
-        return {k: clean(v) for k, v in value.items() if k.lower() not in SECRET_KEYS}
+        return {k: clean(v) for k, v in value.items() if history.normalized_field(k) not in SECRET_KEYS}
     if isinstance(value, list):
         return [clean(v) for v in value]
+    decoded = history.embedded_json(value)
+    if decoded is not None:
+        return json.dumps(clean(decoded), ensure_ascii=False, separators=(',', ':'))
     return value
 
 

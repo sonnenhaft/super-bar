@@ -5,9 +5,42 @@ import unittest
 from unittest.mock import Mock, patch
 
 from Scripts import export_energy_year as export
+from Scripts import export_weather_year as weather
 
 
 class ExportTests(unittest.TestCase):
+    def test_weather_export_does_not_follow_predictable_temporary_symlinks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            victim = root / 'unrelated.txt'
+            victim.write_text('synthetic private data')
+            destination = root / 'weather.json'
+            destination.with_suffix('.tmp').symlink_to(victim)
+            weather.save(destination, {'temperature': 25})
+            self.assertEqual(victim.read_text(), 'synthetic private data')
+            self.assertEqual(json.loads(destination.read_text()), {'temperature': 25})
+            self.assertEqual(destination.stat().st_mode & 0o777, 0o600)
+
+    def test_failed_weather_serialization_preserves_previous_export(self):
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / 'weather.json'
+            weather.save(destination, {'temperature': 25})
+            with self.assertRaises(ValueError):
+                weather.save(destination, {'temperature': float('nan')})
+            self.assertEqual(json.loads(destination.read_text()), {'temperature': 25})
+            self.assertEqual(list(destination.parent.iterdir()), [destination])
+
+    def test_exports_remove_aliases_nested_json_and_personal_fields(self):
+        aliases = ('accessToken', 'refresh-token', 'session_token', 'secretKey',
+                   'SecretAccessKey', 'passwordSha256', 'local-key', 'Authorization',
+                   'userName', 'IP_Address')
+        payload = {key: 'synthetic-private-value' for key in aliases}
+        payload['watts'] = 42
+        cleaned = export.clean({'nested': [payload], 'serialized': json.dumps(payload)})
+        self.assertEqual(cleaned['nested'], [{'watts': 42}])
+        self.assertEqual(json.loads(cleaned['serialized']), {'watts': 42})
+        self.assertNotIn('synthetic-private-value', json.dumps(cleaned))
+
     def test_cache_resume_and_refresh(self):
         with tempfile.TemporaryDirectory() as directory:
             archive = export.Archive(Path(directory), 0)

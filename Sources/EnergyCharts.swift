@@ -89,15 +89,10 @@ struct EnergyCharts: View {
                     }
                 }
                 .chartLegend(.hidden)
+                .chartXSelection(value: $hoveredDay)
                 .chartYScale(domain: 0...max(1, energyMax * 1.08))
                 .chartXScale(domain:days.map(\.key))
-                .chartXAxis { AxisMarks(values: axisDays) { tick in
-                    AxisValueLabel(anchor: tick.index == 0 ? .topLeading : tick.index == axisDays.count - 1 ? .topTrailing : .top) {
-                        if let key = tick.as(String.self) {
-                            Text(key == days.last?.key ? "Today" : Self.dateLabel(key)).fixedSize()
-                        }
-                    }
-                } }
+                .chartXAxis(.hidden)
                 .chartYAxis {
                     AxisMarks(position: .leading, values: .automatic(desiredCount: 3)) { tick in
                         AxisGridLine()
@@ -107,6 +102,19 @@ struct EnergyCharts: View {
                 .chartOverlay { proxy in
                     GeometryReader { geometry in
                         ZStack(alignment:.topLeading) {
+                            // Categorical axes can emit every date on iOS. Position the
+                            // six labels using the plot coordinates on both platforms.
+                            if let anchor = proxy.plotFrame {
+                                let rect = geometry[anchor]
+                                ForEach(axisDays, id: \.self) { key in
+                                    if let x = proxy.position(forX: key) {
+                                        Text(key == days.last?.key ? "Today" : Self.dateLabel(key))
+                                            .font(.system(size: 9)).foregroundStyle(.secondary)
+                                            .fixedSize().position(x: min(max(rect.minX + x, rect.minX + 14), rect.maxX - 14), y: rect.maxY + 10)
+                                            .allowsHitTesting(false)
+                                    }
+                                }
+                            }
                             Color.clear.contentShape(Rectangle()).onContinuousHover { phase in
                                 switch phase {
                                 case .active(let point):
@@ -134,13 +142,13 @@ struct EnergyCharts: View {
                                         } else { Text("Net cost unavailable").foregroundStyle(.secondary) }
                                     }
                                 }.font(.system(size:11)).monospacedDigit()
-                                    .padding(6).background(Color(nsColor:BarTheme.navy),in:RoundedRectangle(cornerRadius:4))
+                                    .padding(6).background(PanelPalette.selected.color,in:RoundedRectangle(cornerRadius:4))
                                     .fixedSize().position(x:min(max(rect.minX+x, 108), geometry.size.width - 108),y:rect.minY + (showConsumption ? 48 : 24))
                                     .allowsHitTesting(false)
                             }
                         }.transaction { $0.animation = nil }
                     }
-                }.frame(height:112)
+                }.frame(height:112).padding(.bottom, 18)
             }
             if currentDay || showConsumption || !power.isEmpty || !intervals.isEmpty || !hours.isEmpty || !liveConsumption.isEmpty {
                 if (days + consumption).contains(where: { $0.wattHours != nil }) { Divider() }

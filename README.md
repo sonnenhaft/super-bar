@@ -31,11 +31,80 @@ cd super-bar
 
 **TCL:** Super Bar reuses the local TCL Home session. If sign-in is required, enter your TCL Home email and password in the TCL panel.
 
-**LG:** Open **LG settings…** and enter your ThinQ personal access token and account country/region. The installer can migrate a local `token.txt` beside `Sources` into the protected LG configuration directory if no token is already saved. Tokens are never included in the application bundle or repository.
+**LG:** Open **LG settings…** and enter your ThinQ personal access token and account country/region. The app migrates an existing `LGBar/token.txt` into Keychain. Local development builds may import the standalone CLI `token.txt` without deleting that external source. Tokens are never included in the application bundle or repository.
 
 **BLUETTI:** Press **Allow Bluetooth** on the BLUETTI row to start discovery and grant macOS Bluetooth access. Opening the app or panel never starts Bluetooth. Polling continues in the background after the first connection.
 
-**Deye:** The native Swift client imports an existing protected Deye session once and stores its own session in `~/Library/Application Support/Super Bar/Deye/`. Requests, token renewal and saved-login recovery use URLSession directly. If credentials are missing, use **Sign in to Deye Cloud** in its row. No Python, helper scripts, packages, or external runtime are required; credentials are never bundled.
+**Deye:** The native Swift client imports an existing protected Deye session once and stores its own session in macOS Keychain. Requests, token renewal and saved-login recovery use URLSession directly. If credentials are missing, use **Sign in to Deye Cloud** in its row. No Python, helper scripts, packages, or external runtime are required; credentials are never bundled.
+
+## Credential storage
+
+Deye, Smart Life, TCL and LG use the shared Keychain backend in standard Mac
+builds and all iPhone builds. The explicit local Mac development exception is
+described below.
+On Mac, credentials live in the login Keychain with synchronization disabled and
+normal macOS application access controls. iPhone uses device-only Keychain items
+available after first unlock. Access tokens, refresh tokens, session IDs, personal
+tokens and password hashes used for renewal are all treated as credentials; no
+new session files are written by either production app. The credential API always
+requires a vault; standard builds do not compile the development file backend.
+Tests inject an isolated in-memory
+vault. Plaintext passwords are not retained after sign-in; short-lived network
+and Bluetooth session keys stay in memory only.
+
+Existing app-owned credential files in Application Support migrate automatically.
+The app verifies Keychain write/readback before removing a legacy file. Keychain
+errors preserve the old file and never trigger a plaintext fallback. The native
+app preserves independently owned import sources. The Deye and Tuya diagnostic
+tools also use macOS Keychain: their own legacy session/login files migrate on
+first use and are removed only after verified storage. Discovered external
+imports remain untouched. The installer and simulator helper do not create
+plaintext token copies.
+
+Development builds use ad-hoc signing. A rebuilt Mac app can require macOS
+Keychain access approval again because its signing identity changed; the app does
+not weaken Keychain access controls to suppress that prompt. A production release
+needs stable Apple signing. See [Apple's Keychain access control documentation](https://developer.apple.com/documentation/security/access-control-lists).
+
+### Local Mac development without Keychain prompts
+
+Use one explicit opt-in for local builds and installs:
+
+```bash
+SUPER_BAR_DEV_CREDENTIALS=1 ./start.command
+```
+
+This compiles the macOS-only development vault. The installed build keeps using
+it after relaunch without needing environment variables in Finder. Account
+tokens, refresh tokens and password hashes are saved as private local files in
+this checkout's `.build/dev-credentials/` directory (directory
+0700, files 0600). The files are `deye-session.json`, `tuya-session.json`,
+`tcl-session.json` and `lg-token.txt`. They are plaintext development files,
+excluded from Git by `.build/` and kept outside the application bundle.
+The bundle contains only a text resource with the directory's absolute path,
+so restarting the installed desktop app reuses the same local files. If that
+resource is missing or invalid, dev mode refuses credential access. Moving the
+checkout requires rebuilding to update the path; no alternate directory or
+Keychain fallback is selected.
+
+Writes are bounded, atomic and verified; symlinks and non-private files are
+rejected. The same in-memory cache and failed-access suppression still apply.
+Existing legacy token/session files can be imported read-only; development mode
+never removes those import sources or exports anything from Keychain. If only a
+Keychain account remains, connect it once in the development app. A Keychain
+error never activates this mode automatically.
+
+`SuperBarDevCredentials = true` in the built app's `Info.plist` identifies this
+mode. `publish.command` rejects its marker or an enabled development flag.
+Release builds reject the flag before compilation. To return to a production
+Keychain build, run:
+
+```bash
+SUPER_BAR_DEV_CREDENTIALS=0 SUPER_BAR_RELEASE=1 ./build.command
+```
+
+No development file vault is compiled into iOS, regardless of this environment
+variable. Diagnostic Python tools retain their separate Keychain policy.
 
 ## Build and check
 
@@ -48,7 +117,7 @@ The optimized, ad-hoc signed app is written to `dist/Super Bar.app`. Build and i
 
 ## Native Tuya
 
-Super Bar reads Smart Life directly with Foundation, CryptoKit and Security. On first launch it imports the existing protected `.env.tuya-session.json`, including the chosen main meter, and saves its own session under `~/Library/Application Support/Super Bar/Tuya/`. No script, Python interpreter, package or SDK is bundled or invoked. Session renewal uses the saved login; sign-in is Smart Life / country 63 / EU. Only authentication, device reads, and daily/hourly statistics actions are allowed. Device commands are rejected before a request can leave the client. The original scripts below remain standalone diagnostic tools.
+Super Bar reads Smart Life directly with Foundation, CryptoKit and Security. On first launch it imports the existing protected `.env.tuya-session.json`, including the chosen main meter, and saves its own session in macOS Keychain. No script, Python interpreter, package or SDK is bundled or invoked. Session renewal uses the saved login; sign-in is Smart Life / country 63 / EU. Only authentication, device reads, and daily/hourly statistics actions are allowed. Device commands are rejected before a request can leave the client. The original scripts below remain standalone diagnostic tools.
 
 The Deye charts compare yellow generation with blue Tuya consumption: paired
 30-day energy bars and a connected step line for today's completed-hour average
@@ -80,13 +149,16 @@ BLUETTI still extend local power curves without additional history API requests.
 
 Run `Scripts/tuya.command` without flags. Smart Life is fixed; there is no app-choice
 prompt. First login asks for email, country (default 63), server region (default EU),
-and a hidden password. Every answer is saved immediately to the private, ignored
-`.env.tuya-login.json`, even if login fails or the next prompt is interrupted.
+and a hidden password. Every answer is saved immediately to macOS Keychain,
+even if login fails or the next prompt is interrupted. Existing private
+`.env.tuya-login.json` files migrate after a verified Keychain write.
 Press Enter to keep a saved value, including the password (stored as MD5, never
 plaintext), or type a replacement. A successful login saves the account endpoint
 returned by Tuya. Subsequent runs reuse the session and automatically log in
 again when it expires. There is no User Code or QR requirement for this route.
-Only Python 3.9+ and its standard library are required: no SDK, pip, or packages.
+Only macOS, Python 3.9+ and its standard library are required: no SDK, pip, or
+packages. The shared CLI storage calls Apple's Security/CoreFoundation APIs
+directly; credentials never travel through subprocess arguments.
 
 The script calls the mobile API directly using the protocol implemented by
 [TuyaAPI/cloud](https://github.com/TuyaAPI/cloud) and
@@ -114,10 +186,11 @@ ignored by Git), including device datapoints and product schemas for diagnosing
 unsupported meters. Account tokens, password hashes, and device local keys are
 not included in that snapshot.
 
-The ignored `.env.tuya-session.json` file is saved atomically with mode 600. For
-mobile login it contains the session ID, email, app/country settings, and the
-password MD5 needed for automatic re-login (treat this hash as a credential).
-The plaintext password is not saved. Existing sharing sessions remain readable,
+The CLI's Keychain item contains the session ID, access/refresh tokens where
+applicable, email, app/country settings, and the password MD5 needed for automatic
+re-login (treat this hash as a credential). Plaintext passwords and new credential
+files are not saved. The old `.env.tuya-session.json` path remains an account
+identifier and a migration source. Existing sharing sessions remain readable,
 and known local Tuya session files are discovered automatically. Network failures
 do not trigger re-login. The Python `Client` context manager exposes `devices()`.
 Exit codes: 0 = meter power available, 2 = no unambiguous meter/power, 1 = error.
@@ -166,8 +239,9 @@ explicitly records whether log pagination finished.
 Successful historical requests are cached under `generated/energy-2026-responses/`.
 Rerun the same command after interruption to resume; today's data and moving log
 pages are fetched again. `--through YYYY-MM-DD` limits the requested dates.
-`--deye-session PATH` and `--tuya-session PATH` accept alternative protected
-session files. No credentials are included in the output. Files are created
+`--deye-session PATH` and `--tuya-session PATH` select alternative Keychain account
+identities and, on first use, protected legacy files to migrate. No credentials
+are included in the output. Export files are created
 with mode 600 under the git-ignored `generated/` directory. Exit 2 means errors,
 interrupted provider work, or incomplete/omitted logs; an empty successful API
 response does not establish that consumption was zero or prove a retention limit.
@@ -177,3 +251,47 @@ response does not establish that consumption was zero or prove a retention limit
 Super Bar combines the original TCL Bar, BLUETTI Bar, and LG Bar projects. The LG module is based on LG Bar 1.4.1, commit `cc3d4ac701c48a8dfae677f3f2ba72961e268715`. BLUETTI third-party notices are included in `Resources/THIRD_PARTY_NOTICES.txt`.
 
 TCL Eco applies 26° and Silent together. Section headers toggle across their full width; compact TCL cards show set temperature beside the name and room temperature below.
+
+### Keychain migration verification (2026-11-13)
+
+Credential access is shared across the app process. Successful and missing reads
+are cached in memory; concurrent callers do not each reopen Keychain. A failed
+access attempt stops further uncached reads/writes until the user selects
+**Retry Keychain access** in Settings, explicitly reconnects an account, or
+restarts the app. Already loaded accounts remain usable. Saving a changed value
+still writes to Keychain and verifies it by reading the underlying Keychain item
+before updating the cache or removing an app-owned legacy file. No credential
+cache is written to disk. External Keychain edits are read on the next app launch.
+
+For Mac builds, set `SUPER_BAR_SIGNING_IDENTITY` to the same valid code-signing
+certificate identity on every build (the installer inherits it). Without this
+setting, local builds remain ad-hoc signed: their identity changes with the
+binary, so macOS may request access again after an update. Existing Keychain
+items have separate access controls; this change does not promise a single
+initial authorization dialog for all accounts or loosen those controls.
+
+The earlier migration build on Mac was installed and launched twice. Deye, Tuya, TCL and LG
+continued reading their accounts after the app-owned legacy credential files were
+removed; those files stayed absent after relaunch. Installation was verified
+against the built executable checksum. Synthetic tests exercise both JSON session
+and LG UTF-8 token migration, failed reads/writes/readback, corrupt data and
+preservation of independent import sources. After removing the file backend,
+the native test suite and iOS project checks passed again; the updated iPhone
+app launched with existing connections. The new optimized Mac bundle built and
+passed signature verification, but its runtime check is blocked by the local
+launch environment. No hardware control commands were sent.
+
+## Swagger / OpenAPI JSON
+
+The native clients' HTTP requests are documented in one self-contained
+[OpenAPI 3.0.3 JSON](docs/api/openapi.json), covering Deye, LG ThinQ, TCL and Tuya.
+Import this file into a compatible Swagger/OpenAPI viewer. Operations are grouped
+by provider and retain their own server origins and authentication schemes.
+
+These are code-derived subsets, not complete vendor contracts or distribution
+permissions. They contain no credentials or embedded signing keys. Tuya's seven
+RPC actions share its real `POST /api.json` endpoint; action-specific payloads and
+results are described in `x-rpc-actions` and component schemas. Dynamic TCL hosts
+must come from discovery. Tuya signatures, TCL SaaS signatures and AWS SigV4
+require an authorized signing-aware client; Swagger UI alone does not generate
+these signatures. BLUETTI uses BLE and is not represented as a fictional HTTP API.

@@ -1,10 +1,9 @@
 import SwiftUI
 
-let cobalt = Color(nsColor: BarTheme.cobalt)
-let ice = Color(nsColor: BarTheme.cobalt)
-let sunlight = Color(nsColor: BarTheme.energy)
-let leafGreen = Color(nsColor: BarTheme.green)
-enum PanelLayout { static let width: CGFloat = 460; static let logoColumn: CGFloat = 56 }
+enum PanelLayout {
+    static let width = SuperBarPanelStyle.maximumWidth
+    static let logoColumn = SuperBarPanelStyle.logoColumn
+}
 struct DeviceChoice<Content: View>: View {
     var selected = false
     var compact = false
@@ -44,10 +43,6 @@ extension View {
         self.foregroundStyle(.white).padding(.horizontal, 8).padding(.vertical, 3)
             .frame(maxWidth: .infinity, alignment: .leading).deviceSurface(selected: false)
     }
-    func deviceSurface(selected: Bool) -> some View {
-        self.background(LinearGradient(colors: [Color(nsColor: selected ? BarTheme.navy : BarTheme.panel), Color(nsColor: BarTheme.panel).opacity(0.35)], startPoint: .topLeading, endPoint: .bottomTrailing), in: RoundedRectangle(cornerRadius: 9))
-            .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(selected ? Color(nsColor: BarTheme.selection) : Color.white.opacity(0.32), lineWidth: selected ? 1 : 0.6))
-    }
 }
 
 struct DeviceSelector<Content: View>: View {
@@ -70,7 +65,7 @@ struct DeviceSelector<Content: View>: View {
         } label: {
             Group {
                 if brand == .tcl || brand == .lg || brand == .bluetti {
-                    Text(brand.rawValue).font(.system(size: brand == .bluetti ? 10 : 17, weight: .semibold))
+                    PanelBrandLabel(name: brand.rawValue)
                 } else {
                     BrandLogo(brand: brand).frame(width: 36, height: 24)
                 }
@@ -199,11 +194,7 @@ struct ClimateDeviceCard<Controls: View>: View {
             .buttonStyle(.plain).accessibilityAddTraits(selected ? .isSelected : [])
     }
     private var summaryName: some View {
-        HStack(spacing: 4) {
-            Text(DeviceDisplayName.clean(name)).font(.system(size: 13, weight: .semibold)).lineLimit(1)
-            Circle().fill(powerOn == true ? leafGreen : powerOn == false ? .red : .gray)
-                .frame(width: 5, height: 5).accessibilityLabel(powerOn.map { $0 ? "ON" : "OFF" } ?? "Unknown")
-        }
+        PanelDeviceName(name: name, on: powerOn, spacing: 4)
     }
     private var summaryReadings: some View {
         HStack(spacing: 3) {
@@ -217,42 +208,10 @@ struct ClimateDeviceCard<Controls: View>: View {
 
     private var ecoEnabled: Bool { powerOn == true && metrics.first(where: { $0.label == "Eco" })?.value == "ON" }
     private var targetValue: String { metrics.first(where: { $0.label == "AC" })?.value ?? "—" }
-    private var targetDegrees: Double? {
-        Double(targetValue.prefix { $0.isNumber || $0 == "." || $0 == "," || $0 == "-" }.replacingOccurrences(of: ",", with: "."))
-    }
-    private func adjacentTemperature(_ delta: Int) -> Int? {
-        guard let targetDegrees else { return nil }
-        return delta < 0 ? temperatureOptions.filter { Double($0) < targetDegrees }.max() : temperatureOptions.filter { Double($0) > targetDegrees }.min()
-    }
     private var temperatureControls: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text("Set temperature").font(.system(size: 11)).foregroundStyle(.secondary)
-            HStack(spacing: 10) {
-                if let changeTemperature {
-                    temperatureStep(-1, change: changeTemperature)
-                    HStack(spacing: 2) {
-                        TemperaturePicker(value: targetValue, degrees: temperatureOptions, off: turnOff, choose: changeTemperature, fontSize: 38)
-                        if ecoEnabled { Image(systemName: "leaf.fill").font(.system(size: 12)).foregroundStyle(leafGreen) }
-                    }
-                    temperatureStep(1, change: changeTemperature)
-                } else { TemperatureText(value: targetValue).font(.system(size: 28, weight: .semibold)) }
-                Spacer(minLength: 2)
-                if let directions { Rectangle().fill(.white.opacity(0.25)).frame(width: 0.5, height: 32); directions.frame(width: 116) }
-                if let turnOff {
-                    Button(action: turnOff) { Image(systemName: "power").font(.system(size: 22)).frame(width: 38, height: 36).contentShape(Rectangle()) }
-                        .buttonStyle(.plain).deviceSurface(selected: false).foregroundStyle(powerOn == false ? Color.red : .white)
-                        .help("Turn off").accessibilityLabel("Turn off " + DeviceDisplayName.clean(name)).disabled(powerOn != true)
-                }
-            }
-        }
-    }
-    private func temperatureStep(_ delta: Int, change: @escaping (Int) -> Void) -> some View {
-        let next = adjacentTemperature(delta)
-        return Button { if let next { change(next) } } label: {
-            Image(systemName: delta < 0 ? "minus" : "plus").font(.system(size: 18, weight: .medium))
-                .frame(width: 30, height: 34).contentShape(Rectangle())
-        }.buttonStyle(.plain).background(.white.opacity(0.04), in: Circle()).overlay(Circle().strokeBorder(.white.opacity(0.3), lineWidth: 0.5)).disabled(next == nil || powerOn == nil)
-            .accessibilityLabel(delta < 0 ? "Decrease set temperature" : "Increase set temperature")
+        PanelTemperatureControl(name: name, targetValue: targetValue, powerOn: powerOn,
+            temperatureOptions: temperatureOptions, changeTemperature: changeTemperature,
+            turnOff: turnOff, ecoEnabled: ecoEnabled, directions: directions)
     }
     private func metricButton(_ metric: DeviceMetric, compact: Bool) -> some View {
         Button(action: metric.toggle) {
@@ -328,6 +287,7 @@ struct CardMenus<Fan: View>: View {
     let toggleEco: () -> Void
     let fan: String
     var fanLevel: Int? = nil
+    var fanControl: AnyView? = nil
     @ViewBuilder let fanOptions: () -> Fan
     var body: some View {
         VStack(alignment: .trailing, spacing: 6) {
@@ -342,7 +302,9 @@ struct CardMenus<Fan: View>: View {
                     }.buttonStyle(.plain).accessibilityLabel("Eco").accessibilityValue(eco ? "ON" : "OFF")
                      .help("Eco " + (eco ? "ON" : "OFF"))
                 }
-                if !fan.isEmpty {
+                if let fanControl {
+                    fanControl
+                } else if !fan.isEmpty {
                     Menu(content: fanOptions) {
                         HStack(spacing: 6) {
                             Text(fan)
@@ -389,65 +351,39 @@ struct FanLevelDots: View {
     }
 }
 
-struct CoolingPresetRow: View {
-    let enabled: (CoolingPreset) -> Bool
-    let selected: (CoolingPreset) -> Bool
-    let apply: (CoolingPreset) -> Void
-    var showFanLevels = false
+// Shared presentation; each provider owns its supported preset semantics.
+struct CoolingPresetRow<Preset: CaseIterable & Hashable>: View {
+    let label: (Preset) -> String
+    let enabled: (Preset) -> Bool
+    let selected: (Preset) -> Bool
+    let apply: (Preset) -> Void
+    var fanLevel: ((Preset) -> Int)? = nil
+    var icon: ((Preset) -> FanSpeedSymbol)? = nil
+    var accessibilityName: ((Preset) -> String)? = nil
 
     var body: some View {
         HStack(spacing: 8) {
-            ForEach(CoolingPreset.allCases, id: \.self) { preset in
+            ForEach(Array(Preset.allCases), id: \.self) { preset in
                 Button { apply(preset) } label: {
                     HStack(spacing: 6) {
-                        TemperatureText(value: preset.label)
-                        if showFanLevels { FanLevelDots(level: FanIndicator.count(for: preset.speed)) }
+                        TemperatureText(value: label(preset))
+                        if let icon { FanSpeedIcon(symbol: icon(preset)).frame(width: 22, height: 22) }
+                        if let fanLevel { FanLevelDots(level: fanLevel(preset)) }
                     }.font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(.white).frame(maxWidth: .infinity, minHeight: 34)
                         .deviceSurface(selected: selected(preset))
                         .contentShape(Rectangle())
                 }.buttonStyle(.plain).disabled(!enabled(preset))
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityAddTraits(.isButton)
+                    .accessibilityLabel(accessibilityName?(preset) ?? label(preset))
+                    .help(accessibilityName?(preset) ?? label(preset))
                     .accessibilityAddTraits(selected(preset) ? .isSelected : [])
             }
         }
     }
 }
 
-struct TemperaturePicker: View {
-    let value:String
-    let degrees:[Int]
-    let off:(() -> Void)?
-    let choose:(Int)->Void
-    var fontSize: CGFloat = 15
-    @State private var presented = false
-    var body: some View {
-        Button { presented.toggle() } label: { TemperatureText(value:value).font(.system(size:fontSize,weight:.semibold)).fixedSize() }
-            .buttonStyle(.plain).help("Set temperature")
-            .popover(isPresented:$presented,arrowEdge:.bottom) {
-                let split = (degrees.count+1)/2
-                VStack(spacing:6) {
-                    ForEach(0..<split,id:\.self) { row in
-                        HStack(spacing:8) {
-                            ForEach(0..<2) { column in
-                                let index = row + column * split
-                                if degrees.indices.contains(index) {
-                                    let degree = degrees[index]
-                                    let selected = value.replacingOccurrences(of:"°",with:"").trimmingCharacters(in:.whitespaces) == String(degree)
-                                    Button { choose(degree); presented = false } label: {
-                                        Label { TemperatureText(value:String(degree)+" °C") } icon: { Image(systemName:"thermometer.medium") }
-                                            .font(.system(size:14)).frame(width:92,height:32)
-                                            .background(selected ? cobalt.opacity(0.6) : Color(nsColor:BarTheme.panel),in:RoundedRectangle(cornerRadius:4))
-                                            .overlay(RoundedRectangle(cornerRadius:4).strokeBorder(selected ? Color.white : .clear,lineWidth:1))
-                                    }.buttonStyle(.plain).accessibilityAddTraits(selected ? .isSelected : [])
-                                } else { Color.clear.frame(width:92,height:32) }
-                            }
-                        }
-                    }
-                    if let off { Button { off(); presented = false } label: { Label("OFF",systemImage:"power").foregroundStyle(.red).frame(maxWidth:.infinity,minHeight:28) }.buttonStyle(.plain) }
-                }.padding(10).background(Color(nsColor:BarTheme.background))
-            }
-    }
-}
 struct CardRefresh: NSViewRepresentable {
     let reading:Bool
     let status:String

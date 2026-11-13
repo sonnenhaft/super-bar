@@ -33,12 +33,14 @@ private final class MockCloud: URLProtocol {
 }
 @main enum SessionReuse {
     static func main() throws {
-        setenv("TCL_SSO_ID","fixture",1); setenv("TCL_SSO_TOKEN","fixture",1)
+        let vault = MemoryCredentialVault()
+        let account: [String: Any] = ["id": "fixture", "token": "fixture", "saved": Date().timeIntervalSince1970]
+        try vault.write(JSONSerialization.data(withJSONObject: account), key: "tcl-session")
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [MockCloud.self]
         let session = URLSession(configuration: config)
         defer { session.invalidateAndCancel() }
-        let cloud = TCLCloud(directory: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString), session: session)
+        let cloud = TCLCloud(directory: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString), session: session, vault: vault)
         let first = try cloud.connect()
         precondition(MockCloud.paths.count == 4)
         let second = try cloud.connect()

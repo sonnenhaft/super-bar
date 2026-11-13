@@ -149,21 +149,18 @@ enum BrandArtwork {
     }
 }
 
+// AppKit adapter for the same sRGB palette used by SwiftUI on every platform.
 enum BarTheme {
-    // sRGB colors sampled from the supplied design reference.
-    static let backgroundTop = rgb(0x1F3238)
-    static let background = rgb(0x1B2D34)
-    static let backgroundBottom = rgb(0x192C33)
-    static let panel = rgb(0x293A40)
-    static let navy = rgb(0x284E63)
-    static let ocean = rgb(0x294952)
-    static let energy = rgb(0xFFD100)
-    static let cobalt = rgb(0x00E6F2)
-    static let selection = rgb(0x67DFFF)
-    static let green = rgb(0x8CBD9C)
-    private static func rgb(_ hex: UInt32) -> NSColor {
-        NSColor(srgbRed: CGFloat((hex >> 16) & 255) / 255, green: CGFloat((hex >> 8) & 255) / 255, blue: CGFloat(hex & 255) / 255, alpha: 1)
-    }
+    static let backgroundTop = PanelPalette.backgroundTop.nsColor
+    static let background = PanelPalette.background.nsColor
+    static let backgroundBottom = PanelPalette.backgroundBottom.nsColor
+    static let panel = PanelPalette.panel.nsColor
+    static let navy = PanelPalette.selected.nsColor
+    static let ocean = PanelPalette.ocean.nsColor
+    static let energy = PanelPalette.yellow.nsColor
+    static let cobalt = PanelPalette.cyan.nsColor
+    static let selection = PanelPalette.outline.nsColor
+    static let green = PanelPalette.green.nsColor
 }
 
 final class PanelBackdrop: NSView {
@@ -225,46 +222,5 @@ struct TemperatureText: View {
     }
     var body: some View {
         styled.shadow(color: menuBar ? .black.opacity(0.65) : .clear, radius:menuBar ? 0.5 : 0)
-    }
-}
-
-
-enum DeviceDisplayName {
-    static func clean(_ name: String) -> String {
-        let cleaned = name.replacingOccurrences(of: #"(?i)\b(?:air\s*con(?:ditioner)?|aricon)\b|\ba\s*/\s*c\b"#, with:"", options:.regularExpression)
-            .replacingOccurrences(of: #"\s{2,}"#,with:" ",options:.regularExpression)
-            .trimmingCharacters(in: CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn:"-–·")))
-        return cleaned.isEmpty ? "Unit" : cleaned
-    }
-}
-
-// Relative ages update only while the panel is open; no device polling is involved.
-final class ReadingAge: ObservableObject {
-    static let shared = ReadingAge()
-    private static var labels: [Date:String] = [:]
-    private static var timer: Timer?
-    static func start(tick:@escaping () -> Void) {
-        stop()
-        panelOpened()
-        let timer = Timer(timeInterval:3,repeats:true) { _ in
-            panelOpened()
-            tick()
-        }
-        self.timer = timer
-        RunLoop.main.add(timer,forMode:.common)
-    }
-    static func stop() { timer?.invalidate(); timer = nil }
-    static func panelOpened() {
-        labels.removeAll(keepingCapacity:true)
-        shared.objectWillChange.send()
-    }
-    static func label(_ date:Date, now:Date = Date()) -> String {
-        if let label = labels[date] { return label }
-        let seconds = max(0,Int(now.timeIntervalSince(date)))
-        let age = seconds < 3 ? "Just now" : seconds < 60 ? "\(seconds)s ago" : seconds < 3600 ? "\(seconds/60)m ago" : seconds < 86400 ? "\(seconds/3600)h ago" : "\(seconds/86400)d ago"
-        let text = "Last read " + age
-        if labels.count > 128 { labels.removeAll(keepingCapacity:true) }
-        labels[date] = text
-        return text
     }
 }

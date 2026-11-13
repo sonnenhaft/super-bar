@@ -27,7 +27,7 @@ func ago(_ date: Date?) -> String {
     didSet {
       capabilityCache.removeAll(keepingCapacity: true)
       windKey =
-        find("windStrengthDetail", in: profile) != nil ? "windStrengthDetail" : "windStrength"
+        LGDeviceValues.windKey(in: profile)
     }
   }
   private var profiles: [String: [String: Any]] = [:]
@@ -189,31 +189,15 @@ func ago(_ date: Date?) -> String {
   func capability(_ group: String, _ key: String) -> [String: Any] {
     let cacheKey = group + "." + key
     if let cached = capabilityCache[cacheKey] { return cached }
-    let g = find(group, in: profile) ?? [:]
-    let source: Any = group == "temperature" ? celsius(g) : g
-    var c = object(find(key, in: source) ?? [:])
-    if let v = object(c["value"] ?? [:])["w"] {
-      c["writeValues"] = v
-      if let r = v as? [String: Any] { for (k, v) in r { c[k] = v } }
-    }
+    let c = LGCapability(profile: profile, group: group, key: key).details
     capabilityCache[cacheKey] = c
     return c
   }
   func canWrite(_ g: String, _ k: String) -> Bool {
-    let c = capability(g, k)
-    if c["mode"] == nil && c["writable"] == nil { return c["writeValues"] != nil }
-    return c["writable"] as? Bool == true || (c["mode"] as? [String])?.contains("w") == true
-      || (c["mode"] as? String)?.contains("w") == true
+    LGCapability(details: capability(g, k)).writable
   }
   func allowed(_ g: String, _ k: String, _ v: Any) -> Bool {
-    guard canWrite(g, k) else { return false }
-    let c = capability(g, k)
-    if let a = c["writeValues"] as? [Any] { return a.contains { equal($0, v) } }
-    if let n = lgNumber(v) {
-      if let lo = lgNumber(c["min"]), n < lo { return false }
-      if let hi = lgNumber(c["max"]), n > hi { return false }
-    }
-    return true
+    LGCapability(details: capability(g, k)).allows(v)
   }
   private var priorEcoMode: String?
   var ecoChoice: EcoChoice {
@@ -249,11 +233,8 @@ func ago(_ date: Date?) -> String {
     send(changes)
   }
   func bounds() -> (Double, Double) {
-    let c = capability("temperature", "targetTemperature")
-    return (
-      lgNumber(temperatures["minTargetTemperature"]) ?? lgNumber(c["min"]) ?? 16,
-      lgNumber(temperatures["maxTargetTemperature"]) ?? lgNumber(c["max"]) ?? 30
-    )
+    LGDeviceValues.temperatureBounds(temperatures: temperatures,
+                                    capability: capability("temperature", "targetTemperature"))
   }
   func updateStatus() {
     let size = CGFloat(BarSelection.shared.size)
@@ -507,14 +488,14 @@ func ago(_ date: Date?) -> String {
         let id = selected
         let firstProfile = profile.isEmpty
         if firstProfile {
-          let p = try await api.request("devices/\(id)/profile")
+          let p = try await api.request("devices/\(try API.deviceComponent(id))/profile")
           try Task.checkCancellation()
           guard gen == generation else { return }
           profile = object(p)
           profiles[id] = profile
 
         }
-        let s = try await api.request("devices/\(id)/state")
+        let s = try await api.request("devices/\(try API.deviceComponent(id))/state")
         try Task.checkCancellation()
         guard gen == generation else { return }
         let snapshot = object(s)
@@ -626,7 +607,7 @@ func ago(_ date: Date?) -> String {
             lastWrite = label
             awaitingReply = true
             recordCommand("Sending " + label)
-            _ = try await api.request("devices/\(id)/control", payload: [group: values])
+            _ = try await api.request("devices/\(try API.deviceComponent(id))/control", payload: [group: values])
             try Task.checkCancellation()
             awaitingReply = false
             recordCommand(label + " · accepted, checking")
@@ -669,7 +650,7 @@ func ago(_ date: Date?) -> String {
     }
   }
   func readForCommand(_ id: String) async throws {
-    let fresh = try await api.request("devices/\(id)/state")
+    let fresh = try await api.request("devices/\(try API.deviceComponent(id))/state")
     try Task.checkCancellation()
     state = object(fresh)
     saveSnapshot(state, for: id)
@@ -719,7 +700,7 @@ func ago(_ date: Date?) -> String {
       defer { if gen == generation { energyTask = nil } }
       do {
         if cachedEnergyProfile == nil {
-          let profile = try await client.request("devices/energy/\(id)/profile")
+          let profile = try await client.request("devices/energy/\(try API.deviceComponent(id))/profile")
           try Task.checkCancellation()
           cachedEnergyProfile =
             (find("property", in: profile) as? [String])?.contains("energyUsage") ?? false
@@ -732,7 +713,7 @@ func ago(_ date: Date?) -> String {
           let start = WeekHistory.dayKey(calendar.date(byAdding: .day, value: from, to: today)!, calendar)
           let end = WeekHistory.dayKey(calendar.date(byAdding: .day, value: through, to: today)!, calendar)
           return try await client.request(
-            "devices/energy/\(id)/usage?property=energyUsage&period=DAILY&startDate=\(start)&endDate=\(end)"
+            "devices/energy/\(try API.deviceComponent(id))/usage?property=energyUsage&period=DAILY&startDate=\(start)&endDate=\(end)"
           )
         }
         if boundaryDue {

@@ -118,16 +118,18 @@ enum DeviceService {
             }
         }
 
-        func apply(id: String, fields: [(String, Int)]) throws -> JSONObject {
+        func apply(id: String, fields: [(String, Int)], checkCancellation: () throws -> Void = {}) throws -> JSONObject {
+            try checkCancellation()
             if ProcessInfo.processInfo.systemUptime >= validUntil {
                 devices = try cloud.connect()
+                try checkCancellation()
                 validUntil = ProcessInfo.processInfo.systemUptime + 60
             }
             do {
                 guard let device = devices.first(where: { (try? DeviceService.id($0)) == id }) else {
                     throw ACError("Unit missing from TCL device list.")
                 }
-                return try DeviceService.apply(fields, to: device, cloud: cloud)
+                return try DeviceService.apply(fields, to: device, cloud: cloud, checkCancellation: checkCancellation)
             } catch {
                 validUntil = 0
                 cloud.resetSession()
@@ -136,10 +138,13 @@ enum DeviceService {
         }
     }
 
-    private static func apply(_ fields: [(String, Int)], to device: JSONObject, cloud: TCLCloud) throws -> JSONObject {
+    private static func apply(_ fields: [(String, Int)], to device: JSONObject, cloud: TCLCloud,
+                              checkCancellation: () throws -> Void = {}) throws -> JSONObject {
+        try checkCancellation()
         guard flag(device["isOnline"] ?? device["is_online"]) == true else { throw ACError("Unit is offline.") }
         let deviceID = try id(device)
         let initial = try cloud.shadow(id: deviceID)
+        try checkCancellation()
         guard let report = reported(initial) else { throw ACError("TCL did not return unit status.") }
         let settings = try desired(fields, report: report)
 
@@ -155,11 +160,14 @@ enum DeviceService {
             }
         }
         if confirmed(initial) { return normalize(device, shadow: initial) }
+        try checkCancellation()
         try cloud.publish(id: deviceID, desired: settings)
         let deadline = ProcessInfo.processInfo.systemUptime + 32
         repeat {
             Thread.sleep(forTimeInterval: 2)
+            try checkCancellation()
             let shadow = try cloud.shadow(id: deviceID)
+            try checkCancellation()
             if confirmed(shadow) { return normalize(device, shadow: shadow) }
         } while ProcessInfo.processInfo.systemUptime < deadline
         throw ACError(name(device) + ": TCL did not confirm the setting change.")

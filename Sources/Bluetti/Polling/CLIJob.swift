@@ -8,8 +8,33 @@ struct CLIResult {
     var error: String?
 }
 
+// Bound each complete sample before JSON decoding, including samples whose
+// newline arrives in the same chunk as an oversized payload.
+struct BluettiSampleStream {
+    static let maximumLineBytes = 262_144
+    private var pending = Data()
+    enum Failure: Error { case invalidSample }
+
+    mutating func append(_ data: Data, receive: (Data, [String: Any]) -> Void) throws {
+        var start = data.startIndex
+        while start < data.endIndex {
+            let end = data[start...].firstIndex(of: 0x0a) ?? data.endIndex
+            let count = data.distance(from: start, to: end)
+            guard count <= Self.maximumLineBytes - pending.count else { throw Failure.invalidSample }
+            pending.append(data[start..<end])
+            if end == data.endIndex { return }
+            guard let object = (try? JSONSerialization.jsonObject(with: pending)) as? [String: Any] else {
+                throw Failure.invalidSample
+            }
+            receive(pending, object)
+            pending.removeAll(keepingCapacity: true)
+            start = data.index(after: end)
+        }
+    }
+}
+
 // Read both pipes concurrently so a child cannot deadlock on a full stderr pipe.
-private final class PipeCapture {
+final class BluettiPipeCapture {
     private let lock = NSLock()
     private var bytes = Data()
 
@@ -33,26 +58,28 @@ private final class PipeCapture {
     // error for the exit handler; successful samples go straight to the UI.
     func drainSamples(_ handle: FileHandle, receive: ([String: Any]) -> Void, invalid: () -> Void) {
         defer { try? handle.close() }
-        var pending = Data()
+        var stream = BluettiSampleStream()
+        var buffer = [UInt8](repeating: 0, count: 8192)
         while true {
-            let chunk = handle.availableData
-            if chunk.isEmpty { break }
-            pending.append(chunk)
-            while let end = pending.firstIndex(of: 0x0a) {
-                let line = Data(pending[..<end])
-                pending.removeSubrange(...end)
-                guard let object = (try? JSONSerialization.jsonObject(with: line)) as? [String: Any] else {
-                    invalid()
-                    return
-                }
-                if object["phase"] is String || object["ok"] as? Bool == true { receive(object) }
-                else {
-                    lock.lock()
-                    bytes = line
-                    lock.unlock()
-                }
+            // FileHandle.readData(ofLength:) waits for a full buffer or EOF on
+            // pipes. A single POSIX read keeps small live samples immediate.
+            let count = buffer.withUnsafeMutableBytes { Darwin.read(handle.fileDescriptor, $0.baseAddress, $0.count) }
+            if count < 0 {
+                if errno == EINTR { continue }
+                invalid(); return
             }
-            if pending.count > 262_144 { invalid(); return }
+            if count == 0 { break }
+            let chunk = Data(buffer.prefix(count))
+            do {
+                try stream.append(chunk) { line, object in
+                    if object["phase"] is String || object["ok"] as? Bool == true { receive(object) }
+                    else {
+                        lock.lock()
+                        bytes = line
+                        lock.unlock()
+                    }
+                }
+            } catch { invalid(); return }
         }
     }
 
@@ -80,8 +107,8 @@ final class CLIJob {
             task.standardInput = FileHandle.nullDevice
             task.standardOutput = outPipe
             task.standardError = errPipe
-            let outCapture = PipeCapture()
-            let errCapture = PipeCapture()
+            let outCapture = BluettiPipeCapture()
+            let errCapture = BluettiPipeCapture()
 
             self.lock.lock()
             if let reason = self.stopReason {
