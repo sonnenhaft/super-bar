@@ -19,8 +19,10 @@ xcrun swiftc -module-cache-path .build/modules Sources/Readings.swift Sources/Sh
 .build/header-check
 xcrun swiftc -module-cache-path .build/modules Sources/Cloud/CloudSupport.swift Sources/Cloud/CredentialStore.swift Sources/TCL/TCLCloud.swift Tests/CredentialFixtures.swift Tests/SessionReuse.swift -o .build/session-check
 .build/session-check
-xcrun swiftc -swift-version 5 -module-cache-path .build/modules Sources/Readings.swift Sources/Cloud/CloudSupport.swift Sources/Cloud/CredentialStore.swift Sources/LG/ThinQ.swift Sources/LG/LGDeviceState.swift Tests/LGSharedState.swift -o .build/lg-shared-check
+xcrun swiftc -swift-version 5 -module-cache-path .build/modules Sources/Readings.swift Sources/Cloud/CloudSupport.swift Sources/Cloud/CredentialStore.swift Sources/LG/ThinQ.swift Sources/LG/LGMobileAuth.swift Sources/LG/LGMobileClient.swift Sources/LG/LGDeviceState.swift Tests/LGSharedState.swift -o .build/lg-shared-check
 .build/lg-shared-check
+xcrun swiftc -swift-version 5 -module-cache-path .build/modules Sources/Readings.swift Sources/Cloud/CloudSupport.swift Sources/Cloud/CredentialStore.swift Sources/LG/ThinQ.swift Sources/LG/LGMobileAuth.swift Sources/LG/LGMobileClient.swift Sources/LG/LGDeviceState.swift Tests/CredentialFixtures.swift Tests/LGMobile.swift -o .build/lg-mobile-check
+.build/lg-mobile-check
 xcrun swiftc -swift-version 5 -module-cache-path .build/modules Sources/Readings.swift Sources/Shared/ReadingAge.swift Sources/Cloud/CloudSupport.swift Sources/Cloud/CredentialStore.swift Sources/Deye/DeyeReading.swift Sources/Deye/DeyeCloud.swift Sources/Deye/DeyeStore.swift Sources/Tuya/TuyaCrypto.swift Sources/Tuya/TuyaCloud.swift Sources/Tuya/TuyaReading.swift Sources/Tuya/TuyaStore.swift Tests/CredentialFixtures.swift Tests/EnergyStoreLifecycle.swift -o .build/energy-store-check
 .build/energy-store-check
 sources=()

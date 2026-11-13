@@ -54,6 +54,18 @@ struct PhoneLGDevice: Identifiable {
         api = makeAPI()
     }
 
+    func configureMobile(email: String, password: String, country: String) async throws {
+        guard !busy else { throw ACError("Wait for LG to finish.") }
+        busy = true
+        do { try await LGMobileClient.connect(email: email, password: password, country: country) }
+        catch { busy = false; throw error }
+        preferences.set(country.uppercased(), forKey: "country")
+        accountGeneration &+= 1
+        api = makeAPI(); devices = []; history = [:]; historyAttempt = [:]; historyProblem = [:]
+        busy = false
+        await refresh()
+    }
+
     func configure(token: String, country: String, region: String) async throws {
         let token = token.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !busy else { throw ACError("Wait for LG to finish.") }

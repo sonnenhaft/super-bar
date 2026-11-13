@@ -111,7 +111,7 @@ enum CredentialAccess {
         defer { status.authorizing = false }
         let succeeded = await Task.detached {
             do {
-                try shared.authorizeAccess(keys: ["deye-session", "tuya-session", "tcl-session", "lg-token"])
+                try shared.authorizeAccess(keys: ["deye-session", "tuya-session", "tcl-session", "lg-session", "lg-token"])
                 return true
             } catch { return false }
         }.value

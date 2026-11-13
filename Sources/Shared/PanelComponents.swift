@@ -9,15 +9,13 @@ struct AccountConnections: View {
     let refresh: () -> Void
     @State private var provider = "Deye"
     @StateObject private var tclDraft = LoginDraft(provider: "tcl")
-    @State private var token = ""
+    @StateObject private var lgDraft = LoginDraft(provider: "lg")
     @State private var country = UserDefaults.standard.string(forKey: "country") ?? "PH"
-    @State private var region = UserDefaults.standard.string(forKey: "region") ?? "kic"
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Connections").font(.headline)
             KeychainAccessButton(alwaysVisible: true) {
-                deye.loginDraft.restore(); tuya.loginDraft.restore(); tclDraft.restore()
-                if token.isEmpty { token = TokenFile.read() }
+                deye.loginDraft.restore(); tuya.loginDraft.restore(); tclDraft.restore(); lgDraft.restore()
                 refresh()
             }
             // Background polling never locks navigation between accounts.
@@ -40,49 +38,48 @@ struct AccountConnections: View {
                     }
                 }
             } else {
-                ThinQLoginForm(token: $token, country: $country, region: $region, submit: connectLG)
-                    .onAppear { if token.isEmpty { token = TokenFile.read() } }
+                ThinQLoginForm(draft: lgDraft, country: $country, submit: connectLG)
             }
         }
     }
 }
 
 private struct ThinQLoginForm: View {
-    @Binding var token: String
+    @ObservedObject var draft: LoginDraft
     @Binding var country: String
-    @Binding var region: String
     let submit: (String, String, String) async throws -> Void
     @State private var busy = false
     @State private var result: String?
     @State private var succeeded = false
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            PasswordEntry(title: "ThinQ personal access token", text: $token)
+            TextField("Email", text: $draft.email).textContentType(.username)
+                #if os(iOS)
+                .keyboardType(.emailAddress).textInputAutocapitalization(.never)
+                #endif
+            PasswordEntry(text: $draft.password)
             TextField("Country code", text: $country)
                 #if os(iOS)
                 .textInputAutocapitalization(.characters)
                 #endif
-            Picker("Region", selection: $region) {
-                Text("Asia / Pacific").tag("kic"); Text("Europe").tag("eic"); Text("Americas").tag("aic")
-            }
-            Link("Get a ThinQ token", destination: URL(string: "https://connect-pat.lgthinq.com/tokens")!)
             Button(busy ? "Signing in…" : "Login to LG ThinQ") {
-                let candidate = token, selectedCountry = country, selectedRegion = region
+                let email = draft.email, password = draft.password, selectedCountry = country
                 busy = true; result = nil
                 Task {
                     do {
-                        try await submit(candidate, selectedCountry, selectedRegion)
+                        try await submit(email, password, selectedCountry)
                         succeeded = true; result = "Connected to LG ThinQ. New credentials saved."
                     } catch { succeeded = false; result = error.localizedDescription }
                     busy = false
                 }
-            }.buttonStyle(.borderedProminent).disabled(busy || token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }.buttonStyle(.borderedProminent).disabled(busy || draft.email.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || draft.password.isEmpty)
             if let result {
                 Label(result, systemImage: succeeded ? "checkmark.circle" : "exclamationmark.circle")
                     .font(.callout).foregroundStyle(succeeded ? Color.green : Color.orange)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }.textFieldStyle(.roundedBorder).autocorrectionDisabled()
+            .onAppear { draft.restore() }
     }
 }
 

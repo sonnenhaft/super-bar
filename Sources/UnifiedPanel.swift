@@ -65,7 +65,7 @@ struct UnifiedPanel: View {
                 }.padding(.vertical, 4)
                 if showSettings {
                     AccountConnections(deye: deye, tuya: tuya, tcl: tcl,
-                                       connectLG: lg.configureAccount, refresh: refreshAccounts)
+                                       connectLG: lg.configureMobileAccount, refresh: refreshAccounts)
                     Divider()
                     EnergyTariffSettings()
                     Divider()

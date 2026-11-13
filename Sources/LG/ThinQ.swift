@@ -57,14 +57,16 @@ final class API {
   private let network: URLSession
   private let ownsSession: Bool
   private let readToken: () throws -> String
+  private let mobile: LGMobileClient?
   deinit { if ownsSession { network.invalidateAndCancel() } }
   private(set) var needsSignIn = false
   let country: String, region: String, client: String
-  init(network: URLSession? = nil, readToken: @escaping () throws -> String = TokenFile.readSecure,
+  init(network: URLSession? = nil, readToken: (() throws -> String)? = nil,
        preferences: UserDefaults = defaults, country: String? = nil, region: String? = nil) {
     self.ownsSession = network == nil
     self.network = network ?? CloudRedirects.session()
-    self.readToken = readToken
+    self.readToken = readToken ?? TokenFile.readSecure
+    mobile = readToken == nil ? LGMobileClient(network: self.network) : nil
     self.country = country ?? preferences.string(forKey: "country") ?? "PH"
     self.region = region ?? preferences.string(forKey: "region") ?? "kic"
     client = preferences.string(forKey: "client") ?? UUID().uuidString
@@ -106,6 +108,10 @@ final class API {
   func request(_ path: String, payload: [String: Any]? = nil) async throws -> Any {
     // Validate persisted preferences at the boundary before reading/attaching the PAT.
     let url = try Self.checkedURL(region: region, path: path)
+    if let result = try await mobile?.requestIfConfigured(path, payload: payload) {
+      needsSignIn = false
+      return result
+    }
     // Do not mistake a locked Keychain for a missing account. Retry after unlock.
     let token = try readToken()
     needsSignIn = token.isEmpty

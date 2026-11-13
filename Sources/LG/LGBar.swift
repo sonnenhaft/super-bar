@@ -884,6 +884,18 @@ func ago(_ date: Date?) -> String {
     }
   }
   private var connectingAccount = false
+  func configureMobileAccount(email: String, password: String, country: String) async throws {
+    guard !connectingAccount else { throw LGError(message: "LG sign-in is already in progress.") }
+    connectingAccount = true
+    defer { connectingAccount = false }
+    try await LGMobileClient.connect(email: email, password: password, country: country)
+    defaults.set(country.uppercased(), forKey: "country")
+    reset()
+    api = API(); devices = []
+    profiles.removeAll(); snapshots.removeAll(); samples.removeAll(); checked.removeAll()
+    buildMenu(); refresh()
+  }
+
   func configureAccount(token: String, country: String, region: String) async throws {
     guard !connectingAccount else { throw LGError(message: "LG sign-in is already in progress.") }
     connectingAccount = true

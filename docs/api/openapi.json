@@ -21,6 +21,10 @@
     {
       "name": "Tuya",
       "description": "Derived from the Super Bar Swift client, not an official Tuya OpenAPI contract or permission to distribute a mobile client. One real HTTP endpoint carries seven RPC actions; no synthetic REST paths are invented. Form signatures and RSA login encryption must be produced by an authorized client; importing this file into Swagger UI does not implement authentication. Credentials, signing keys and embedded app registration identifiers are intentionally omitted."
+    },
+    {
+      "name": "LG Mobile",
+      "description": "Native Swift ThinQ mobile protocol: email/password sign-in, server-side SPX signing, OAuth renewal and model-driven ThinQ2 AC controls. Synthetic protocol tests pass; live account login is not yet verified. ThinQ1 and mobile energy history are not implemented. Secrets and application signing constants are omitted."
     }
   ],
   "paths": {
@@ -31,7 +35,9 @@
           "Deye"
         ],
         "summary": "Resolve the public regional origin before sign-in",
-        "security": [],
+        "security": [
+
+        ],
         "parameters": [
           {
             "name": "User-Agent",
@@ -101,7 +107,9 @@
             "description": "Cognito regional origin, selected from TCL endpoint discovery."
           }
         ],
-        "security": [],
+        "security": [
+
+        ],
         "responses": {
           "200": {
             "description": "Response fields consumed by the Swift client; additional fields may be returned.",
@@ -163,7 +171,9 @@
           "Deye"
         ],
         "summary": "Obtain or renew a session using query parameters",
-        "security": [],
+        "security": [
+
+        ],
         "description": "Actual current-client wire format: POST with query parameters and no request body. For grant_type=password, username is the account email and password is the lowercase SHA-256 hex digest of the entered password, not plaintext. For grant_type=refresh_token, supply refresh_token instead. OpenAPI parameter required flags cannot express these cross-parameter alternatives; see x-grant-parameters. The embedded client_id value is protocol metadata, not a private developer secret.",
         "parameters": [
           {
@@ -418,7 +428,8 @@
                 "type": "object",
                 "maxProperties": 0
               },
-              "example": {}
+              "example": {
+              }
             }
           }
         },
@@ -459,7 +470,9 @@
         ],
         "security": [
           {
-            "DEYE_DeyeBearer": []
+            "DEYE_DeyeBearer": [
+
+            ]
           }
         ]
       }
@@ -531,7 +544,9 @@
         ],
         "security": [
           {
-            "DEYE_DeyeBearer": []
+            "DEYE_DeyeBearer": [
+
+            ]
           }
         ]
       }
@@ -634,7 +649,9 @@
         ],
         "security": [
           {
-            "DEYE_DeyeBearer": []
+            "DEYE_DeyeBearer": [
+
+            ]
           }
         ]
       }
@@ -693,8 +710,12 @@
         ],
         "security": [
           {
-            "LG_ThinQPAT": [],
-            "LG_ThinQAPIKey": []
+            "LG_ThinQPAT": [
+
+            ],
+            "LG_ThinQAPIKey": [
+
+            ]
           }
         ],
         "parameters": [
@@ -767,8 +788,12 @@
         ],
         "security": [
           {
-            "LG_ThinQPAT": [],
-            "LG_ThinQAPIKey": []
+            "LG_ThinQPAT": [
+
+            ],
+            "LG_ThinQAPIKey": [
+
+            ]
           }
         ],
         "parameters": [
@@ -844,8 +869,12 @@
         ],
         "security": [
           {
-            "LG_ThinQPAT": [],
-            "LG_ThinQAPIKey": []
+            "LG_ThinQPAT": [
+
+            ],
+            "LG_ThinQAPIKey": [
+
+            ]
           }
         ],
         "parameters": [
@@ -932,8 +961,12 @@
         ],
         "security": [
           {
-            "LG_ThinQPAT": [],
-            "LG_ThinQAPIKey": []
+            "LG_ThinQPAT": [
+
+            ],
+            "LG_ThinQAPIKey": [
+
+            ]
           }
         ],
         "parameters": [
@@ -1012,8 +1045,12 @@
         ],
         "security": [
           {
-            "LG_ThinQPAT": [],
-            "LG_ThinQAPIKey": []
+            "LG_ThinQPAT": [
+
+            ],
+            "LG_ThinQAPIKey": [
+
+            ]
           }
         ],
         "parameters": [
@@ -1090,8 +1127,12 @@
         ],
         "security": [
           {
-            "LG_ThinQPAT": [],
-            "LG_ThinQAPIKey": []
+            "LG_ThinQPAT": [
+
+            ],
+            "LG_ThinQAPIKey": [
+
+            ]
           }
         ],
         "parameters": [
@@ -1171,7 +1212,9 @@
             "description": "Account login origin used by the current Swift adapter."
           }
         ],
-        "security": [],
+        "security": [
+
+        ],
         "responses": {
           "200": {
             "description": "Response fields consumed by the Swift client; additional fields may be returned.",
@@ -1268,7 +1311,9 @@
             "description": "Regional endpoint discovery origin used by the current Swift adapter."
           }
         ],
-        "security": [],
+        "security": [
+
+        ],
         "responses": {
           "200": {
             "description": "Response fields consumed by the Swift client; additional fields may be returned.",
@@ -1324,7 +1369,9 @@
             }
           }
         ],
-        "security": [],
+        "security": [
+
+        ],
         "responses": {
           "200": {
             "description": "Response fields consumed by the Swift client; additional fields may be returned.",
@@ -1382,8 +1429,12 @@
         ],
         "security": [
           {
-            "TCL_TCLSaaSToken": [],
-            "TCL_TCLRequestSignature": []
+            "TCL_TCLSaaSToken": [
+
+            ],
+            "TCL_TCLRequestSignature": [
+
+            ]
           }
         ],
         "responses": {
@@ -1476,8 +1527,12 @@
         ],
         "security": [
           {
-            "TCL_AWSSigV4": [],
-            "TCL_AWSSessionToken": []
+            "TCL_AWSSigV4": [
+
+            ],
+            "TCL_AWSSessionToken": [
+
+            ]
           }
         ],
         "responses": {
@@ -1535,8 +1590,12 @@
         ],
         "security": [
           {
-            "TCL_AWSSigV4": [],
-            "TCL_AWSSessionToken": []
+            "TCL_AWSSigV4": [
+
+            ],
+            "TCL_AWSSessionToken": [
+
+            ]
           }
         ],
         "responses": {
@@ -1601,9 +1660,15 @@
         ],
         "security": [
           {
-            "TCL_TCLSaaSToken": [],
-            "TCL_TCLRequestSignature": [],
-            "TCL_TCLSSOToken": []
+            "TCL_TCLSaaSToken": [
+
+            ],
+            "TCL_TCLRequestSignature": [
+
+            ],
+            "TCL_TCLSSOToken": [
+
+            ]
           }
         ],
         "responses": {
@@ -1752,8 +1817,12 @@
         ],
         "security": [
           {
-            "TCL_TCLSaaSToken": [],
-            "TCL_TCLRequestSignature": []
+            "TCL_TCLSaaSToken": [
+
+            ],
+            "TCL_TCLRequestSignature": [
+
+            ]
           }
         ],
         "responses": {
@@ -1834,7 +1903,9 @@
         ],
         "summary": "Call one supported Smart Life RPC action",
         "description": "sid and sign are body form fields, not Bearer tokens or query API keys. Login actions omit sid. postData is JSON text, not a nested form object. Action-specific payload/result contracts are recorded in x-rpc-actions and reusable component schemas.",
-        "security": [],
+        "security": [
+
+        ],
         "requestBody": {
           "required": true,
           "content": {
@@ -1995,6 +2066,609 @@
           }
         ]
       }
+    },
+    "/v1/service/application/gateway-uri": {
+      "get": {
+        "operationId": "lgMobileGateway",
+        "tags": [
+          "LG Mobile"
+        ],
+        "summary": "Discover regional mobile service origins",
+        "servers": [
+          {
+            "url": "https://route.lgthinq.com:46030"
+          }
+        ],
+        "security": [
+
+        ],
+        "responses": {
+          "200": {
+            "description": "LG response. resultCode must be 0000 or status must be 1 when present.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/spx/preLogin": {
+      "post": {
+        "operationId": "lgMobilePreLogin",
+        "tags": [
+          "LG Mobile"
+        ],
+        "summary": "Obtain password transform and pre-login signature",
+        "servers": [
+          {
+            "url": "https://{country}.m.lgaccount.com",
+            "variables": {
+              "country": {
+                "default": "ph",
+                "description": "Resolved from LG regional gateway; do not send credentials to unvalidated hosts."
+              }
+            }
+          }
+        ],
+        "security": [
+
+        ],
+        "responses": {
+          "200": {
+            "description": "LG response. resultCode must be 0000 or status must be 1 when present.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "user_auth2",
+                  "log_param"
+                ],
+                "properties": {
+                  "user_auth2": {
+                    "type": "string",
+                    "writeOnly": true
+                  },
+                  "log_param": {
+                    "type": "string",
+                    "writeOnly": true
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/emp/v2.0/account/session/{email}": {
+      "post": {
+        "operationId": "lgMobileAccountLogin",
+        "tags": [
+          "LG Mobile"
+        ],
+        "summary": "Exchange transformed password for an account session",
+        "servers": [
+          {
+            "url": "https://{country}.emp.lgsmartplatform.com",
+            "variables": {
+              "country": {
+                "default": "ph",
+                "description": "Resolved from LG regional gateway; do not send credentials to unvalidated hosts."
+              }
+            }
+          }
+        ],
+        "security": [
+
+        ],
+        "responses": {
+          "200": {
+            "description": "LG response. resultCode must be 0000 or status must be 1 when present.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "user_auth2",
+                  "password_hash_prameter_flag",
+                  "svc_list"
+                ],
+                "properties": {
+                  "user_auth2": {
+                    "type": "string",
+                    "writeOnly": true
+                  },
+                  "password_hash_prameter_flag": {
+                    "type": "string",
+                    "writeOnly": true
+                  },
+                  "svc_list": {
+                    "type": "string",
+                    "writeOnly": true
+                  }
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "email",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/spx/signature": {
+      "get": {
+        "operationId": "lgMobileSignature",
+        "tags": [
+          "LG Mobile"
+        ],
+        "summary": "Ask SPX to sign the exact EMP authorization path, query, newline and RFC 2822 date",
+        "servers": [
+          {
+            "url": "https://{country}.m.lgaccount.com",
+            "variables": {
+              "country": {
+                "default": "ph",
+                "description": "Resolved from LG regional gateway; do not send credentials to unvalidated hosts."
+              }
+            }
+          }
+        ],
+        "security": [
+
+        ],
+        "responses": {
+          "200": {
+            "description": "LG response. resultCode must be 0000 or status must be 1 when present.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string",
+                  "description": "Base64-encoded 20-byte signature."
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "kind",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "timestamp",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "key_name",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "sever_type",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/emp/oauth2/authorize/empsession": {
+      "get": {
+        "operationId": "lgMobileAuthorize",
+        "tags": [
+          "LG Mobile"
+        ],
+        "summary": "Exchange account session and SPX signature for an OAuth authorization redirect",
+        "servers": [
+          {
+            "url": "https://emp-oauth.lgecloud.com"
+          }
+        ],
+        "security": [
+
+        ],
+        "responses": {
+          "200": {
+            "description": "LG response. resultCode must be 0000 or status must be 1 when present.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "account_type",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "client_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "country_code",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "redirect_uri",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "response_type",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "username",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/oauth/1.0/oauth2/token": {
+      "post": {
+        "operationId": "lgMobileToken",
+        "tags": [
+          "LG Mobile"
+        ],
+        "summary": "Exchange authorization code or refresh token using signed OAuth headers",
+        "servers": [
+          {
+            "url": "https://{backend}.lgeapi.com",
+            "variables": {
+              "backend": {
+                "default": "kr",
+                "description": "Resolved from LG regional gateway; do not send credentials to unvalidated hosts."
+              }
+            }
+          }
+        ],
+        "security": [
+
+        ],
+        "responses": {
+          "200": {
+            "description": "LG response. resultCode must be 0000 or status must be 1 when present.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "grant_type"
+                ],
+                "properties": {
+                  "grant_type": {
+                    "type": "string",
+                    "writeOnly": true
+                  },
+                  "code": {
+                    "type": "string",
+                    "writeOnly": true
+                  },
+                  "redirect_uri": {
+                    "type": "string",
+                    "writeOnly": true
+                  },
+                  "refresh_token": {
+                    "type": "string",
+                    "writeOnly": true
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/users/profile": {
+      "get": {
+        "operationId": "lgMobileUserProfile",
+        "tags": [
+          "LG Mobile"
+        ],
+        "summary": "Resolve user number from the access token",
+        "servers": [
+          {
+            "url": "https://{backend}.lgeapi.com",
+            "variables": {
+              "backend": {
+                "default": "kr",
+                "description": "Resolved from LG regional gateway; do not send credentials to unvalidated hosts."
+              }
+            }
+          }
+        ],
+        "security": [
+
+        ],
+        "responses": {
+          "200": {
+            "description": "LG response. resultCode must be 0000 or status must be 1 when present.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/service/application/dashboard": {
+      "get": {
+        "operationId": "lgMobileDevices",
+        "tags": [
+          "LG Mobile"
+        ],
+        "summary": "Read the mobile device list; select ThinQ2 air conditioners",
+        "servers": [
+          {
+            "url": "https://{mobileHost}/v1",
+            "variables": {
+              "mobileHost": {
+                "default": "kic.lgthinq.com:46030",
+                "description": "Resolved from LG regional gateway; do not send credentials to unvalidated hosts."
+              }
+            }
+          }
+        ],
+        "security": [
+          {
+            "LG_MobileSession": [
+
+            ]
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "LG response. resultCode must be 0000 or status must be 1 when present.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/service/devices/{deviceId}": {
+      "get": {
+        "operationId": "lgMobileSnapshot",
+        "tags": [
+          "LG Mobile"
+        ],
+        "summary": "Read an air-conditioner snapshot",
+        "servers": [
+          {
+            "url": "https://{mobileHost}/v1",
+            "variables": {
+              "mobileHost": {
+                "default": "kic.lgthinq.com:46030",
+                "description": "Resolved from LG regional gateway; do not send credentials to unvalidated hosts."
+              }
+            }
+          }
+        ],
+        "security": [
+          {
+            "LG_MobileSession": [
+
+            ]
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "LG response. resultCode must be 0000 or status must be 1 when present.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "deviceId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/service/devices/{deviceId}/control-sync": {
+      "post": {
+        "operationId": "lgMobileControl",
+        "tags": [
+          "LG Mobile"
+        ],
+        "summary": "Send a model-validated basicCtrl command",
+        "servers": [
+          {
+            "url": "https://{mobileHost}/v1",
+            "variables": {
+              "mobileHost": {
+                "default": "kic.lgthinq.com:46030",
+                "description": "Resolved from LG regional gateway; do not send credentials to unvalidated hosts."
+              }
+            }
+          }
+        ],
+        "security": [
+          {
+            "LG_MobileSession": [
+
+            ]
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "LG response. resultCode must be 0000 or status must be 1 when present.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "ctrlKey",
+                  "command",
+                  "dataKey",
+                  "dataValue"
+                ],
+                "properties": {
+                  "ctrlKey": {
+                    "type": "string"
+                  },
+                  "command": {
+                    "type": "string"
+                  },
+                  "dataKey": {
+                    "type": "string"
+                  },
+                  "dataValue": {
+                    "oneOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "number"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "deviceId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
     }
   },
   "components": {
@@ -2045,6 +2719,12 @@
         "in": "header",
         "name": "x-amz-security-token",
         "description": "Temporary Cognito SessionToken included in SigV4 signed headers."
+      },
+      "LG_MobileSession": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "x-emp-token",
+        "description": "Access token obtained by the mobile account flow; also requires x-user-no and mobile application headers."
       }
     },
     "schemas": {
@@ -2589,13 +3269,20 @@
             "type": "number",
             "description": "Interpreted by this implementation as watt-hours; only finite nonnegative values are used."
           },
-          "date": {},
-          "usageDate": {},
-          "usedDate": {},
-          "useDate": {},
-          "periodDate": {},
-          "startDate": {},
-          "dateTime": {}
+          "date": {
+          },
+          "usageDate": {
+          },
+          "usedDate": {
+          },
+          "useDate": {
+          },
+          "periodDate": {
+          },
+          "startDate": {
+          },
+          "dateTime": {
+          }
         },
         "additionalProperties": true,
         "description": "The client accepts multiple date field names and takes the first eight numeric characters as the calendar day. Provider date representation and additional runtime counters remain open."
@@ -4345,7 +5032,8 @@
               },
               {
                 "type": "array",
-                "items": {}
+                "items": {
+                }
               },
               {
                 "type": "string"

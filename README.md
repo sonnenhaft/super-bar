@@ -37,7 +37,7 @@ cd super-bar
 
 **TCL:** Super Bar reuses the local TCL Home session. If sign-in is required, enter your TCL Home email and password in the TCL panel.
 
-**LG:** Open **LG settings…** and enter your ThinQ personal access token and account country/region. The app migrates an existing `LGBar/token.txt` into Keychain. Local development builds may import the standalone CLI `token.txt` without deleting that external source. Tokens are never included in the application bundle or repository.
+**LG:** Settings → Connections → LG ThinQ accepts email, password and account country. The shared native Swift client uses the mobile ThinQ account flow (SPX server-side signing), stores credentials only after login and device discovery succeed, and renews access tokens from the refresh token. Existing PAT accounts continue to work until a mobile login succeeds. Mobile mode currently supports ThinQ2 AC power, temperature, mode and fan controls advertised by the model; ThinQ1 and energy history remain unsupported. Protocol fixtures pass, but live LG login still needs verification.
 
 **BLUETTI:** Press **Allow Bluetooth** on the BLUETTI row to start discovery and grant macOS Bluetooth access. Opening the app or panel never starts Bluetooth. Polling continues in the background after the first connection.
 
@@ -64,7 +64,7 @@ keys stay in memory only.
 
 Settings → Connections offers **Deye**, **Smart Life**, **TCL Home** and **LG ThinQ** on
 Mac and iPhone even when an account is already connected. Background polling never
-disables the account picker. LG validates the candidate token before saving it;
+disables the account picker. LG validates the candidate account and device list before saving credentials;
 TCL saves the password with its successful session. The shared form reports
 success or a specific authentication/network/storage error without clearing input.
 Changing credentials requires successful authentication before saving a new session;
@@ -100,7 +100,7 @@ it after relaunch without needing environment variables in Finder. Account
 tokens, refresh tokens, passwords and password hashes are saved as private local files in
 this checkout's `.build/dev-credentials/` directory (directory
 0700, files 0600). The files are `deye-session.json`, `tuya-session.json`,
-`tcl-session.json` and `lg-token.txt`. They are plaintext development files,
+`tcl-session.json`, `lg-session.json` and legacy `lg-token.txt`. They are plaintext development files,
 excluded from Git by `.build/` and kept outside the application bundle.
 The bundle contains only a text resource with the directory's absolute path,
 so restarting the installed desktop app reuses the same local files. If that
