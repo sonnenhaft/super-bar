@@ -17,7 +17,14 @@ struct PhoneBattery: Codable, Identifiable {
     @Published var discovered: [BluettiNativeDevice] = []
     @Published var readings: [PhoneBattery] = []
     @Published var busy = false
-    @Published var message = "Allow Bluetooth to find nearby AC50P stations."
+    @Published var message = "Looking for nearby BLUETTI stations…"
+    @Published private(set) var scanning = false
+    @Published private(set) var activeID: String?
+    @Published private(set) var problems: [String: String] = [:]
+    @Published private(set) var selectedID: String?
+    private let directory = BlueBarStationDirectory(defaults: .standard)
+    private var foreground = false
+    private var generation = UUID()
     var changed: (() -> Void)?
     private var central: CBCentralManager?
     private var peripherals: [String: CBPeripheral] = [:]
@@ -28,7 +35,6 @@ struct PhoneBattery: Codable, Identifiable {
     private var failure: Error?
     private var codec = BluettiFrameDecoder(crypto: BluettiIoTCrypto())
     private var task: Task<Void, Never>?
-    private var selected: BluettiNativeDevice?
     private static let maximumDiscovered = 64
     private static let maximumSavedReadings = 16
 
@@ -37,6 +43,106 @@ struct PhoneBattery: Codable, Identifiable {
         if let data = UserDefaults.standard.data(forKey: "phone.batteries"), data.count <= 256 * 1024,
            let saved = try? JSONDecoder().decode([PhoneBattery].self, from: data) {
             readings = Array(saved.sorted { $0.date > $1.date }.prefix(Self.maximumSavedReadings))
+        }
+        selectedID = UserDefaults.standard.string(forKey: "phone.selectedBattery")
+        for reading in readings { directory.observe(deviceID: reading.id, bluetoothName: reading.name) }
+        #if DEBUG
+        // Optional one-time transfer of display names for a development install.
+        // No accounts, tokens or host-specific Bluetooth UUIDs are imported.
+        if let value = ProcessInfo.processInfo.environment["SUPER_BAR_STATION_ALIASES"],
+           let data = value.data(using: .utf8), data.count <= 16_384,
+           let aliases = try? JSONDecoder().decode([String: String].self, from: data),
+           UserDefaults.standard.dictionary(forKey: "phone.importedStationAliases") as? [String: String] != aliases {
+            directory.importAliases(aliases)
+            UserDefaults.standard.set(aliases, forKey: "phone.importedStationAliases")
+        }
+        #endif
+    }
+    var stations: [BlueBarKnownStation] { directory.stations }
+    func displayName(id: String, name: String) -> String {
+        if let alias = directory.station(deviceID: id, bluetoothName: name)?.alias { return alias }
+        // The advertisement contains the serial number, not the user's name.
+        return name.uppercased().hasPrefix("AC50P") ? "AC50P · " + String(name.suffix(4)) : name
+    }
+    func rename(id: String?, name: String, alias: String) {
+        objectWillChange.send()
+        directory.setAlias(alias, deviceID: id, bluetoothName: name)
+        changed?()
+    }
+    func start() {
+        guard !foreground || task == nil else { return }
+        foreground = true
+        restart()
+    }
+    func scan() {
+        foreground = true
+        restart()
+    }
+    func select(_ id: String) {
+        selectedID = id
+        UserDefaults.standard.set(id, forKey: "phone.selectedBattery")
+        scan()
+    }
+    private func restart() {
+        let previous = task
+        previous?.cancel()
+        central?.stopScan()
+        disconnect()
+        let current = UUID()
+        generation = current
+        if central == nil { central = CBCentralManager(delegate: self, queue: .main) }
+        task = Task {
+            // Cancellation must finish before another operation uses the decoder.
+            await previous?.value
+            guard !Task.isCancelled, foreground, generation == current else { return }
+            defer {
+                if generation == current {
+                    central?.stopScan(); disconnect()
+                    busy = false; scanning = false; task = nil
+                }
+            }
+            await monitor()
+        }
+    }
+    private func monitor() async {
+        while foreground && !Task.isCancelled {
+            do {
+                failure = nil; busy = true
+                message = "Looking for nearby BLUETTI stations…"
+                try await wait(seconds: 60) { self.central?.state == .poweredOn }
+                scanning = true
+                central?.scanForPeripherals(withServices: nil)
+                try await Task.sleep(nanoseconds: 4_000_000_000)
+                central?.stopScan(); scanning = false
+                let devices = discovered.sorted {
+                    if ($0.id == selectedID) != ($1.id == selectedID) { return $0.id == selectedID }
+                    return $0.name < $1.name
+                }
+                if devices.isEmpty { message = "No AC50P nearby. Searching again automatically…" }
+                for device in devices {
+                    try Task.checkCancellation()
+                    guard let target = peripherals[device.id] else { continue }
+                    do {
+                        try await readStation(device, target: target)
+                        problems[device.id] = nil
+                    } catch is CancellationError { throw CancellationError() }
+                    catch {
+                        problems[device.id] = (error as? BluettiNativeFailure)?.message ?? error.localizedDescription
+                    }
+                    disconnect()
+                }
+                if !devices.isEmpty {
+                    message = problems.isEmpty ? "Readings update automatically while the app is open."
+                        : "Some stations are unavailable. Retrying automatically…"
+                }
+                busy = false
+                try await Task.sleep(nanoseconds: 15_000_000_000)
+            } catch is CancellationError { break }
+            catch {
+                central?.stopScan(); scanning = false; busy = false
+                message = error.localizedDescription
+                do { try await Task.sleep(nanoseconds: 5_000_000_000) } catch { break }
+            }
         }
     }
     private func wait(seconds: TimeInterval = 6, until condition: () -> Bool) async throws {
@@ -48,92 +154,72 @@ struct PhoneBattery: Codable, Identifiable {
             try await Task.sleep(nanoseconds: 30_000_000)
         }
     }
-    func scan() {
-        guard !busy else { return }
-        busy = true; failure = nil
-        message = "Looking for AC50P stations…"
-        if central == nil { central = CBCentralManager(delegate: self, queue: .main) }
-        task = Task {
-            defer { central?.stopScan(); busy = false; task = nil }
-            do {
-                try await wait { self.central?.state == .poweredOn }
-                discovered = []; peripherals = [:]
-                central?.scanForPeripherals(withServices: nil)
-                try await Task.sleep(nanoseconds: 5_000_000_000)
-                message = discovered.isEmpty ? "No AC50P found nearby." : "Choose a station to connect."
-            } catch { message = error.localizedDescription }
-        }
-    }
-    func connect(_ device: BluettiNativeDevice) {
-        guard !busy, let target = peripherals[device.id] else { return }
-        busy = true; failure = nil; ready = false; writer = nil; selected = device
+    private func readStation(_ device: BluettiNativeDevice, target: CBPeripheral) async throws {
+        failure = nil
+        guard central?.state == .poweredOn else { throw ACError("Bluetooth is unavailable. Retrying when it is ready.") }
+        // A previous cancellation of this peripheral may still be in flight.
+        try await wait(seconds: 4) { target.state == .disconnected }
+        try Task.checkCancellation()
+        ready = false; writer = nil
         codec = BluettiFrameDecoder(crypto: BluettiIoTCrypto())
-        peripheral = target; target.delegate = self
-        // The selected peripheral is sufficient during a connection. Do not
-        // retain every advertisement discovered during the preceding scan.
-        peripherals = [device.id: target]
-        message = "Connecting to " + device.name + "…"
-        task = Task {
-            defer { disconnect(); busy = false; task = nil }
-            do {
-                central?.connect(target)
-                try await wait(seconds: 12) { self.ready && self.writer != nil }
-                let challenge = try await key(1)
-                try await write(codec.crypto.replyChallenge(challenge), preferResponse: true)
-                let peer = try await key(4)
-                let response = try codec.crypto.replyPeer(peer)
-                try await write(response)
-                let accepted: [UInt8]
-                do { accepted = try await key(6, timeout: 2.5) }
-                catch {
-                    try Task.checkCancellation()
-                    if let failure { throw failure }
-                    try await write(response)
-                    accepted = try await key(6, timeout: 2)
-                }
-                try codec.crypto.acceptPeer(accepted)
-                try await write(codec.crypto.encrypt([1]))
-                while !Task.isCancelled {
-                    var registers: [UInt16: UInt16] = [:]
-                    for (address, quantity) in BluettiIoTProtocol.pollWindows {
-                        try await write(codec.crypto.encrypt(BluettiIoTProtocol.readHolding(address: address, quantity: quantity)))
-                        let deadline = ProcessInfo.processInfo.systemUptime + 4
-                        var values: [UInt16]?
-                        while values == nil {
-                            if case .application(let bytes) = try await next(deadline: deadline), !bytes.isEmpty, bytes != [1] {
-                                values = try BluettiIoTProtocol.parseHolding(bytes, quantity: quantity)
-                            }
-                        }
-                        for (offset, value) in values!.enumerated() { registers[address + UInt16(offset)] = value }
-                    }
-                    let snapshot = try BluettiIoTProtocol.snapshot(registers: registers, device: device)
-                    let battery = PhoneBattery(id: device.id, name: device.name,
-                        percent: snapshot["battery_percent"] as? Int ?? 0,
-                        acInput: CloudValue.number(snapshot["ac_input_w"]), dcInput: CloudValue.number(snapshot["dc_input_w"]),
-                        acOutput: CloudValue.number(snapshot["ac_output_w"]), dcOutput: CloudValue.number(snapshot["dc_output_w"]),
-                        remainingSeconds: (snapshot["runtime"] as? [String: Any])?["remaining_seconds"] as? Int,
-                        chargeSeconds: snapshot["time_to_full_seconds"] as? Int, date: Date())
-                    readings.removeAll { $0.id == battery.id }; readings.append(battery)
-                    if readings.count > Self.maximumSavedReadings {
-                        readings = Array(readings.sorted { $0.date > $1.date }.prefix(Self.maximumSavedReadings))
-                    }
-                    if let data = try? JSONEncoder().encode(readings) { UserDefaults.standard.set(data, forKey: "phone.batteries") }
-                    message = "Connected · " + device.name; changed?()
-                    try await Task.sleep(nanoseconds: 15_000_000_000)
-                }
-            } catch is CancellationError { message = "Disconnected. Last readings are saved." }
-            catch { message = (error as? BluettiNativeFailure)?.message ?? error.localizedDescription }
+        peripheral = target; target.delegate = self; activeID = device.id
+        message = "Reading " + displayName(id: device.id, name: device.name) + "…"
+        central?.connect(target)
+        try await wait(seconds: 12) { self.ready && self.writer != nil }
+        let challenge = try await key(1)
+        try await write(codec.crypto.replyChallenge(challenge), preferResponse: true)
+        let peer = try await key(4)
+        let response = try codec.crypto.replyPeer(peer)
+        try await write(response)
+        let accepted: [UInt8]
+        do { accepted = try await key(6, timeout: 2.5) }
+        catch {
+            try Task.checkCancellation()
+            if let failure { throw failure }
+            try await write(response)
+            accepted = try await key(6, timeout: 2)
         }
+        try codec.crypto.acceptPeer(accepted)
+        try await write(codec.crypto.encrypt([1]))
+        var registers: [UInt16: UInt16] = [:]
+        for (address, quantity) in BluettiIoTProtocol.pollWindows {
+            try await write(codec.crypto.encrypt(BluettiIoTProtocol.readHolding(address: address, quantity: quantity)))
+            let deadline = ProcessInfo.processInfo.systemUptime + 4
+            var values: [UInt16]?
+            while values == nil {
+                if case .application(let bytes) = try await next(deadline: deadline), !bytes.isEmpty, bytes != [1] {
+                    values = try BluettiIoTProtocol.parseHolding(bytes, quantity: quantity)
+                }
+            }
+            for (offset, value) in values!.enumerated() { registers[address + UInt16(offset)] = value }
+        }
+        let snapshot = try BluettiIoTProtocol.snapshot(registers: registers, device: device)
+        let battery = PhoneBattery(id: device.id, name: device.name,
+            percent: snapshot["battery_percent"] as? Int ?? 0,
+            acInput: CloudValue.number(snapshot["ac_input_w"]), dcInput: CloudValue.number(snapshot["dc_input_w"]),
+            acOutput: CloudValue.number(snapshot["ac_output_w"]), dcOutput: CloudValue.number(snapshot["dc_output_w"]),
+            remainingSeconds: (snapshot["runtime"] as? [String: Any])?["remaining_seconds"] as? Int,
+            chargeSeconds: snapshot["time_to_full_seconds"] as? Int, date: Date())
+        readings.removeAll { $0.id == battery.id }; readings.append(battery)
+        if readings.count > Self.maximumSavedReadings {
+            readings = Array(readings.sorted { $0.date > $1.date }.prefix(Self.maximumSavedReadings))
+        }
+        if let data = try? JSONEncoder().encode(readings) { UserDefaults.standard.set(data, forKey: "phone.batteries") }
+        changed?()
     }
     func stop() {
+        foreground = false
         task?.cancel()
         central?.stopScan()
         disconnect()
-        peripherals.removeAll(); discovered.removeAll(); selected = nil
+        scanning = false; busy = false
+        message = "Last readings saved. Bluetooth resumes when you return."
     }
     private func disconnect() {
-        if let peripheral { central?.cancelPeripheralConnection(peripheral); peripheral.delegate = nil }
-        peripheral = nil; writer = nil; ready = false
+        let previous = peripheral
+        peripheral = nil; writer = nil; ready = false; activeID = nil
+        previous?.delegate = nil
+        if let previous { central?.cancelPeripheralConnection(previous) }
         codec = BluettiFrameDecoder(crypto: BluettiIoTCrypto())
     }
     private func next(deadline: TimeInterval) async throws -> BluettiFrame {
@@ -182,18 +268,25 @@ struct PhoneBattery: Codable, Identifiable {
         let id = peripheral.identifier.uuidString.lowercased()
         guard peripherals[id] != nil || peripherals.count < Self.maximumDiscovered else { return }
         peripherals[id] = peripheral
-        if !discovered.contains(where: { $0.id == id }) { discovered.append(BluettiNativeDevice(id: id, name: name)) }
+        if !discovered.contains(where: { $0.id == id }) {
+            discovered.append(BluettiNativeDevice(id: id, name: name))
+            directory.observe(deviceID: id, bluetoothName: name)
+            objectWillChange.send()
+        }
     }
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
+        guard peripheral === self.peripheral else { return }
         peripheral.discoverServices([CBUUID(string: "FF00")])
     }
     func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
+        guard peripheral === self.peripheral else { return }
         failure = error ?? ACError("Could not connect to the station.")
     }
     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
         if peripheral === self.peripheral { failure = error ?? ACError("Station disconnected.") }
     }
     func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
+        guard peripheral === self.peripheral else { return }
         if let error { failure = error; return }
         guard let service = peripheral.services?.first(where: { $0.uuid == CBUUID(string: "FF00") }) else {
             failure = ACError("AC50P service not found."); return
@@ -201,6 +294,7 @@ struct PhoneBattery: Codable, Identifiable {
         peripheral.discoverCharacteristics([CBUUID(string: "FF01"), CBUUID(string: "FF02")], for: service)
     }
     func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
+        guard peripheral === self.peripheral else { return }
         if let error { failure = error; return }
         writer = service.characteristics?.first { $0.uuid == CBUUID(string: "FF02") }
         guard let notify = service.characteristics?.first(where: { $0.uuid == CBUUID(string: "FF01") }) else {
@@ -209,17 +303,20 @@ struct PhoneBattery: Codable, Identifiable {
         peripheral.setNotifyValue(true, for: notify)
     }
     func peripheral(_ peripheral: CBPeripheral, didUpdateNotificationStateFor characteristic: CBCharacteristic, error: Error?) {
+        guard peripheral === self.peripheral else { return }
         if let error { failure = error } else { ready = characteristic.isNotifying }
     }
     func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
+        guard peripheral === self.peripheral else { return }
         if let error { failure = error; return }
         if let data = characteristic.value { do { try codec.append(Array(data)) } catch { failure = error } }
     }
     func peripheral(_ peripheral: CBPeripheral, didWriteValueFor characteristic: CBCharacteristic, error: Error?) {
+        guard peripheral === self.peripheral else { return }
         failure = error; writeComplete = true
     }
     var widgetMetrics: [WidgetMetric] {
-        readings.map { WidgetMetric(id: $0.id, name: $0.name, value: "\($0.percent)%",
+        readings.map { WidgetMetric(id: $0.id, name: displayName(id: $0.id, name: $0.name), value: "\($0.percent)%",
             detail: $0.output.map(DisplayUnits.power) ?? "Output unknown", symbol: "battery.100percent", updatedAt: $0.date) }
     }
 }

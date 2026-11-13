@@ -176,7 +176,7 @@ import AppKit
         archived.lastAttempt = chartDay
         archived.completedThrough = WeekHistory.dayKey(chartCalendar.date(byAdding: .day, value: -1, to: chartDay)!, chartCalendar)
         precondition(archived.due(at: chartDay.addingTimeInterval(7200), calendar: chartCalendar), "Expand older caches to 30 days")
-        archived.days = WeekChart.series(response: [:], end: chartDay, calendar: chartCalendar)
+        archived.days = LGHistoryDecoder.series(response: [:], end: chartDay, calendar: chartCalendar)
         precondition(archived.days.count == 30)
         precondition(!archived.due(at: chartDay.addingTimeInterval(7200), calendar: chartCalendar), "Completed LG archive must not refresh hourly")
         precondition(archived.due(at: chartDay.addingTimeInterval(86400), calendar: chartCalendar), "New completed day needs a fetch")
@@ -368,7 +368,7 @@ import AppKit
         }
         precondition(blueUpdates == 0, "opening BLUETTI menu changed the readout")
 
-        let lg = App()
+        let lg = LGStore()
         defaults.register(defaults: ["font": 13.0, "icon": true, "sensor": true, "current": true, "locationWeather": false])
         var lgUpdates = 0
         lg.didRender = { lgUpdates += 1 }
@@ -381,11 +381,10 @@ import AppKit
         lg.state = ["temperature":["currentTemperature":22,"targetTemperature":23]]
         lg.updateStatus()
         precondition(lgUpdates > 0, "changed LG did not update")
-        lg.buildMenu()
         lgUpdates = 0
         for _ in 0..<10 {
-            lg.menuWillOpen(lg.menu)
-            lg.menuDidClose(lg.menu)
+            lg.panelOpened()
+            lg.panelClosed()
         }
         precondition(lgUpdates == 0, "opening LG menu changed the readout")
         let testID = UUID().uuidString

@@ -14,7 +14,7 @@ struct AccountConnections: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Connections").font(.headline)
-            KeychainAccessButton(alwaysVisible: true) {
+            KeychainAccessButton {
                 deye.loginDraft.restore(); tuya.loginDraft.restore(); tclDraft.restore(); lgDraft.restore()
                 refresh()
             }
@@ -38,48 +38,12 @@ struct AccountConnections: View {
                     }
                 }
             } else {
-                ThinQLoginForm(draft: lgDraft, country: $country, submit: connectLG)
+                CloudLoginForm(draft: lgDraft, provider: provider, country: $country) { email, password, country in
+                    do { try await connectLG(email, password, country); return nil }
+                    catch { return error.localizedDescription }
+                }
             }
         }
-    }
-}
-
-private struct ThinQLoginForm: View {
-    @ObservedObject var draft: LoginDraft
-    @Binding var country: String
-    let submit: (String, String, String) async throws -> Void
-    @State private var busy = false
-    @State private var result: String?
-    @State private var succeeded = false
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            TextField("Email", text: $draft.email).textContentType(.username)
-                #if os(iOS)
-                .keyboardType(.emailAddress).textInputAutocapitalization(.never)
-                #endif
-            PasswordEntry(text: $draft.password)
-            TextField("Country code", text: $country)
-                #if os(iOS)
-                .textInputAutocapitalization(.characters)
-                #endif
-            Button(busy ? "Signing in…" : "Login to LG ThinQ") {
-                let email = draft.email, password = draft.password, selectedCountry = country
-                busy = true; result = nil
-                Task {
-                    do {
-                        try await submit(email, password, selectedCountry)
-                        succeeded = true; result = "Connected to LG ThinQ. New credentials saved."
-                    } catch { succeeded = false; result = error.localizedDescription }
-                    busy = false
-                }
-            }.buttonStyle(.borderedProminent).disabled(busy || draft.email.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || draft.password.isEmpty)
-            if let result {
-                Label(result, systemImage: succeeded ? "checkmark.circle" : "exclamationmark.circle")
-                    .font(.callout).foregroundStyle(succeeded ? Color.green : Color.orange)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }.textFieldStyle(.roundedBorder).autocorrectionDisabled()
-            .onAppear { draft.restore() }
     }
 }
 
@@ -88,6 +52,7 @@ struct CloudLoginForm: View {
     let provider: String
     var unavailable = false
     var hasServer = false
+    var country: Binding<String>? = nil
     let submit: (String, String, String) async -> String?
     @State private var busy = false
     @State private var result: String?
@@ -100,7 +65,12 @@ struct CloudLoginForm: View {
                 .keyboardType(.emailAddress).textInputAutocapitalization(.never)
                 #endif
             PasswordEntry(text: $draft.password)
-            if hasServer {
+            if let country {
+                TextField("Country code", text: country)
+                    #if os(iOS)
+                    .textInputAutocapitalization(.characters)
+                    #endif
+            } else if hasServer {
                 Menu {
                     ForEach(Self.servers, id: \.1) { name, value in
                         Button { draft.server = value } label: {
@@ -120,10 +90,10 @@ struct CloudLoginForm: View {
                 Text("Smart Life · Country 63 · EU").font(.caption).foregroundStyle(.secondary)
             }
             Button {
-                let email = draft.email, password = draft.password, server = draft.server
+                let email = draft.email, password = draft.password, location = country?.wrappedValue ?? draft.server
                 busy = true; result = nil
                 Task {
-                    let error = await submit(email, password, server)
+                    let error = await submit(email, password, location)
                     succeeded = error == nil
                     result = error ?? "Connected to \(provider). New credentials saved."
                     busy = false
@@ -171,19 +141,28 @@ struct PasswordEntry: View {
 
 struct KeychainAccessButton: View {
     @ObservedObject private var status = CredentialAccessStatus.shared
-    var alwaysVisible = false
     var refresh: () -> Void
     var body: some View {
-        if CredentialAccess.usesKeychain && (alwaysVisible || status.needsAuthorization) {
-            Button {
-                Task {
-                    await CredentialAccess.authorize()
-                    refresh()
+        if CredentialAccess.usesKeychain && status.needsAuthorization {
+            VStack(alignment: .leading, spacing: 8) {
+                Button {
+                    Task {
+                        await CredentialAccess.authorize()
+                        refresh()
+                    }
+                } label: {
+                    #if os(iOS)
+                    Label(status.authorizing ? "Проверяем…" : "Повторить доступ к сохранённым аккаунтам", systemImage: "key")
+                    #else
+                    Label(status.authorizing ? "Ожидаем доступ…" : "Дать доступ к Keychain", systemImage: "key")
+                    #endif
                 }
-            } label: {
-                Label(status.authorizing ? "Ожидаем доступ…" : "Дать доступ к Keychain", systemImage: "key")
+                .disabled(status.authorizing)
+                if let result = status.result {
+                    Text(result).font(.callout).foregroundStyle(status.needsAuthorization ? Color.orange : Color.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
-            .disabled(status.authorizing)
         }
     }
 }
@@ -236,35 +215,6 @@ struct PanelSectionHeading: View {
                 Image(systemName: expanded ? "chevron.down" : "chevron.right").font(.system(size: 11, weight: .semibold))
             }
         }.foregroundStyle(.white)
-    }
-}
-
-struct PanelReadingCard: View {
-    var name: String
-    var primary: String
-    var secondary: String = ""
-    var symbol: String? = nil
-    var on: Bool? = nil
-    var selected = false
-    var reservesSecondaryLine = false
-    var body: some View {
-        HStack(alignment: .top, spacing: 6) {
-            if let symbol {
-                if symbol == "air.conditioner.horizontal" { ClimateHousing(windowUnit: true).frame(width: 28, height: 24) }
-                else { Image(systemName: symbol).font(.system(size: 23)).foregroundStyle(.white.opacity(0.85)) }
-            }
-            VStack(alignment: .leading, spacing: 3) {
-                PanelDeviceName(name: name, on: on)
-                Text(primary).font(.system(size: 11, weight: .medium)).lineLimit(1).minimumScaleFactor(0.8)
-                if reservesSecondaryLine || !secondary.isEmpty {
-                    Text(secondary.isEmpty ? " " : secondary)
-                        .font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
-                        .accessibilityHidden(secondary.isEmpty)
-                }
-            }
-            Spacer(minLength: 0)
-        }.foregroundStyle(.white).frame(minHeight: 32, alignment: .topLeading)
-            .superBarSurface(selected: selected, padding: 7)
     }
 }
 

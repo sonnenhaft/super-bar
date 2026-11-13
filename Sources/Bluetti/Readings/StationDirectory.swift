@@ -167,6 +167,18 @@ final class BlueBarStationDirectory {
         return String(clean.prefix(48))
     }
 
+    /// Bluetooth UUIDs differ between hosts. Transfer display names only when
+    /// the full advertisement name identifies exactly one station on this host.
+    func importAliases(_ aliases: [String: String]) {
+        for (name, alias) in aliases.prefix(64) {
+            guard name.uppercased().hasPrefix("AC50P"), name.count <= 128,
+                  !Self.sanitizedAlias(alias).isEmpty else { continue }
+            let matches = records.values.filter { $0.seenNames.contains(Self.normalizedName(name)) }
+            guard matches.count <= 1 else { continue }
+            setAlias(alias, deviceID: matches.first?.deviceID, bluetoothName: name)
+        }
+    }
+
     private static func hasControls(_ value: String) -> Bool {
         value.unicodeScalars.contains { CharacterSet.controlCharacters.contains($0) }
     }

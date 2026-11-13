@@ -74,11 +74,8 @@ enum RollingEnergy {
 }
 
 enum DisplayUnits {
-    static func powerAxis(_ value: Double) -> String { axis(value,small:"W",large:"kW") }
-    static func energyAxis(_ value: Double) -> String { axis(value,small:"Wh",large:"kWh") }
-    private static func axis(_ value: Double, small: String, large: String) -> String {
-        format(value,small:small,large:large)
-    }
+    static func powerAxis(_ value: Double) -> String { power(value) }
+    static func energyAxis(_ value: Double) -> String { energy(value) }
     static func power(_ watts: Double) -> String { format(watts, small: "W", large: "kW") }
     static func energy(_ wattHours: Double) -> String { format(wattHours, small: "Wh", large: "kWh") }
     private static func format(_ value: Double, small: String, large: String) -> String {

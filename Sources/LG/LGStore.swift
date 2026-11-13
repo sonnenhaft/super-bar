@@ -1,20 +1,11 @@
 import AppKit
 import Combine
-import ServiceManagement
 
 let intervals: [Double] = [1, 5, 30, 60, 300, 600]
-let intervalNames = ["1 sec", "5 sec", "30 sec", "1 min", "5 min", "10 min"]
-func ago(_ date: Date?) -> String {
-  guard let d = date else { return "Not updated" }
-  let s = max(0, Int(Date().timeIntervalSince(d)))
-  return s < 60 ? "\(s)s ago" : s < 3600 ? "\(s/60)m ago" : "\(s/3600)h ago"
-}
-@MainActor final class App: NSObject, ObservableObject, NSApplicationDelegate, NSMenuDelegate {
+@MainActor final class LGStore: NSObject, ObservableObject {
   let readout = NSButton()
   var didRender: (() -> Void)?
   var panelChanged: (() -> Void)?
-  var panelSections: [DeviceSection] = []
-  let menu = NSMenu()
   var settings: NSWindow?
   var devices: [Device] = []
   var pinnedDeviceID: String {
@@ -31,19 +22,17 @@ func ago(_ date: Date?) -> String {
     }
   }
   private var profiles: [String: [String: Any]] = [:]
-  private lazy var launchAtLogin = SMAppService.mainApp.status == .enabled
   var connected = false
   @Published var selected = defaults.string(forKey: "selected") ?? "" {
     didSet { if oldValue != selected { defaults.set(selected, forKey: "selected") } }
   }
   var snapshots: [String: [String: Any]] = [:]
-  var polling = false { didSet { updateHeader() } }
-  var sending = false { didSet { updateHeader() } }
+  var polling = false { didSet { notifyPanel() } }
+  var sending = false { didSet { notifyPanel() } }
   var generation = 0
   var autoRetry = AutoRetry()
   var selections = SelectionState()
   lazy var api = API()
-  let emblem = lgIcon()
   let fanIndicator = FanIndicator()
   let ecoSymbol = "🍃"
   var summaryTask: Task<Void, Never>?
@@ -63,40 +52,19 @@ func ago(_ date: Date?) -> String {
     }
   }
   var checked: [String: Date] = [:]
-  private var commandStatusItem: NSMenuItem?
-  private var readStatusItem: NSMenuItem?
-  private var lastReadResult = "No response yet"
-  private var lastCommandResult = "None sent"
-  private func recordCommand(_ status: String) {
-    lastCommandResult = status + " · " + Date().formatted(date: .omitted, time: .standard)
-    updateHeader()
-  }
-  var errorItem: NSMenuItem?
-  var displayRows: [String: ActionRow] = [:]
   let speeds = ["LOW", "MID", "HIGH"]
-  var powerRow: ActionRow?
-  var refreshRow: ActionRow?
-  var monthItem: NSMenuItem?
-  var powerItem: NSMenuItem?
-  var energySeparator: NSMenuItem?
-  var chartItem: NSMenuItem?
   var weekBars: [DayUsage] = []
   var historyFailures = 0
-  var textColor: NSColor? { .white }
-  var menuVisible = false
+  var panelVisible = false
 
   var pollTask: Task<Void, Never>?
   var commandTask: Task<Void, Never>?
-  var energyTask: Task<Void, Never>? { didSet { updateHeader() } }
+  var energyTask: Task<Void, Never>? { didSet { notifyPanel() } }
   var timer: Timer?
-  var ageTimer: Timer?
   var lastRead: Date?
   var lastEnergy: Date?
   var message = ""
   var observedUse = ObservedUse()
-  var sensor: Double? {
-    lgNumber(temperatures["currentTemperature"] ?? temperatures["currentTemperatureC"])
-  }
   var current: Double? {
     lgNumber(temperatures["targetTemperature"] ?? temperatures["targetTemperatureC"])
   }
@@ -112,13 +80,11 @@ func ago(_ date: Date?) -> String {
   let regionOptions = [
     ("kic", "Asia / Pacific"), ("eic", "Europe / Middle East / Africa"), ("aic", "Americas"),
   ]
-  func applicationDidFinishLaunching(_ n: Notification) {
+  func start() {
     defaults.register(defaults: [
       "font": 13.0, "icon": true, "sensor": true, "current": true, "interval": 60.0,
       "fanIndicator": true, "ecoIndicator": true,
     ])
-    menu.delegate = self
-    menu.autoenablesItems = false
     updateStatus()
     startTimer()
     refresh()
@@ -135,53 +101,17 @@ func ago(_ date: Date?) -> String {
     timer = t
     RunLoop.main.add(t, forMode: .common)
   }
-  func menuWillOpen(_ m: NSMenu) {
-    guard m === menu else { return }
-    menuVisible = true
-    if panelSections.isEmpty || menuDeviceID != selected { buildMenu() }
+  func panelOpened() {
+    panelVisible = true
     refreshOtherCards()
     updateStatus()
-    updateAge()
-    ageTimer?.invalidate()
-    let t = Timer(timeInterval: 5, repeats: true) { [weak self] _ in
-      Task { @MainActor in
-        self?.updateAge()
-        self?.updateEnergyRows()
-      }
-    }
-    ageTimer = t
-    RunLoop.main.add(t, forMode: .common)
   }
-  func updateAge() { refreshRow?.right.stringValue = ago(lastRead) }
-  func updateHeader() {
-    guard menuVisible else { return }
-    readStatusItem?.title = "Read: " + (polling ? "Checking…" : lastReadResult)
-    commandStatusItem?.title = "Command: " + lastCommandResult
-    errorItem?.title = message
-    errorItem?.isHidden = message.isEmpty
-    panelChanged?()
+  func panelClosed() {
+    panelVisible = false
+    cancelOtherCards()
   }
-  @discardableResult func item(
-    _ title: String, _ action: Selector? = nil, _ represented: Any? = nil
-  ) -> NSMenuItem {
-    let i = NSMenuItem(title: title, action: action, keyEquivalent: "")
-    i.target = self
-    i.representedObject = represented
-    menu.addItem(i)
-    return i
-  }
-  func custom(_ view: NSView) {
-    let i = NSMenuItem()
-    i.view = view
-    menu.addItem(i)
-  }
-  func row(
-    _ title: String, _ suffix: String = "", _ color: NSColor = .labelColor,
-    _ action: @escaping () -> Void
-  ) -> ActionRow {
-    let r = ActionRow(title, suffix, color, action)
-    custom(r)
-    return r
+  private func notifyPanel() {
+    if panelVisible { panelChanged?() }
   }
   func value(_ group: String, _ key: String) -> Any? {
     find(key, in: find(group, in: state) ?? [:])
@@ -216,7 +146,7 @@ func ago(_ date: Date?) -> String {
     let choice = ecoChoice
     guard let change = choice.change else {
       message = "Eco control unavailable for this device"
-      updateHeader()
+      notifyPanel()
       return
     }
     if change.0 == "airConJobMode", choice.enabled == false {
@@ -261,20 +191,12 @@ func ago(_ date: Date?) -> String {
     let icon: NSImage? = nil
     if button.image !== icon { button.image = icon; displayChanged = true }
     if button.imagePosition != .imageLeading { button.imagePosition = .imageLeading; displayChanged = true }
-    var attrs: [NSAttributedString.Key: Any] = [
-      .font: NSFont.monospacedDigitSystemFont(ofSize: size, weight: .medium)
+    let attrs: [NSAttributedString.Key: Any] = [
+      .font: NSFont.monospacedDigitSystemFont(ofSize: size, weight: .medium),
+      .foregroundColor: NSColor.white
     ]
-    if let textColor { attrs[.foregroundColor] = textColor }
     let title = NSMutableAttributedString(string: "")
-    let stacked = readings.count == 3
     for (index, reading) in readings.enumerated() {
-      if stacked && index == 1 {
-        title.append(NSAttributedString(string: " / ", attributes: attrs.merging([.foregroundColor: NSColor.white]) { _, new in new }))
-        title.append(temperatureStack(
-          room: reading.text, outside: readings[2].text, fontSize: size,
-          color: textColor ?? .labelColor))
-        break
-      }
       if index > 0 { title.append(NSAttributedString(string: " / ", attributes: attrs.merging([.foregroundColor: NSColor.white]) { _, new in new })) }
       if reading.isAC && eco == true && !off {
         title.append(NSAttributedString(string: ecoSymbol, attributes: attrs))
@@ -284,18 +206,14 @@ func ago(_ date: Date?) -> String {
       title.append(NSAttributedString(string:reading.text,attributes:style))
       if reading.isAC && !off && shown("fanIndicator", for: pinned),
         let dots = fanIndicator.attachment(
-          speed: speed, fontSize: size, color: textColor ?? .labelColor)
+          speed: speed, fontSize: size, color: .white)
       {
         title.append(dots)
       }
     }
     let colored = TemperatureStyle.attributed(title, menuBar: true)
     if !button.attributedTitle.isEqual(to: colored) { button.attributedTitle = colored; displayChanged = true }
-    guard menuVisible else { return }
-    updateHeader()
-    powerRow?.button.font = .boldSystemFont(ofSize: 13)
-    powerRow?.button.title = powerIsOn ? "Turn OFF" : "Turn ON"
-    updateEnergyRows()
+    notifyPanel()
   }
   func reported(_ g: String, _ k: String) -> Any? {
     g == "temperature" && k == "targetTemperature" ? current : value(g, k)
@@ -305,93 +223,15 @@ func ago(_ date: Date?) -> String {
   }
   var isReportedOff: Bool { connected && (reported("operation", "airConOperationMode") as? String) == "POWER_OFF" }
   var powerIsOn: Bool { displayValue("operation", "airConOperationMode") as? String == "POWER_ON" }
-  var menuDeviceID: String?
-  func buildMenu() {
-    menuDeviceID = profile.isEmpty ? nil : selected
-    menu.removeAllItems()
-    panelSections.removeAll()
-    var start = 0
-    func finish(_ title: String, _ symbol: String) {
-      let items = Array(menu.items.dropFirst(start))
-      panelSections.append(DeviceSection(title: title, symbol: symbol, items: items))
-      start = menu.numberOfItems
-    }
-    powerRow = nil
-    displayRows = [:]
-    readStatusItem = nil
-    commandStatusItem = nil
-    errorItem = nil
-    refreshRow = nil
-    buildAppearanceRows()
-    menu.addItem(.separator())
-    item("LG settings…", #selector(openSettings))
-    finish("Settings", "gearshape")
-    energySeparator = .separator()
-    menu.addItem(energySeparator!)
-    powerItem = item("")
-    powerItem?.isEnabled = false
-    monthItem = item("")
-    monthItem?.isEnabled = false
-    let chart = NSMenuItem()
-    chart.view = WeekChart()
-    menu.addItem(chart)
-    chartItem = chart
-    menu.addItem(.separator())
-    finish("Energy", "bolt.fill")
-    updateStatus()
-  }
-  func updateEnergyRows() {
-    guard menuVisible else { return }
-    defer { panelChanged?() }
-    let watts = connected ? liveWatts(state) : nil
-    powerItem?.isHidden = watts == nil
-    if let watts { powerItem?.title = "Power now  " + DisplayUnits.power(watts) }
-    let now = Date()
-    let monthWh = weekHistory.month == WeekHistory.monthKey(now, .current) ? weekHistory.monthWh : nil
-    monthItem?.isHidden = monthWh == nil
-    if let monthWh {
-      let month = now.formatted(.dateTime.month(.wide).locale(Locale(identifier: "en_US")))
-      monthItem?.title = "\(month) so far  " + formatEnergy(monthWh)
-    }
-    let showChart = weekBars.contains { $0.wh != nil }
-    chartItem?.isHidden = !showChart
-    (chartItem?.view as? WeekChart)?.days = weekBars
-    energySeparator?.isHidden = watts == nil && !showChart && monthWh == nil
-  }
-  func buildAppearanceRows() {
-    let ix = intervals.firstIndex(of: defaults.double(forKey: "interval")) ?? 3
-    let interval = SliderRow(
-      value: Double(ix), min: 0, max: 5, ticks: 6, format: { intervalNames[Int($0.rounded())] }
-    ) { [weak self] v in
-      defaults.set(intervals[Int(v.rounded())], forKey: "interval")
-      self?.startTimer()
-    }
-    interval.topLabel("Refresh interval")
-    custom(interval)
-  }
-  private static let visibilityLabels = ["icon": "LG icon", "current": "AC temperature or OFF",
-                                         "sensor": "room temperature", "fanIndicator": "fan indicator",
-                                         "ecoIndicator": "eco indicator"]
-  func toggleVisibility(_ key: String) {
-    pinnedDeviceID = selected
+  func toggleVisibility(_ key: String, for id: String? = nil) {
+    let id = id ?? selected
+    let visible = BarSelection.shared.current == .lg && pinnedDeviceID == id && shown(key, for: id)
+    pinnedDeviceID = id
+    defaults.set(!visible, forKey: "lg.fields." + id + "." + key)
     BarSelection.shared.pin(.lg)
-    let visible = !shown(key, for: selected)
-    defaults.set(visible, forKey: "lg.fields." + selected + "." + key)
-    if visible && (key == "current" || key == "sensor") { rememberField(key) }
     updateStatus()
+    objectWillChange.send()
   }
-  @objc func login() {
-    do {
-      if SMAppService.mainApp.status == .enabled {
-        try SMAppService.mainApp.unregister()
-      } else {
-        try SMAppService.mainApp.register()
-      }
-    } catch { message = error.localizedDescription }
-    launchAtLogin = SMAppService.mainApp.status == .enabled
-    buildMenu()
-  }
-  @objc func quit() { NSApp.terminate(nil) }
   private var manualReadPending = false
   private func drainManualRead() {
     if manualReadPending && !sending && !polling { manualReadPending = false; manualRefresh() }
@@ -419,8 +259,6 @@ func ago(_ date: Date?) -> String {
     state = snapshots[id] ?? [:]
     lastRead = snapshots[id] == nil ? nil : checked[id]
     profile = profiles[id] ?? [:]
-    menuDeviceID = nil
-    panelSections.removeAll { $0.title == "Energy" }
     updateStatus()
     let selectionGeneration = generation
     DispatchQueue.main.async { [weak self] in
@@ -432,8 +270,6 @@ func ago(_ date: Date?) -> String {
     pendingCardAction = nil
     manualReadPending = false
     cancelOtherCards()
-    lastCommandResult = "None sent"
-    lastReadResult = "No response yet"
     flushObserved()
     generation += 1
     priorEcoMode = nil
@@ -506,17 +342,12 @@ func ago(_ date: Date?) -> String {
         checked[id] = Date()
         refreshOtherCards()
         lastRead = Date()
-        lastReadResult = "OK · " + Date().formatted(date: .omitted, time: .standard)
         message = ""
         if autoRetry.failures > 0 {
           autoRetry = AutoRetry()
           startTimer()
         }
-        if menuVisible && (firstProfile || menuDeviceID != id) {
-          buildMenu()
-        } else if changed {
-          updateStatus()
-        }
+        if changed || firstProfile { updateStatus() }
         fetchEnergy()
         let requested = pendingCardAction
         pendingCardAction = nil
@@ -525,21 +356,12 @@ func ago(_ date: Date?) -> String {
         if gen == generation && !Task.isCancelled {
           pendingCardAction = nil
           connected = false
-          lastReadResult = error.localizedDescription + " · " + Date().formatted(date: .omitted, time: .standard)
           autoRetry.fail()
           message = autoRetry.stopped ? "No connection · Click Refresh" : error.localizedDescription
           startTimer()
           updateStatus()
         }
       }
-    }
-  }
-  func menuDidClose(_ m: NSMenu) {
-    if m === menu {
-      menuVisible = false
-      cancelOtherCards()
-      ageTimer?.invalidate()
-      ageTimer = nil
     }
   }
   func presetAllowed(_ t: Double, _ s: String) -> Bool {
@@ -580,10 +402,7 @@ func ago(_ date: Date?) -> String {
         }
       }
       while let batch = selections.take() {
-        var lastWrite: String?
-        var awaitingReply = false
         do {
-          recordCommand("Checking device · not sent")
           try await readForCommand(id)
           try Task.checkCancellation()
           let changesMode = batch.contains {
@@ -603,14 +422,8 @@ func ago(_ date: Date?) -> String {
             }
             var values = [key: wanted]
             if group == "temperature" { values["unit"] = "C" }
-            let label = group == "temperature" ? degree(lgNumber(wanted)) : String(describing: wanted).replacingOccurrences(of: "POWER_", with: "")
-            lastWrite = label
-            awaitingReply = true
-            recordCommand("Sending " + label)
             _ = try await api.request("devices/\(try API.deviceComponent(id))/control", payload: [group: values])
             try Task.checkCancellation()
-            awaitingReply = false
-            recordCommand(label + " · accepted, checking")
             selections.recordSent((group, key, wanted))
           }
           selections.finishBatch()
@@ -625,9 +438,6 @@ func ago(_ date: Date?) -> String {
           if !selections.hasQueued && selections.needsConfirmation {
             selections.clearUnconfirmed()
             message = "Change not confirmed by LG"
-            recordCommand((lastWrite ?? "Change") + " · unconfirmed")
-          } else if !selections.needsConfirmation {
-            recordCommand(lastWrite.map { $0 + " · confirmed" } ?? "Already set · not sent")
           }
           if autoRetry.failures > 0 {
             autoRetry = AutoRetry()
@@ -638,11 +448,6 @@ func ago(_ date: Date?) -> String {
           selections.finishBatch()
           selections.clearUnconfirmed()
           message = error.localizedDescription
-          if let lastWrite {
-            recordCommand(lastWrite + (awaitingReply ? " · request failed" : " · confirmation failed"))
-          } else {
-            recordCommand("Not sent · check failed")
-          }
         }
         guard gen == generation && !Task.isCancelled else { return }
         updateStatus()
@@ -665,7 +470,14 @@ func ago(_ date: Date?) -> String {
   private func flushObserved() {
     if let key = loadedWeekKey { observedUse.save(key, at: Date(), force: true) }
   }
-  func applicationWillTerminate(_ notification: Notification) { flushObserved() }
+  func stop() {
+    flushObserved()
+    timer?.invalidate()
+    cancelOtherCards()
+    pollTask?.cancel()
+    commandTask?.cancel()
+    energyTask?.cancel()
+  }
   var loadedWeekKey: String?
   var weekHistory = WeekHistory()
   var cachedEnergyProfile: Bool?
@@ -677,7 +489,7 @@ func ago(_ date: Date?) -> String {
       weekHistory = WeekHistory.load(key)
       observedUse = ObservedUse.load(key)
       weekBars = weekHistory.days
-      updateEnergyRows()
+      notifyPanel()
     }
     let calendar = Calendar.current
     let mode = value("operation", "airConOperationMode") as? String
@@ -722,7 +534,7 @@ func ago(_ date: Date?) -> String {
           try Task.checkCancellation()
           if let total = energyTotal(reading) {
             let daily = find("dataList", in: reading) as? [[String: Any]] ?? []
-            let durations = daily.compactMap(WeekChart.runtime)
+            let durations = daily.compactMap(LGHistoryDecoder.runtime)
             let seconds =
               (!daily.isEmpty && durations.count == daily.count) ? durations.reduce(0, +) : nil
             weekHistory.record(
@@ -742,7 +554,7 @@ func ago(_ date: Date?) -> String {
           try Task.checkCancellation()
           let end = calendar.date(byAdding: .day, value: lastOffset, to: today)!
           let savedDays = Dictionary(weekHistory.days.map { ($0.day, $0) }, uniquingKeysWith: { _, last in last })
-          weekHistory.days = WeekChart.series(
+          weekHistory.days = LGHistoryDecoder.series(
             response: result, end: end, calendar: calendar, mornings: weekHistory.mornings ?? [:],
             use: observedUse).map { day in day.wh != nil ? day : savedDays[day.day] ?? day }
           if weekHistory.days.allSatisfy({ $0.wh != nil }) {
@@ -765,12 +577,11 @@ func ago(_ date: Date?) -> String {
           }
         }
         historyFailures = 0
-        updateEnergyRows()
+        notifyPanel()
       } catch { if gen == generation && !Task.isCancelled { historyFailures += 1 } }
     }
   }
   @objc func openSettings() {
-    menu.cancelTracking()
     if let w = settings {
       w.makeKeyAndOrderFront(nil)
       NSApp.activate(ignoringOtherApps: true)
@@ -890,10 +701,7 @@ func ago(_ date: Date?) -> String {
     defer { connectingAccount = false }
     try await LGMobileClient.connect(email: email, password: password, country: country)
     defaults.set(country.uppercased(), forKey: "country")
-    reset()
-    api = API(); devices = []
-    profiles.removeAll(); snapshots.removeAll(); samples.removeAll(); checked.removeAll()
-    buildMenu(); refresh()
+    reloadAccount()
   }
 
   func configureAccount(token: String, country: String, region: String) async throws {
@@ -905,6 +713,9 @@ func ago(_ date: Date?) -> String {
     try TokenFile.save(token)
     defaults.set(country.uppercased(), forKey: "country")
     defaults.set(region, forKey: "region")
+    reloadAccount()
+  }
+  private func reloadAccount() {
     reset()
     api = API()
     devices = []
@@ -912,7 +723,6 @@ func ago(_ date: Date?) -> String {
     snapshots.removeAll()
     samples.removeAll()
     checked.removeAll()
-    buildMenu()
     refresh()
   }
 }

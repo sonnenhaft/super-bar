@@ -60,7 +60,7 @@ struct ClimatePanel: View {
             EnergyChartView(history: history, device: ac.name)
         }
     }
-    private func deviceCard(_ ac: Aircon, active: Bool, summary: Bool = false) -> some View {
+    private func deviceCard(_ ac: Aircon, active: Bool) -> some View {
         let pins = preferences.ordered(ac.id)
         let energy = history.cardEnergy[ac.name]
         let choices: [(ReadoutField, String, String)] = [
@@ -85,7 +85,7 @@ struct ClimatePanel: View {
             directions: AnyView(HStack(spacing: 8) {
                 vane(ac, true)
                 vane(ac, false)
-            }.disabled(store.offline || ac.online != true || ac.failed)), summaryOnly: summary) {
+            }.disabled(store.offline || ac.online != true || ac.failed))) {
                 CardMenus(eco: ac.ecoChanges != nil ? ac.code("ECO") == 1 : nil, toggleEco: { store.toggleEco(ac) },
                           fan: "", fanControl: ac.has(ac.fanField) ? AnyView(
                             PanelFanSpeedPicker(options: ac.fanSpeedOptions, selected: ac.selectedFanOption,

@@ -40,7 +40,7 @@
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
 	<key>NSBluetoothAlwaysUsageDescription</key>
-	<string>Super Bar reads battery level and power from your nearby BLUETTI AC50P after you tap Find stations.</string>
+	<string>Super Bar automatically finds nearby BLUETTI AC50P stations and reads their battery level and power while the app is open.</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>fetch</string>

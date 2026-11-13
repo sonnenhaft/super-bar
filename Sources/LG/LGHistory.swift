@@ -1,4 +1,4 @@
-import AppKit
+import Foundation
 
 struct DayUsage: Codable, Equatable {
   var day: String
@@ -9,23 +9,6 @@ struct DayUsage: Codable, Equatable {
   var shifted: Bool? = nil
   var estimated: Bool? = nil
 
-  var detail: String {
-    let formatter = DateFormatter()
-    formatter.locale = Locale(identifier: "en_US_POSIX")
-    formatter.dateFormat = "yyyyMMdd"
-    let parsedDate = formatter.date(from: day)
-    formatter.dateFormat = "d MMM"
-    let date = parsedDate.map { formatter.string(from: $0) } ?? day
-    let energy =
-      wh.map { (estimated == true ? "≈" : "") + formatEnergy($0) }
-      ?? "No reading"
-    var parts = [date + (shifted == true ? " · 09–09" : ""), energy]
-    if let seconds {
-      let minutes = Int((seconds / 60).rounded())
-      parts.append("\(minutes/60)h \(minutes%60)m" + (observed == true ? " observed" : ""))
-    }
-    return parts.joined(separator: "   ")
-  }
 }
 
 struct Boundary: Codable {
@@ -141,41 +124,7 @@ struct ObservedUse: Codable {
   }
 }
 
-final class WeekChart: NSView {
-  var days: [DayUsage] = [] {
-    didSet {
-      guard oldValue != days else { return }
-      hovered = nil
-      needsDisplay = true
-      setAccessibilityLabel(days.filter { $0.wh != nil }.map(\.detail).joined(separator: ", "))
-    }
-  }
-  private var area: NSTrackingArea?
-  private var hovered: Int? { didSet { if oldValue != hovered { needsDisplay = true } } }
-  init() { super.init(frame: NSRect(x: 0, y: 0, width: 300, height: 68)) }
-  required init?(coder: NSCoder) { fatalError() }
-  override func updateTrackingAreas() {
-    super.updateTrackingAreas()
-    guard area == nil else { return }
-    let a = NSTrackingArea(
-      rect: .zero, options: [.activeAlways, .mouseMoved, .mouseEnteredAndExited, .inVisibleRect],
-      owner: self, userInfo: nil)
-    addTrackingArea(a)
-    area = a
-  }
-  override func mouseEntered(with event: NSEvent) { highlight(event) }
-  override func mouseMoved(with event: NSEvent) { highlight(event) }
-  override func mouseExited(with event: NSEvent) { hovered = nil }
-  private func highlight(_ event: NSEvent) {
-    let x = convert(event.locationInWindow, from: nil).x
-    guard x >= 12, x < bounds.width - 12, !days.isEmpty else {
-      hovered = nil
-      return
-    }
-    let i = Int((x - 12) / slot)
-    hovered = days.indices.contains(i) && days[i].wh != nil ? i : nil
-  }
-  private var slot: CGFloat { (bounds.width - 24) / CGFloat(max(1, days.count)) }
+enum LGHistoryDecoder {
   static func runtime(_ row: [String: Any]) -> Double? {
     func num(_ v: Any?) -> Double? {
       let n = lgNumber(v) ?? (v as? String).flatMap(Double.init)
@@ -245,44 +194,6 @@ final class WeekChart: NSView {
         day.observed = day.seconds != nil
       }
       return day
-    }
-  }
-  override func draw(_ dirtyRect: NSRect) {
-    let peak = max(1, days.compactMap(\.wh).max() ?? 1)
-    let attrs: [NSAttributedString.Key: Any] = [
-      .font: NSFont.systemFont(ofSize: 10), .foregroundColor: NSColor.secondaryLabelColor,
-    ]
-    for (i, day) in days.enumerated() {
-      let center = 12 + (CGFloat(i) + 0.5) * slot
-      if let wh = day.wh {
-        BarTheme.cobalt.withAlphaComponent(hovered == nil || hovered == i ? 1 : 0.55)
-          .setFill()
-        NSBezierPath(
-          roundedRect: NSRect(x: center - min(14, slot * 0.7) / 2, y: 20, width: min(14, slot * 0.7), height: max(1, 42 * wh / peak)),
-          xRadius: 2, yRadius: 2
-        ).fill()
-      } else {
-        ("–" as NSString).draw(at: NSPoint(x: center - 3, y: 19), withAttributes: attrs)
-      }
-      guard i % 5 == 0 || i == days.count - 1 else { continue }
-      let label = day.label as NSString
-      label.draw(
-        at: NSPoint(x: center - label.size(withAttributes: attrs).width / 2, y: 4),
-        withAttributes: attrs)
-    }
-    if let i = hovered, days.indices.contains(i) {
-      let tooltip = days[i].detail as NSString
-      let textAttrs: [NSAttributedString.Key: Any] = [
-        .font: NSFont.systemFont(ofSize: 10, weight: .medium), .foregroundColor: NSColor.labelColor,
-      ]
-      let size = tooltip.size(withAttributes: textAttrs)
-      let width = min(bounds.width - 8, size.width + 12)
-      let box = NSRect(
-        x: max(4, min(bounds.width - width - 4, 12 + (CGFloat(i) + 0.5) * slot - width / 2)), y: 44,
-        width: width, height: 21)
-      NSColor.windowBackgroundColor.setFill()
-      NSBezierPath(roundedRect: box, xRadius: 4, yRadius: 4).fill()
-      tooltip.draw(in: box.insetBy(dx: 6, dy: 4), withAttributes: textAttrs)
     }
   }
 }

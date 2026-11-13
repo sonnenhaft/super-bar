@@ -12,7 +12,7 @@ struct UnifiedPanel: View {
     @ObservedObject var tcl: ClimateStore
     @ObservedObject var history: EnergyHistory
     @ObservedObject var fields: ReadoutPreferences
-    @ObservedObject var lg: App
+    @ObservedObject var lg: LGStore
     @ObservedObject var batteries: BatteryPanelState
     @ObservedObject var deye: DeyeStore
     @ObservedObject var tuya: TuyaStore
@@ -208,5 +208,27 @@ struct UnifiedPanel: View {
         }.frame(maxWidth: .infinity, alignment: .leading)
             .padding(10).background(.white.opacity(0.018), in: RoundedRectangle(cornerRadius: 9))
             .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(.white.opacity(0.12), lineWidth: 0.5))
+    }
+}
+
+struct PanelControl: NSViewRepresentable {
+    let control: NSView
+    func makeNSView(context: Context) -> NSView {
+        let container = NSView(frame: control.bounds)
+        control.frame.origin = .zero
+        control.autoresizingMask = [.width, .height]
+        container.addSubview(control)
+        return container
+    }
+    func updateNSView(_ nsView: NSView, context: Context) {
+        if control.superview !== nsView {
+            nsView.subviews.forEach { $0.removeFromSuperview() }
+            nsView.addSubview(control)
+        }
+        control.frame = nsView.bounds
+        (control as? SuperFooter)?.sync()
+    }
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSView, context: Context) -> CGSize? {
+        CGSize(width: proposal.width ?? 374, height: proposal.height ?? control.frame.height)
     }
 }

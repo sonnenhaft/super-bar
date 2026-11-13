@@ -5192,10 +5192,10 @@
     "Sources/Cloud/CloudSupport.swift",
     "Sources/Deye/DeyeCloud.swift",
     "Sources/Deye/DeyeReading.swift",
-    "Sources/LG/LGBar.swift",
+    "Sources/LG/LGStore.swift",
     "Sources/LG/LGDeviceState.swift",
     "Sources/LG/ThinQ.swift",
-    "Sources/LG/WeekChart.swift",
+    "Sources/LG/LGHistory.swift",
     "Sources/TCL/DeviceService.swift",
     "Sources/TCL/EnergyHistory.swift",
     "Sources/TCL/EnergyPeriod.swift",
@@ -5227,9 +5227,9 @@
       "description": "Code-derived inventory of HTTP requests used by the shared macOS/iOS LG client. This is not a complete or vendor-issued ThinQ contract. Response schemas document fields consumed by the client and remain open where device profiles or wrappers differ. No account credentials, API-key values, or real device identifiers are included. Obtain and supply your own authorized PAT and API access; this file does not grant service or distribution rights.",
       "sourceFiles": [
         "Sources/LG/ThinQ.swift",
-        "Sources/LG/LGBar.swift",
+        "Sources/LG/LGStore.swift",
         "Sources/LG/LGDeviceState.swift",
-        "Sources/LG/WeekChart.swift",
+        "Sources/LG/LGHistory.swift",
         "iOS/App/PhoneLG.swift",
         "iOS/App/PhoneClimateView.swift"
       ]

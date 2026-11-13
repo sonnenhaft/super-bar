@@ -4,7 +4,7 @@ import Combine
 
 @MainActor final class SuperBar: NSObject, NSApplicationDelegate, NSWindowDelegate {
     let state = BarSelection.shared
-    lazy var lg = App()
+    lazy var lg = LGStore()
     lazy var blue = BlueBarDelegate()
     lazy var tcl = ClimateStore()
     let fields = ReadoutPreferences()
@@ -83,7 +83,7 @@ import Combine
         lg.panelChanged = { [weak self] in self?.scheduleContent(.lg) }
         lg.didRender = { [weak self] in self?.schedule(.lg) }
         watch = tcl.objectWillChange.merge(with: fields.objectWillChange, tcl.history.objectWillChange).sink { [weak self] _ in self?.schedule(.tcl) }
-        lg.applicationDidFinishLaunching(n)
+        lg.start()
         tcl.start()
         solarWatch = deye.objectWillChange.merge(with: tuya.objectWillChange).sink { [weak self] _ in
             guard let self else { return }
@@ -231,7 +231,7 @@ import Combine
     private func endPanel() {
         ReadingAge.stop()
         openGeneration += 1
-        lg.menuDidClose(lg.menu)
+        lg.panelClosed()
         if blueStarted { blue.mainMenuDidClose() }
         panelActive = false
     }
@@ -251,7 +251,7 @@ import Combine
 
     private func beginPanel() {
         panelActive = true
-        lg.menuWillOpen(lg.menu)
+        lg.panelOpened()
         if !blueStarted {
             blueStarted = true
             blue.panelChanged = { [weak self] in self?.scheduleContent(.bluetti) }
@@ -262,7 +262,7 @@ import Combine
         batteries.refresh()
         ReadingAge.start { [weak self] in
             guard let self, self.panel.isVisible else { return }
-            for row in self.blue.stationRows { _ = row.details.updateAge(now: Date()) }
+            for row in self.blue.stationRows { row.details.updateAge(now: Date()) }
         }
         if !panelReady { updatePanel() }
     }
@@ -360,7 +360,7 @@ import Combine
         return false
     }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply { blueStarted ? blue.applicationShouldTerminate(sender) : .terminateNow }
-    func applicationWillTerminate(_ n: Notification) { powerTimer?.invalidate(); deye.stop(); tuya.stop(); lg.applicationWillTerminate(n); if blueStarted { blue.applicationWillTerminate(n) } }
+    func applicationWillTerminate(_ n: Notification) { powerTimer?.invalidate(); deye.stop(); tuya.stop(); lg.stop(); if blueStarted { blue.applicationWillTerminate(n) } }
 }
 
 let arguments = Array(CommandLine.arguments.dropFirst())

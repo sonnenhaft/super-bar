@@ -114,3 +114,59 @@ private struct VaneIndicator: View {
         }
     }
 }
+
+enum ReadoutField: String, CaseIterable {
+    case icon, indoor, target, power, fan, vertical, horizontal, eco, energy
+
+    var symbol: String {
+        switch self {
+        case .icon: return "app"
+        case .indoor: return "thermometer.medium"
+        case .target: return "scope"
+        case .power: return "power"
+        case .fan: return "fanblades"
+        case .vertical: return "arrow.up.and.down"
+        case .horizontal: return "arrow.left.and.right"
+        case .eco: return "leaf.fill"
+        case .energy: return "bolt.fill"
+        }
+    }
+}
+
+final class ReadoutPreferences: ObservableObject {
+    private let defaults: UserDefaults
+    @Published private var overrides: [String: [String]]
+    private let initial: [String]
+    private var pinnedID: String? {
+        get { defaults.string(forKey: "tcl.pinnedDevice") }
+        set { defaults.set(newValue, forKey: "tcl.pinnedDevice") }
+    }
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        initial = (defaults.stringArray(forKey: "readoutFields") ?? ["target", "indoor"]) + ["icon"]
+        let legacy = defaults.dictionary(forKey: "tcl.deviceFields") as? [String: [String]] ?? [:]
+        overrides = defaults.dictionary(forKey: "tcl.deviceFields.v2") as? [String: [String]]
+            ?? legacy.mapValues { $0.isEmpty ? [] : $0 + ["icon"] }
+    }
+    func ordered(_ id: String) -> [ReadoutField] {
+        (overrides[id] ?? initial).compactMap(ReadoutField.init(rawValue:))
+    }
+    func set(_ field: ReadoutField, for id: String, visible: Bool) {
+        pinnedID = id
+        BarSelection.shared.pin(.tcl)
+        var values = ordered(id).filter { $0 != field }
+        if visible { values.insert(field, at: 0) }
+        overrides[id] = values.map(\.rawValue)
+        defaults.set(overrides, forKey: "tcl.deviceFields.v2")
+    }
+    func pinDevice(_ id: String) {
+        objectWillChange.send()
+        pinnedID = id
+    }
+    func device(in store: ClimateStore) -> Aircon? {
+        if let id = pinnedID { return store.devices.first { $0.id == id } }
+        if let ac = store.selected ?? store.devices.first { pinnedID = ac.id; return ac }
+        return nil
+    }
+
+}

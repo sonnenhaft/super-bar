@@ -33,7 +33,7 @@ outer padding is 14 points in the app and 10 in widgets.
 
 The reusable UI lives in `Sources/Shared/`: `PanelTheme.swift` holds the sRGB
 palette and layout constants, `PanelComponents.swift` the common surfaces,
-headings, brand/name labels and energy tiles, and `DeviceDisplayName.swift` the
+headings, brand/name labels and energy tiles, and `DeviceIdentity.swift` the
 name normalization. The Mac menu compiles those exact files too; its AppKit
 colors are adapters over the same palette. `Sources/ClimateArtwork.swift`
 provides the shared vector artwork. No duplicate UI copy lives under `iOS/`.
@@ -44,11 +44,11 @@ saved readings, authentication, meter selection and history throttling have one
 implementation. There is no separate phone energy controller. The stores expose
 an awaitable refresh so iOS can cancel foreground/background work cleanly.
 
-`Sources/Shared/EnergyDetails.swift`, `EnergyCharts.swift` and `EnergyValueView.swift`
+`Sources/Shared/EnergyDetails.swift` and `Sources/EnergyCharts.swift`
 provide the identical charts, coverage handling, bill/ROI periods and tariff
 settings in both apps. Chart selection supports touch as well as pointer hover.
-`Sources/Shared/PanelTemperatureControl.swift` supplies the same setpoint picker
-and stepping logic to the Mac and phone climate cards, with larger touch targets
+`Sources/Shared/ClimateControls.swift` supplies the same temperature, fan and
+airflow controls to the Mac and phone climate cards, with larger touch targets
 on iOS.
 
 `Sources/LG/LGDeviceState.swift` also supplies the same capability
@@ -69,9 +69,12 @@ the two Bluetooth transports have not yet been unified.
 - LG ThinQ: enter a personal token, country and region. The token is stored in
   Keychain. Power, temperature, fan and other controls are exposed only when
   the device profile advertises them; writes are checked against reported state.
-- BLUETTI: tap Find stations, allow Bluetooth, then choose a nearby AC50P. The
-  transport uses CoreBluetooth in-process with the shared authenticated protocol.
-  Connection ends in the background. Last readings remain visible with their age.
+- BLUETTI: allow Bluetooth once. Opening or returning to the app automatically
+  scans for nearby AC50P stations and reads each station in turn. Failed reads
+  retry automatically; the refresh control starts a new pass immediately. Each
+  station has a full-width card and a pencil button for its persistent local name.
+  Names also appear in widgets. The shared Mac station directory handles aliases.
+  Bluetooth stops in the background and resumes on return; saved readings retain their age.
   Close another BLUETTI client if it already holds the station connection.
 
 Deye, Smart Life and TCL sessions (including password hashes and tokens) and
@@ -145,7 +148,7 @@ refresh scheduling have not yet been validated.
 
 This is the initial mobile port. LG history shows completed calendar days in the
 phone's timezone; the Mac's 09:00 boundary estimation is not reproduced for LG.
-Widget device selection is not implemented yet. It has not been published
+Battery names can be edited on the phone. Widget battery selection is not implemented yet. It has not been published
 to TestFlight or the App Store.
 
 ## App Store preparation
@@ -154,3 +157,19 @@ See [APP_STORE.md](APP_STORE.md) for implemented privacy safeguards and the
 remaining release blockers, including vendor API authorization, public privacy
 policy, review access and physical-device validation. This is not yet a
 submission-ready release.
+
+## Device update validation
+
+`iOS/check.command` also checks battery alias transfer between host-specific UUIDs,
+rename persistence, reset and ambiguous advertisement names. For local development
+installs, an optional `SUPER_BAR_STATION_ALIASES` JSON environment dictionary maps
+full AC50P advertisement names to display aliases once per import. It contains no
+credentials and is excluded from Release. Keep personal values in an ignored
+local Xcode scheme, never in the shared project. Normal Settings no longer shows
+a Keychain permission button; retry is offered only after a real access failure.
+
+Physical iPhone validation (2026-11-13): automatic discovery/read of the Office
+AC50P returned 100% and fresh input/output power without tapping Find or Connect.
+Both desktop display aliases appeared on the phone. The second station had no
+reading during this check. Simulator UI validation exercised rename/save/restore
+and confirmed that normal Connections settings contain no Keychain access button.

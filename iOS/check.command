@@ -9,3 +9,5 @@ xcrun swiftc -module-cache-path .build/modules iOS/Tests/ProjectCheck.swift -o .
 .build/ios-project-check
 xcrun swiftc -module-cache-path .build/modules iOS/Shared/WidgetSnapshot.swift iOS/Shared/WidgetClimateSelection.swift iOS/Tests/WidgetSnapshotCheck.swift -o .build/widget-snapshot-check
 .build/widget-snapshot-check
+xcrun swiftc -module-cache-path .build/modules Sources/Bluetti/Readings/StationDirectory.swift iOS/Tests/StationNamesCheck.swift -o .build/station-names-check
+.build/station-names-check

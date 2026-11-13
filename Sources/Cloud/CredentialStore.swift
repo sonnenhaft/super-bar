@@ -65,7 +65,7 @@ final class SessionCredentialVault: CredentialVault, @unchecked Sendable {
 
     // Interactive reads are confined to this explicit action, never background
     // refresh. Call off the main thread: the system dialog may wait for the user.
-    func authorizeAccess(keys: [String]) throws {
+    @discardableResult func authorizeAccess(keys: [String]) throws -> Int {
         lock.lock()
         guard !authorizationInProgress else { lock.unlock(); throw CredentialStorageError.authorizationInProgress }
         authorizationInProgress = true
@@ -73,15 +73,18 @@ final class SessionCredentialVault: CredentialVault, @unchecked Sendable {
         let cached = Set(entries.compactMap { key, value in if case .value = value { return key }; return nil })
         lock.unlock()
         defer { lock.lock(); authorizationInProgress = false; lock.unlock() }
+        var available = 0
         for key in keys {
-            if cached.contains(key) { continue }
+            if cached.contains(key) { available += 1; continue }
             do {
                 let data = try backing.readWithUserAuthorization(key)
+                if data != nil { available += 1 }
                 lock.lock()
                 entries[key] = data.map(Entry.value) ?? .missing
                 lock.unlock()
             } catch { lock.lock(); accessFailure = error; lock.unlock(); throw error }
         }
+        return available
     }
 }
 
@@ -89,6 +92,7 @@ final class CredentialAccessStatus: ObservableObject {
     static let shared = CredentialAccessStatus()
     @Published var needsAuthorization = false
     @Published var authorizing = false
+    @Published var result: String?
     static func requireAuthorization() {
         DispatchQueue.main.async { shared.needsAuthorization = true }
     }
@@ -108,14 +112,21 @@ enum CredentialAccess {
         let status = CredentialAccessStatus.shared
         guard !status.authorizing else { return }
         status.authorizing = true
+        status.result = nil
         defer { status.authorizing = false }
-        let succeeded = await Task.detached {
+        let count: Int? = await Task.detached {
             do {
-                try shared.authorizeAccess(keys: ["deye-session", "tuya-session", "tcl-session", "lg-session", "lg-token"])
-                return true
-            } catch { return false }
+                return try shared.authorizeAccess(keys: ["deye-session", "tuya-session", "tcl-session", "lg-session", "lg-token"])
+            } catch { return nil }
         }.value
-        status.needsAuthorization = !succeeded
+        status.needsAuthorization = count == nil
+        if let count {
+            status.result = count == 0
+                ? "Сохранённых аккаунтов на этом устройстве нет. Войдите в нужный сервис ниже."
+                : "Доступ открыт. Сохранённые аккаунты загружены."
+        } else {
+            status.result = "Не удалось открыть сохранённые аккаунты. Разблокируйте устройство и повторите проверку."
+        }
     }
 }
 

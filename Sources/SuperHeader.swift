@@ -2,11 +2,6 @@ import AppKit
 import SwiftUI
 import ServiceManagement
 
-enum BrandArtwork {
-    static let bluetti = Bundle.main.url(forResource:"bluetti-icon",withExtension:"jpg").flatMap(NSImage.init(contentsOf:))
-
-}
-
 @MainActor private final class FooterMenuButton: NSButton {
     var marked = false { didSet { needsDisplay = true } }
     private var hovered = false

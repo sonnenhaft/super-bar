@@ -60,7 +60,7 @@ private final class MockMobileLG: URLProtocol {
             precondition(request.value(forHTTPHeaderField: "x-lge-oauth-signature") == LGMobileHTTP.signature(path + "?" + bodyText + "\n" + date))
             if field("grant_type") == "authorization_code" { precondition(field("code") == "test-code") }
             else { precondition(field("refresh_token") == "test-refresh") }
-            value = ["access_token": "test-access", "refresh_token": "test-refresh", "expires_in": "3600"]
+            value = ["access_token": "test-access", "refresh_token": "test-refresh", "expires_in": "3600", "oauth2_backend_url": ""]
         case "/users/profile": value = ["status": 1, "account": ["userNo": "test-user"]]
         case "/v1/service/application/dashboard":
             precondition(request.value(forHTTPHeaderField: "x-emp-token") == "test-access")
@@ -86,6 +86,11 @@ private final class MockMobileLG: URLProtocol {
 
 @main enum LGMobileCheck {
     static func main() async throws {
+        for absent in [nil, "", "  ", NSNull(), "null", "kr.lgeapi.com", "https://attacker.invalid"] as [Any?] {
+            let selected = try LGMobileHTTP.oauthBackend(absent, fallback: "https://kr.lgeapi.com/")
+            precondition(selected == "https://kr.lgeapi.com/")
+        }
+        do { _ = try LGMobileHTTP.oauthBackend(nil, fallback: "https://attacker.invalid"); fatalError("Unsafe fallback accepted") } catch {}
         let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [MockMobileLG.self]
         let network = URLSession(configuration: config); defer { network.invalidateAndCancel() }
         let vault = MemoryCredentialVault()

@@ -6,15 +6,6 @@ import BackgroundTasks
 enum PhoneSection: String, CaseIterable {
     case home, energy, climate, battery, settings
     var title: String { rawValue.capitalized }
-    var symbol: String {
-        switch self {
-        case .home: return "square.grid.2x2"
-        case .energy: return "bolt.fill"
-        case .climate: return "air.conditioner.horizontal"
-        case .battery: return "battery.100percent"
-        case .settings: return "gearshape"
-        }
-    }
 }
 
 @MainActor final class PhoneModel: ObservableObject {
@@ -116,6 +107,7 @@ enum PhoneSection: String, CaseIterable {
                 .onOpenURL { model.open($0) }
                 .task(id: phase) {
                     guard phase == .active else { return }
+                    model.bluetooth.start()
                     while !Task.isCancelled {
                         await model.refresh()
                         do { try await Task.sleep(nanoseconds: 30_000_000_000) } catch { break }
@@ -135,3 +127,31 @@ enum PhoneSection: String, CaseIterable {
         }
     }
 }
+
+#if DEBUG && targetEnvironment(simulator)
+// Explicit local development import; never compiled into device or release builds.
+private enum PhoneSimulatorSessions {
+    private struct Credentials: Decodable {
+        let token: String
+        let country: String
+        let region: String
+    }
+
+    static func importLG() {
+        let file = PrivateJSONFile.appFile("simulator-lg-import.json")
+        do {
+            guard let snapshot = try PrivateJSONFile.snapshotIfPresent(from: file) else { return }
+            let value = try JSONDecoder().decode(Credentials.self, from: snapshot.data)
+            guard !value.token.isEmpty, value.country.count == 2,
+                  ["kic", "eic", "aic"].contains(value.region) else { return }
+            try TokenCredentialStore(key: "lg-token").save(value.token)
+            defaults.set(value.country, forKey: "country")
+            defaults.set(value.region, forKey: "region")
+            try PrivateJSONFile.removeLegacy(at: file, matching: snapshot.identity)
+        } catch {
+            // Never include credential data or decoding errors in logs.
+            NSLog("Super Bar: simulator LG import failed; use Settings to connect.")
+        }
+    }
+}
+#endif

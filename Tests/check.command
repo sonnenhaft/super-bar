@@ -15,7 +15,7 @@ xcrun swiftc -module-cache-path .build/modules Sources/Cloud/CloudSupport.swift 
 .build/credential-storage-check
 xcrun swiftc -swift-version 5 -D SUPER_BAR_DEV_CREDENTIALS -module-cache-path .build/modules Sources/Cloud/CloudSupport.swift Sources/Cloud/CredentialStore.swift Sources/Cloud/DevelopmentCredentialVault.swift Tests/DevelopmentCredentials.swift -o .build/development-credentials-check
 .build/development-credentials-check
-xcrun swiftc -module-cache-path .build/modules Sources/Readings.swift Sources/Shared/PanelTheme.swift Sources/Shared/DeviceDisplayName.swift Sources/Shared/ReadingAge.swift Sources/Shared/ClimateSelection.swift Sources/BarSelection.swift Sources/SuperHeader.swift Sources/LG/MenuViews.swift Tests/HeaderCheck.swift -o .build/header-check
+xcrun swiftc -module-cache-path .build/modules Sources/Readings.swift Sources/Shared/PanelTheme.swift Sources/Shared/DeviceIdentity.swift Sources/Shared/ReadingAge.swift Sources/BarSelection.swift Sources/SuperHeader.swift Tests/HeaderCheck.swift -o .build/header-check
 .build/header-check
 xcrun swiftc -module-cache-path .build/modules Sources/Cloud/CloudSupport.swift Sources/Cloud/CredentialStore.swift Sources/TCL/TCLCloud.swift Tests/CredentialFixtures.swift Tests/SessionReuse.swift -o .build/session-check
 .build/session-check

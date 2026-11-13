@@ -26,12 +26,16 @@ struct LGMobileHTTP {
     static let applicationKey = "6V1V8H2BN5P9ZQGOI5DAQ92YZBDO3EK9"
     // Public protocol signing constant, not an account credential.
     static let oauthKey = "c053c2a6ddeb7ad97cb0eed0dcb31cf8"
-    static func url(_ value: String) throws -> URL {
+    static func url(_ value: String, stage: String = "server") throws -> URL {
         guard let url = URL(string: value), url.scheme == "https", let host = url.host?.lowercased(),
               ["lgthinq.com", "lgaccount.com", "lgsmartplatform.com", "lgecloud.com", "lgeapi.com"].contains(where: { host == $0 || host.hasSuffix("." + $0) }),
               url.user == nil, url.password == nil, url.fragment == nil,
               url.port == nil || url.port == 443 || url.port == 46030 else {
-            throw LGError(message: "LG returned an invalid server address.")
+            let parts = URLComponents(string: value)
+            let host = parts?.host ?? "unknown"
+            let safeHost = host.range(of: "^[A-Za-z0-9.-]{1,253}$", options: .regularExpression) != nil ? host : "invalid host"
+            let port = parts?.port.map { ":\($0)" } ?? ""
+            throw LGError(message: "LG \(stage): unsupported server \(safeHost)\(port).")
         }
         return url
     }
@@ -60,7 +64,7 @@ struct LGMobileHTTP {
          "x-thinq-app-level": "PRD", "x-thinq-app-os": "ANDROID", "x-thinq-app-type": "NUTS", "x-thinq-app-ver": "5.0.1200"]
     }
     func data(_ url: URL, headers: [String: String] = [:], body: String? = nil, json: [String: Any]? = nil, stage: String) async throws -> Data {
-        _ = try Self.url(url.absoluteString)
+        _ = try Self.url(url.absoluteString, stage: stage)
         var request = URLRequest(url: url); request.timeoutInterval = 25
         request.httpMethod = body == nil && json == nil ? "GET" : "POST"
         request.setValue("application/json", forHTTPHeaderField: "Accept")
@@ -108,6 +112,15 @@ struct LGMobileHTTP {
         let seconds = CloudValue.number(token["expires_in"]) ?? 3600
         return Date().addingTimeInterval(min(86400, max(60, seconds)))
     }
+    static func oauthBackend(_ value: Any?, fallback: String) throws -> String {
+        // This optional hint can be empty or malformed in a successful response.
+        // Never send credentials to it unless it is a trusted HTTPS LG endpoint;
+        // retain the already validated server that completed the token exchange.
+        let value = (value as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let selected = !value.isEmpty && (try? url(value)) != nil ? value : fallback
+        _ = try url(selected, stage: "token backend")
+        return selected
+    }
 }
 
 enum LGMobileAuth {
@@ -120,7 +133,9 @@ enum LGMobileAuth {
         let loginBase = try LGMobileHTTP.required("empSpxUri", in: routes, stage: "gateway")
         let empBase = try LGMobileHTTP.required("empTermsUri", in: routes, stage: "gateway")
         let apiBase = try LGMobileHTTP.required("thinq2Uri", in: routes, stage: "gateway")
-        _ = try LGMobileHTTP.url(apiBase)
+        _ = try LGMobileHTTP.url(apiBase, stage: "gateway thinq2Uri")
+        _ = try LGMobileHTTP.url(loginBase, stage: "gateway empSpxUri")
+        _ = try LGMobileHTTP.url(empBase, stage: "gateway empTermsUri")
         var headers = ["X-Application-Key": LGMobileHTTP.applicationKey, "X-Client-App-Key": LGMobileHTTP.clientID,
             "X-Lge-Svccode": "SVC709", "X-Device-Type": "M01", "X-Device-Platform": "ADR", "X-Device-Language-Type": "IETF",
             "X-Device-Publish-Flag": "Y", "X-Device-Country": country, "X-Device-Language": "en-" + country]
@@ -155,12 +170,11 @@ enum LGMobileAuth {
         let oauthBase = parameters.first(where: { $0.name == "oauth2_backend_url" })?.value
             ?? object(routes["uris"] ?? [:])["empOauthBaseUri"] as? String
             ?? "https://\(country.lowercased()).lgeapi.com/"
-        _ = try LGMobileHTTP.url(oauthBase)
+        _ = try LGMobileHTTP.url(oauthBase, stage: "authorization backend")
         let token = try await http.oauth(oauthBase, fields: [("code", code), ("grant_type", "authorization_code"), ("redirect_uri", redirect)])
         let access = try LGMobileHTTP.required("access_token", in: token, stage: "token exchange")
         let refresh = try LGMobileHTTP.required("refresh_token", in: token, stage: "token exchange")
-        let sessionOAuthBase = token["oauth2_backend_url"] as? String ?? oauthBase
-        _ = try LGMobileHTTP.url(sessionOAuthBase)
+        let sessionOAuthBase = try LGMobileHTTP.oauthBackend(token["oauth2_backend_url"], fallback: oauthBase)
         let profileDate = LGMobileHTTP.date()
         let profile = try await http.json(LGMobileHTTP.endpoint(sessionOAuthBase, "users/profile"), headers: [
             "Authorization": "Bearer " + access, "X-Lge-Svccode": "SVC202", "X-Application-Key": LGMobileHTTP.applicationKey,

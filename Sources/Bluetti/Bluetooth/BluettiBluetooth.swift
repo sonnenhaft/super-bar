@@ -26,6 +26,8 @@ enum BluettiNativeFailure: Error {
 }
 
 #if os(macOS)
+import Darwin
+
 final class BluettiBluetooth {
     private static weak var active: BluettiCentral?
 
@@ -79,4 +81,68 @@ final class BluettiBluetooth {
         }
     }
 }
+
+final class BluettiBluetoothLock {
+    private(set) var descriptor: Int32 = -1
+
+    init(directory: URL) throws {
+        do { try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
+                                                       attributes: [.posixPermissions: 0o700]) }
+        catch { throw BluettiCommandError("filesystem", "Cannot create cache directory: \(error.localizedDescription)") }
+        descriptor = directory.appendingPathComponent("bluetooth.lock").path.withCString {
+            open($0, O_RDWR | O_CREAT | O_CLOEXEC, mode_t(0o600))
+        }
+        guard descriptor >= 0 else { throw BluettiCommandError("filesystem", "Cannot open Bluetooth lock: \(BluettiFiles.systemError())") }
+        if fchmod(descriptor, mode_t(0o600)) != 0 {
+            let reason = BluettiFiles.systemError()
+            release()
+            throw BluettiCommandError("filesystem", "Cannot protect Bluetooth lock: \(reason)")
+        }
+        if Self.tryExclusive(descriptor) != 0 {
+            let number = errno
+            release()
+            if number == EWOULDBLOCK || number == EAGAIN {
+                throw BluettiCommandError("busy", "Another BluettiBar Bluetooth read is already running. Use bluetti cached or wait for it to finish.")
+            }
+            throw BluettiCommandError("filesystem", "Cannot lock Bluetooth reader: \(BluettiFiles.systemError(number))")
+        }
+    }
+
+    static func tryExclusive(_ descriptor: Int32) -> Int32 {
+        return bluetti_flock(descriptor, LOCK_EX | LOCK_NB)
+    }
+
+    func release() {
+        if descriptor >= 0 { _ = close(descriptor); descriptor = -1 }
+    }
+    deinit { release() }
+}
 #endif
+
+// Exact IDs precede exact names, then partial names; selection is never arbitrary.
+func bluettiChooseDevice(_ devices: [BluettiNativeDevice], selector: String?) throws -> BluettiNativeDevice {
+    let eligible = devices.filter { ($0.json["model"] as? String) == "AC50P" }
+    let matches: [BluettiNativeDevice]
+    if let value = selector {
+        let ids = eligible.filter { $0.id.caseInsensitiveCompare(value) == .orderedSame }
+        if !ids.isEmpty { matches = ids }
+        else {
+            let names = eligible.filter { $0.name.caseInsensitiveCompare(value) == .orderedSame }
+            matches = names.isEmpty ? eligible.filter { $0.name.lowercased().contains(value.lowercased()) } : names
+        }
+    } else { matches = eligible }
+    guard !matches.isEmpty else {
+        throw BluettiNativeFailure.failed(code: "not_found", message: "No matching AC50P found. Enable Bluetooth on the station, stay nearby, and fully close the BLUETTI phone app.")
+    }
+    guard matches.count == 1 else {
+        throw BluettiNativeFailure.failed(code: "ambiguous", message: "Multiple AC50P stations match: \(matches.map { $0.name }.joined(separator: ", ")). Run bluetti scan and pass --device with one full name or ID.")
+    }
+    let chosen = matches[0]
+    // The native driver connects directly to the selected peripheral's ID.
+    // Even identical advertised names are safe when a station row supplied its ID.
+    if let selector, chosen.id.caseInsensitiveCompare(selector) == .orderedSame { return chosen }
+    guard eligible.filter({ $0.name.contains(chosen.name) }).count == 1 else {
+        throw BluettiNativeFailure.failed(code: "ambiguous", message: "Nearby stations have indistinguishable Bluetooth names. Keep only the intended station in range.")
+    }
+    return chosen
+}

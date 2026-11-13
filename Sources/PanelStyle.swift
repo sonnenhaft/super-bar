@@ -39,10 +39,7 @@ extension View {
         self.foregroundStyle(.white).padding(8).frame(maxWidth: .infinity, alignment: .leading)
             .deviceSurface(selected: selected)
     }
-    func compactSurface() -> some View {
-        self.foregroundStyle(.white).padding(.horizontal, 8).padding(.vertical, 3)
-            .frame(maxWidth: .infinity, alignment: .leading).deviceSurface(selected: false)
-    }
+
 }
 
 struct DeviceSelector<Content: View>: View {
@@ -64,11 +61,10 @@ struct DeviceSelector<Content: View>: View {
                     else { BarSelection.shared.select(brand, sameDevice: true) }
         } label: {
             Group {
-                if brand == .tcl || brand == .lg || brand == .bluetti {
-                    PanelBrandLabel(name: brand.rawValue)
-                } else {
-                    BrandLogo(brand: brand).frame(width: 36, height: 24)
-                }
+                if brand == .tuya {
+                    Text("tuya").font(.system(size: 13, weight: .bold)).foregroundStyle(.orange)
+                        .lineLimit(1).minimumScaleFactor(0.6).frame(width: 36, height: 24)
+                } else { PanelBrandLabel(name: brand.rawValue) }
             }.frame(width: 48, height: 24, alignment: .leading).contentShape(Rectangle())
         }.buttonStyle(.plain).accessibilityLabel(brand.rawValue)
     }
@@ -105,15 +101,11 @@ struct ClimateDeviceCard<Controls: View>: View {
     var message: String? = nil
     var presets: AnyView? = nil
     var directions: AnyView? = nil
-    var summaryOnly = false
     @ViewBuilder let controls: () -> Controls
 
     @ObservedObject private var ageSnapshot = ReadingAge.shared
     var body: some View {
-        Group {
-            if summaryOnly { compactCard }
-            else { expandedCard }
-        }.transaction { $0.animation = nil }
+        expandedCard.transaction { $0.animation = nil }
     }
     private var expandedCard: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -157,55 +149,6 @@ struct ClimateDeviceCard<Controls: View>: View {
         .transaction { $0.animation = nil }
     }
 
-    private var compactCard: some View {
-        Group {
-            if brand == .tcl {
-                VStack(alignment: .leading, spacing: 3) {
-                    HStack(spacing: 3) {
-                        summaryNameButton
-                        if powerOn == true, let target = metrics.first(where: { $0.label == "AC" && $0.value.contains(where: { $0.isNumber }) }) {
-                            metricButton(target, compact: true)
-                        }
-                    }
-                    summaryReadings
-                }
-            } else {
-                HStack(spacing: 8) {
-                    Button(action: select) { ClimateArtwork(brand: .lg).frame(width: 28, height: 24) }.buttonStyle(.plain).accessibilityLabel("Open " + name)
-                    VStack(alignment: .leading, spacing: 3) {
-                        summaryNameButton
-                        summaryReadings
-                        if let livePower, powerOn != nil { Label(livePower, systemImage: "bolt.fill").font(.system(size: 12, weight: .semibold)).foregroundStyle(ice) }
-                    }
-                    Spacer(minLength: 0)
-                }
-            }
-        }
-        .padding(.horizontal, 7).padding(.vertical, 7)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background {
-            Button(action: select) { Color.clear.contentShape(Rectangle()) }
-                .buttonStyle(.plain).accessibilityLabel("Open " + DeviceDisplayName.clean(name))
-        }
-        .deviceSurface(selected: selected)
-    }
-    private var summaryNameButton: some View {
-        Button(action: select) { summaryName.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle()) }
-            .buttonStyle(.plain).accessibilityAddTraits(selected ? .isSelected : [])
-    }
-    private var summaryName: some View {
-        PanelDeviceName(name: name, on: powerOn, spacing: 4)
-    }
-    private var summaryReadings: some View {
-        HStack(spacing: 3) {
-            if powerOn != nil {
-                ForEach(metrics.filter { ($0.label == "Room" || (brand != .tcl && powerOn == true && $0.label == "AC")) && $0.value.contains(where: { $0.isNumber }) }) { metric in
-                    metricButton(metric, compact: true)
-                }
-            }
-        }.fixedSize()
-    }
-
     private var ecoEnabled: Bool { powerOn == true && metrics.first(where: { $0.label == "Eco" })?.value == "ON" }
     private var targetValue: String { metrics.first(where: { $0.label == "AC" })?.value ?? "—" }
     private var temperatureControls: some View {
@@ -213,21 +156,15 @@ struct ClimateDeviceCard<Controls: View>: View {
             temperatureOptions: temperatureOptions, changeTemperature: changeTemperature,
             turnOff: turnOff, ecoEnabled: ecoEnabled, directions: directions)
     }
-    private func metricButton(_ metric: DeviceMetric, compact: Bool) -> some View {
+    private func metricButton(_ metric: DeviceMetric) -> some View {
         Button(action: metric.toggle) {
             HStack(spacing: 3) {
-                if compact {
-                    if brand != .tcl || metric.label != "AC" {
-                        Text(metric.label == "AC" ? "Set" : metric.label).foregroundStyle(.secondary)
-                    }
-                } else {
-                    if metric.id == "energy" { Image(systemName: metric.symbol).foregroundStyle(ice) }
-                    else { Text(metric.label == "AC" ? "Set" : metric.label).foregroundStyle(.secondary) }
-                }
+                if metric.id == "energy" { Image(systemName: metric.symbol).foregroundStyle(ice) }
+                else { Text(metric.label == "AC" ? "Set" : metric.label).foregroundStyle(.secondary) }
                 TemperatureText(value: metric.value)
-                if metric.label == "AC" && ecoEnabled { Image(systemName: "leaf.fill").foregroundStyle(leafGreen).font(.system(size: compact ? 8 : 10)) }
-            }.font(.system(size: compact ? 10 : 13, weight: metric.visible ? .semibold : .regular)).monospacedDigit().lineLimit(1)
-                .padding(.horizontal, compact ? 1 : 5).padding(.vertical, compact ? 1 : 4)
+                if metric.label == "AC" && ecoEnabled { Image(systemName: "leaf.fill").foregroundStyle(leafGreen).font(.system(size: 10)) }
+            }.font(.system(size: 13, weight: metric.visible ? .semibold : .regular)).monospacedDigit().lineLimit(1)
+                .padding(.horizontal, 5).padding(.vertical, 4)
                 .background(ice.opacity(metric.visible ? 0.16 : 0), in: RoundedRectangle(cornerRadius: 4))
                 .contentShape(Rectangle())
         }.buttonStyle(.plain)
@@ -242,42 +179,10 @@ struct ClimateDeviceCard<Controls: View>: View {
         if !rows.isEmpty {
             HStack(spacing: 3) {
                 ForEach(rows) { metric in
-                    metricButton(metric, compact: false)
+                    metricButton(metric)
                 }
             }
         }
-    }
-}
-
-struct BrandLogo: View {
-    let brand: Brand
-    var body: some View {
-        Group {
-            switch brand {
-            case .tuya:
-                Text("tuya").font(.system(size: 13, weight: .bold)).foregroundStyle(.orange).lineLimit(1).minimumScaleFactor(0.6)
-            case .deye:
-                Text("Deye").font(.system(size: 14, weight: .heavy)).italic().foregroundStyle(.white)
-                    .lineLimit(1).minimumScaleFactor(0.65)
-                    .overlay(alignment: .topLeading) { Rectangle().fill(.red).frame(width: 3, height: 3).offset(x: 1, y: -1) }
-            case .tcl: TCLLogo()
-            case .lg:
-                Image(nsImage: lgIcon()).resizable().scaledToFit()
-            case .bluetti:
-                if let image = BrandArtwork.bluetti { Image(nsImage: image).resizable().scaledToFit() }
-                else { Text("BL").font(.caption.bold()) }
-            }
-        }.accessibilityLabel(brand.rawValue)
-    }
-}
-
-struct TCLLogo: View {
-    private static let image = Bundle.main.url(forResource: "TCLWordmark", withExtension: "pdf").flatMap(NSImage.init(contentsOf:))
-    var body: some View {
-        Group {
-            if let image = Self.image { Image(nsImage: image).renderingMode(.original).resizable().scaledToFit() }
-            else { Text("TCL").font(.system(size: 10, weight: .black)).foregroundStyle(.red) }
-        }.padding(2).background(.white, in: RoundedRectangle(cornerRadius: 3)).accessibilityLabel("TCL")
     }
 }
 
