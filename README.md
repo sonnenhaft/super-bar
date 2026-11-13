@@ -55,19 +55,23 @@ tokens, passwords and password hashes used for renewal are all treated as creden
 new session files are written by either production app. The credential API always
 requires a vault; standard builds do not compile the development file backend.
 Tests inject an isolated in-memory
-vault. Deye and Smart Life retain the entered password inside the same protected
+vault. Deye, Smart Life and TCL Home retain the entered password inside the same protected
 session record after successful login, so their forms can restore it and offer
 Show/Hide password. Rejected login attempts never overwrite that record. Unsent
 or rejected passwords remain in the form's memory until the app exits; email and
 server drafts are ordinary preferences. Short-lived network and Bluetooth session
 keys stay in memory only.
 
-Settings → Connections offers **Login to Deye** and **Login to Smart Life** on
-Mac and iPhone even when an account is already connected. The shared form reports
+Settings → Connections offers **Deye**, **Smart Life**, **TCL Home** and **LG ThinQ** on
+Mac and iPhone even when an account is already connected. Background polling never
+disables the account picker. LG validates the candidate token before saving it;
+TCL saves the password with its successful session. The shared form reports
 success or a specific authentication/network/storage error without clearing input.
 Changing credentials requires successful authentication before saving a new session;
 failed authentication keeps the previous account and readings. Existing hash-only
 sessions cannot reconstruct a password: enter it once for the new password field.
+Desktop fields support the standard Edit commands, including Cmd+A and Cmd+V,
+while the nonactivating menu panel owns keyboard focus.
 
 Existing app-owned credential files in Application Support migrate automatically.
 The app verifies Keychain write/readback before removing a legacy file. Keychain

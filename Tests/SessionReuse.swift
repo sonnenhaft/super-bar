@@ -4,6 +4,7 @@ import Foundation
 private final class MockCloud: URLProtocol {
     static var paths: [String] = []
     static var rejectNextList = false
+    static var rejectLogin = false
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
@@ -12,6 +13,8 @@ private final class MockCloud: URLProtocol {
         var status = 200
         let body: [String: Any]
         switch path {
+        case "/account/login":
+            body = Self.rejectLogin ? ["status": 0] : ["status": 1, "token": "new-token", "user": ["username": "new-id"]]
         case "/v3/global/cloud_url_get":
             body = ["data":["cloud_url":"https://auth.tcljd.com","device_url":"https://device.tcljd.com","cloud_region":"ap-southeast-1"]]
         case "/v3/auth/refresh_tokens":
@@ -49,6 +52,16 @@ private final class MockCloud: URLProtocol {
         MockCloud.rejectNextList = true
         _ = try cloud.connect()
         precondition(MockCloud.paths.count == 10)
+        let before = try vault.read("tcl-session")
+        MockCloud.rejectLogin = true
+        do { try cloud.storeLogin(email: "new@example.test", password: "synthetic"); fatalError("Rejected TCL login accepted") }
+        catch TCLCloudError.credentialsRejected { }
+        let retained = try vault.read("tcl-session")
+        precondition(retained == before, "Failed TCL login must preserve working credentials")
+        MockCloud.rejectLogin = false
+        try cloud.storeLogin(email: "new@example.test", password: "  synthetic  ")
+        let saved = try JSONSerialization.jsonObject(with: vault.read("tcl-session")!) as! [String: Any]
+        precondition(saved["email"] as? String == "new@example.test" && saved["password"] as? String == "  synthetic  ")
         print("TCL: cold discovery 4 requests, warm discovery 1; rejected session renewed once.")
     }
 }

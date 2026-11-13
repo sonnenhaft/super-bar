@@ -876,11 +876,22 @@ func ago(_ date: Date?) -> String {
       settingsNotice.stringValue = "Enter a ThinQ personal access token."
       return
     }
-    do { try TokenFile.save(token) } catch {
-      settingsNotice.stringValue = error.localizedDescription
-      return
+    Task {
+      do {
+        try await configureAccount(token: token, country: country, region: region)
+        settings?.close(); settings = nil
+      } catch { settingsNotice.stringValue = error.localizedDescription }
     }
-    defaults.set(country, forKey: "country")
+  }
+  private var connectingAccount = false
+  func configureAccount(token: String, country: String, region: String) async throws {
+    guard !connectingAccount else { throw LGError(message: "LG sign-in is already in progress.") }
+    connectingAccount = true
+    defer { connectingAccount = false }
+    let token = token.trimmingCharacters(in: .whitespacesAndNewlines)
+    try await API.validateCredentials(token: token, country: country, region: region)
+    try TokenFile.save(token)
+    defaults.set(country.uppercased(), forKey: "country")
     defaults.set(region, forKey: "region")
     reset()
     api = API()
@@ -889,8 +900,6 @@ func ago(_ date: Date?) -> String {
     snapshots.removeAll()
     samples.removeAll()
     checked.removeAll()
-    settings?.close()
-    settings = nil
     buildMenu()
     refresh()
   }

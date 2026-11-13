@@ -41,29 +41,37 @@ struct PhoneLGDevice: Identifiable {
     private var api: API
     private let makeAPI: () -> API
     private let saveToken: (String) throws -> Void
+    private let validateCredentials: (String, String, String) async throws -> Void
     private let preferences: UserDefaults
     private var accountGeneration = 0
 
     init(makeAPI: @escaping () -> API = { API() },
          saveToken: @escaping (String) throws -> Void = TokenFile.save,
-         preferences: UserDefaults = defaults) {
+         preferences: UserDefaults = defaults,
+         validateCredentials: @escaping (String, String, String) async throws -> Void = { try await API.validateCredentials(token: $0, country: $1, region: $2) }) {
         self.makeAPI = makeAPI; self.saveToken = saveToken; self.preferences = preferences
+        self.validateCredentials = validateCredentials
         api = makeAPI()
     }
 
     func configure(token: String, country: String, region: String) async throws {
+        let token = token.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !busy else { throw ACError("Wait for LG to finish.") }
         guard ["kic", "eic", "aic"].contains(region),
               country.range(of: "^[A-Za-z]{2}$", options: .regularExpression) != nil, !token.isEmpty else {
             throw ACError("Enter a token, two-letter country and a valid region.")
         }
-        try saveToken(token)
+        busy = true
+        do {
+            try await validateCredentials(token, country, region)
+            try saveToken(token)
+        } catch { busy = false; throw error }
         preferences.set(country.uppercased(), forKey: "country")
         preferences.set(region, forKey: "region")
         accountGeneration &+= 1
         api = makeAPI(); devices = []; history = [:]; historyAttempt = [:]; historyProblem = [:]
+        busy = false
         await refresh()
-        if let problem { throw ACError(problem) }
     }
     func refresh() async {
         guard !busy else { return }

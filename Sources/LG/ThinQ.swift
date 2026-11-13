@@ -61,14 +61,24 @@ final class API {
   private(set) var needsSignIn = false
   let country: String, region: String, client: String
   init(network: URLSession? = nil, readToken: @escaping () throws -> String = TokenFile.readSecure,
-       preferences: UserDefaults = defaults) {
+       preferences: UserDefaults = defaults, country: String? = nil, region: String? = nil) {
     self.ownsSession = network == nil
     self.network = network ?? CloudRedirects.session()
     self.readToken = readToken
-    country = preferences.string(forKey: "country") ?? "PH"
-    region = preferences.string(forKey: "region") ?? "kic"
+    self.country = country ?? preferences.string(forKey: "country") ?? "PH"
+    self.region = region ?? preferences.string(forKey: "region") ?? "kic"
     client = preferences.string(forKey: "client") ?? UUID().uuidString
     preferences.set(client, forKey: "client")
+  }
+  static func validateCredentials(token: String, country: String, region: String, network: URLSession? = nil) async throws {
+    guard !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+          country.range(of: "^[A-Za-z]{2}$", options: .regularExpression) != nil,
+          ["kic", "eic", "aic"].contains(region) else {
+      throw LGError(message: "Enter a token, two-letter country and a valid region.")
+    }
+    // A candidate client must not change the saved token or regional preferences.
+    let candidate = API(network: network, readToken: { token }, country: country.uppercased(), region: region)
+    _ = try await candidate.request("devices")
   }
   static func deviceComponent(_ id: String) throws -> String {
     guard !id.isEmpty, id.utf8.count <= 512, id != ".", id != "..",

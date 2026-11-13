@@ -2,11 +2,6 @@ import AppKit
 import SwiftUI
 import Combine
 
-private final class MenuPanel: NSPanel {
-    override var canBecomeKey: Bool { true }
-    override func cancelOperation(_ sender: Any?) { orderOut(nil) }
-}
-
 @MainActor final class SuperBar: NSObject, NSApplicationDelegate, NSWindowDelegate {
     let state = BarSelection.shared
     lazy var lg = App()
@@ -35,6 +30,7 @@ private final class MenuPanel: NSPanel {
     private var appearanceObservation: NSKeyValueObservation?
 
     func applicationDidFinishLaunching(_ n: Notification) {
+        EditingCommands.install(in: NSApp)
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         item.autosaveName = "Super Bar"
         item.isVisible = true

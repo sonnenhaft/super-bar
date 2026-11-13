@@ -118,6 +118,7 @@ final class TCLCloud {
     private var signer: TCLIoTSigner?
     private struct Account: Codable {
         var email: String?, digest: String?, id: String?, token: String?, saved: Double?
+        var password: String?
     }
 
     // Synchronous facade for the serial cloud worker and the command-line tool.
@@ -176,7 +177,7 @@ final class TCLCloud {
         try credentials.save(account)
     }
 
-    private func login(email: String, digest: String) throws -> Account {
+    private func login(email: String, digest: String, password: String? = nil) throws -> Account {
         let url = URL(string: "https://sg.account.tcl.com/account/login?clientId=54148614")!
         let response = try json(url, body: [
             "username":email, "password":digest, "equipment":2, "osType":1, "clientVersion":"4.8.1",
@@ -186,13 +187,13 @@ final class TCLCloud {
               let user = response["user"] as? CloudObject, let id = cloudString(user,"username") else {
             throw TCLCloudError.credentialsRejected
         }
-        let account = Account(email:email, digest:digest, id:id, token:token, saved:Date().timeIntervalSince1970)
+        let account = Account(email:email, digest:digest, id:id, token:token, saved:Date().timeIntervalSince1970, password:password)
         try writeAccount(account)
         return account
     }
 
     func storeLogin(email: String, password: String) throws {
-        _ = try login(email: email.trimmingCharacters(in: .whitespacesAndNewlines), digest: cloudMD5(password))
+        _ = try login(email: email.trimmingCharacters(in: .whitespacesAndNewlines), digest: cloudMD5(password), password: password)
         resetSession()
     }
 
@@ -270,7 +271,7 @@ final class TCLCloud {
             guard let email = cached?.email, let digest = cached?.digest, !email.isEmpty, !digest.isEmpty else {
                 throw TCLCloudError.signInRequired
             }
-            return try login(email:email, digest:digest)
+            return try login(email:email, digest:digest, password: cached?.password)
         }
         let account: Account
         let usingCachedSession: Bool

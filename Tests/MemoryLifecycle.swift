@@ -32,6 +32,11 @@ private final class LGMemoryNetwork: URLProtocol {
             Self.waiting.append(self); Self.lock.unlock(); return
         }
         Self.lock.unlock()
+        if request.value(forHTTPHeaderField: "Authorization") == "Bearer synthetic-rejected-token" {
+            client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: 401, httpVersion: nil, headerFields: nil)!, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocolDidFinishLoading(self)
+            return
+        }
         if path == "/devices" {
             reply([["deviceId": "new-account-device", "deviceInfo": [
                 "deviceType": "DEVICE_AIR_CONDITIONER", "alias": "Synthetic room"]]])
@@ -97,9 +102,15 @@ private final class LGMemoryNetwork: URLProtocol {
         defer { network.invalidateAndCancel() }
         var savedTokens: [String] = []
         let phone = PhoneLG(makeAPI: { API(network: network, readToken: { "synthetic-only" }, preferences: preferences) },
-            saveToken: { savedTokens.append($0) }, preferences: preferences)
+            saveToken: { savedTokens.append($0) }, preferences: preferences,
+            validateCredentials: { try await API.validateCredentials(token: $0, country: $1, region: $2, network: network) })
         let device = PhoneLGDevice(id: "old-account-device", name: "Synthetic old room")
         phone.devices = [device]
+        do { try await phone.configure(token: "synthetic-rejected-token", country: "US", region: "aic"); fatalError("Rejected LG login accepted") }
+        catch { }
+        precondition(savedTokens.isEmpty && phone.devices.map(\.id) == [device.id])
+        precondition(preferences.string(forKey: "country") == nil && preferences.string(forKey: "region") == nil)
+        precondition(!phone.busy, "A failed login must leave the form usable")
 
         LGMemoryNetwork.hold(device.id)
         let cancelled = Task { await phone.loadHistory(device) }

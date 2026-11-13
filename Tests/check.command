@@ -3,6 +3,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 bash Tests/RepositoryPolicy.command
 mkdir -p .build
+xcrun swiftc -module-cache-path .build/modules Sources/EditingCommands.swift Tests/EditingCommandsCheck.swift -o .build/editing-commands-check
+.build/editing-commands-check
 xcrun swiftc -module-cache-path .build/modules Sources/Cloud/CloudSupport.swift Tests/CloudResponse.swift -o .build/cloud-response-check
 .build/cloud-response-check
 xcrun swiftc -module-cache-path .build/modules Sources/Bluetti/Polling/CLIJob.swift Tests/BluetoothStream.swift -o .build/bluetooth-stream-check

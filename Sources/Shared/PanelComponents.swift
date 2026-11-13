@@ -1,6 +1,91 @@
 import SwiftUI
 
 #if !WIDGET_EXTENSION
+struct AccountConnections: View {
+    @ObservedObject var deye: DeyeStore
+    @ObservedObject var tuya: TuyaStore
+    let tcl: ClimateStore
+    let connectLG: (String, String, String) async throws -> Void
+    let refresh: () -> Void
+    @State private var provider = "Deye"
+    @StateObject private var tclDraft = LoginDraft(provider: "tcl")
+    @State private var token = ""
+    @State private var country = UserDefaults.standard.string(forKey: "country") ?? "PH"
+    @State private var region = UserDefaults.standard.string(forKey: "region") ?? "kic"
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Connections").font(.headline)
+            KeychainAccessButton(alwaysVisible: true) {
+                deye.loginDraft.restore(); tuya.loginDraft.restore(); tclDraft.restore()
+                if token.isEmpty { token = TokenFile.read() }
+                refresh()
+            }
+            // Background polling never locks navigation between accounts.
+            Picker("Account", selection: $provider) {
+                ForEach(["Deye", "Smart Life", "TCL Home", "LG ThinQ"], id: \.self) { Text($0) }
+            }
+            if provider == "Deye" {
+                CloudLoginForm(draft: deye.loginDraft, provider: provider, unavailable: deye.refreshing, hasServer: true) { email, password, server in
+                    await deye.signIn(email: email, password: password, server: server) ? nil : (deye.problem ?? "Deye is busy. Try again shortly.")
+                }
+            } else if provider == "Smart Life" {
+                CloudLoginForm(draft: tuya.loginDraft, provider: provider, unavailable: tuya.refreshing) { email, password, _ in
+                    tuya.email = email
+                    return await tuya.signIn(password: password) ? nil : (tuya.problem ?? "Smart Life is busy. Try again shortly.")
+                }
+            } else if provider == "TCL Home" {
+                CloudLoginForm(draft: tclDraft, provider: provider) { email, password, _ in
+                    await withCheckedContinuation { continuation in
+                        tcl.signIn(email: email, password: password) { continuation.resume(returning: $0) }
+                    }
+                }
+            } else {
+                ThinQLoginForm(token: $token, country: $country, region: $region, submit: connectLG)
+                    .onAppear { if token.isEmpty { token = TokenFile.read() } }
+            }
+        }
+    }
+}
+
+private struct ThinQLoginForm: View {
+    @Binding var token: String
+    @Binding var country: String
+    @Binding var region: String
+    let submit: (String, String, String) async throws -> Void
+    @State private var busy = false
+    @State private var result: String?
+    @State private var succeeded = false
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            PasswordEntry(title: "ThinQ personal access token", text: $token)
+            TextField("Country code", text: $country)
+                #if os(iOS)
+                .textInputAutocapitalization(.characters)
+                #endif
+            Picker("Region", selection: $region) {
+                Text("Asia / Pacific").tag("kic"); Text("Europe").tag("eic"); Text("Americas").tag("aic")
+            }
+            Link("Get a ThinQ token", destination: URL(string: "https://connect-pat.lgthinq.com/tokens")!)
+            Button(busy ? "Signing in…" : "Login to LG ThinQ") {
+                let candidate = token, selectedCountry = country, selectedRegion = region
+                busy = true; result = nil
+                Task {
+                    do {
+                        try await submit(candidate, selectedCountry, selectedRegion)
+                        succeeded = true; result = "Connected to LG ThinQ. New credentials saved."
+                    } catch { succeeded = false; result = error.localizedDescription }
+                    busy = false
+                }
+            }.buttonStyle(.borderedProminent).disabled(busy || token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            if let result {
+                Label(result, systemImage: succeeded ? "checkmark.circle" : "exclamationmark.circle")
+                    .font(.callout).foregroundStyle(succeeded ? Color.green : Color.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }.textFieldStyle(.roundedBorder).autocorrectionDisabled()
+    }
+}
+
 struct CloudLoginForm: View {
     @ObservedObject var draft: LoginDraft
     let provider: String
@@ -34,7 +119,7 @@ struct CloudLoginForm: View {
                         Image(systemName: "chevron.down").font(.caption)
                     }.frame(minHeight: 32)
                 }.accessibilityLabel("Deye server")
-            } else {
+            } else if provider == "Smart Life" {
                 Text("Smart Life · Country 63 · EU").font(.caption).foregroundStyle(.secondary)
             }
             Button {
