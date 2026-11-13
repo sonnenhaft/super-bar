@@ -21,6 +21,7 @@ struct UnifiedPanel: View {
     let settings: NSView
     @State private var measuredHeight: CGFloat = 0
     @State private var showSettings = false
+    @State private var loginProvider = "Deye"
     private var climate: ClimatePanel { ClimatePanel(store: tcl, history: history, preferences: fields, selection: selection) }
     private var thinQ: LGPanel { LGPanel(model: lg, selection: selection) }
     private var solar: DeyeCard { DeyeCard(model: deye, tuya: tuya, selection: selection) }
@@ -65,6 +66,22 @@ struct UnifiedPanel: View {
                 }.padding(.vertical, 4)
                 if showSettings {
                     KeychainAccessButton(alwaysVisible: true, refresh: refreshAccounts)
+                    Text("Connections").font(.headline)
+                    Picker("Account", selection: $loginProvider) {
+                        Text("Deye").tag("Deye")
+                        Text("Smart Life").tag("Smart Life")
+                    }.disabled(deye.refreshing || tuya.refreshing)
+                    if loginProvider == "Deye" {
+                        CloudLoginForm(draft: deye.loginDraft, provider: "Deye", unavailable: deye.refreshing, hasServer: true) { email, password, server in
+                            await deye.signIn(email: email, password: password, server: server) ? nil : (deye.problem ?? "Deye is busy. Try again shortly.")
+                        }
+                    } else {
+                        CloudLoginForm(draft: tuya.loginDraft, provider: "Smart Life", unavailable: tuya.refreshing) { email, password, _ in
+                            tuya.email = email
+                            return await tuya.signIn(password: password) ? nil : (tuya.problem ?? "Smart Life is busy. Try again shortly.")
+                        }
+                    }
+                    Divider()
                     EnergyTariffSettings()
                     Divider()
                     PanelControl(control: settings).id(selection.chartBrand).frame(height: selection.chartBrand == .lg ? SuperFooter.height : SuperFooter.height - 36)

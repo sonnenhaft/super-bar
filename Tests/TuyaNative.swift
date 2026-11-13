@@ -141,17 +141,20 @@ final class MockTuya: URLProtocol {
         catch TuyaError.message { }
         precondition(MockTuya.actions.count == beforeAccountChange)
         MockTuya.rejectLogin = true
+        let beforeFailedLogin = try vault.read("tuya-session")
         do { try await client.signIn(email: "other@example.test", password: "password"); fatalError("Rejected login accepted") }
         catch TuyaError.message { }
         let preserved = try vault.saved(TuyaCloud.Session.self, key: "tuya-session")
         let preservedEmail = await client.savedEmail()
+        let afterFailedLogin = try vault.read("tuya-session")
+        precondition(beforeFailedLogin == afterFailedLogin, "Rejected credentials must never replace the saved session")
         precondition(preserved.email == saved.email && preserved.sid == "renewed" && preserved.meter_id == "main")
         precondition(preservedEmail == saved.email, "A failed account switch must not relabel the previous SID")
         _ = try await client.snapshot()
         MockTuya.rejectLogin = false
         try await client.signIn(email: "other@example.test", password: "password")
         let changed = try vault.saved(TuyaCloud.Session.self, key: "tuya-session")
-        precondition(changed.email == "other@example.test" && changed.meter_id == nil)
+        precondition(changed.email == "other@example.test" && changed.meter_id == nil && changed.password == "password")
         let homesBefore = MockTuya.actions.filter { $0 == "tuya.m.location.list" }.count
         _ = try await client.snapshot()
         precondition(MockTuya.actions.filter { $0 == "tuya.m.location.list" }.count == homesBefore + 1,

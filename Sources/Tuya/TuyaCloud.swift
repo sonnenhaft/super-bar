@@ -17,6 +17,7 @@ actor TuyaCloud {
         var endpoint = "https://a1.tuyaeu.com/api.json"
         var sid = "", device_id = UUID().uuidString.replacingOccurrences(of: "-", with: "")
         var email = "", password_md5: String?
+        var password: String?
         var meter_id: String?
     }
     static let allowed: Set<String> = ["thing.m.user.username.token.get", "thing.m.user.email.password.login", "tuya.m.location.list", "tuya.m.my.group.device.list", "tuya.m.device.ref.info.my.list", "tuya.m.dp.rang.stat.day.list", "tuya.m.dp.rang.stat.hour.list"]
@@ -113,7 +114,7 @@ actor TuyaCloud {
         var next = sameAccount ? previous! : Session()
         next.email = email
         guard sameAccount || !password.isEmpty else { throw TuyaError.message("Enter the password when connecting a different Smart Life account.") }
-        if !password.isEmpty { next.password_md5 = TuyaCrypto.md5(password) }
+        if !password.isEmpty { next.password_md5 = TuyaCrypto.md5(password); next.password = password }
         next.sid = ""
         account = next
         failedLogin = true // A concurrent read must not reuse the previous account's SID.

@@ -81,7 +81,35 @@ private final class ConcurrentVault: CredentialVault, @unchecked Sendable {
         try JSONEncoder().encode(value).write(to: file)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
     }
-    static func main() throws {
+    @MainActor static func main() throws {
+        // Forms retain unfinished input; only provider authentication writes sessions.
+        let suite = "login-draft-test-" + UUID().uuidString
+        let prefs = UserDefaults(suiteName: suite)!
+        defer { prefs.removePersistentDomain(forName: suite) }
+        let formVault = TestVault()
+        formVault.values["deye-session"] = Data(#"{"email":"saved@example.test","password":"  synthetic password  ","base":"https://eu1.deyecloud.com"}"#.utf8)
+        let draft = LoginDraft(provider: "deye", preferences: prefs, vault: formVault)
+        precondition(formVault.reads == 0, "Creating a form must not access Keychain")
+        draft.restore()
+        precondition(draft.email == "saved@example.test" && draft.password == "  synthetic password  " && draft.server == "https://eu1.deyecloud.com")
+        draft.email = "new@example.test"; draft.password = "  unsuccessful draft  "
+        draft.restore(); draft.prefill(email: "saved@example.test")
+        precondition(draft.email == "new@example.test" && draft.password == "  unsuccessful draft  " && formVault.writes == 0)
+        precondition(!prefs.dictionaryRepresentation().values.contains { String(describing: $0).contains("synthetic password") || String(describing: $0).contains("unsuccessful draft") })
+        let restarted = LoginDraft(provider: "deye", preferences: prefs, vault: formVault)
+        restarted.restore()
+        precondition(restarted.email == "new@example.test" && restarted.password.isEmpty, "Do not attach the old account password to a new email")
+        let separate = LoginDraft(provider: "tuya", preferences: prefs, vault: formVault)
+        separate.restore()
+        precondition(separate.email.isEmpty && separate.password.isEmpty)
+        prefs.removePersistentDomain(forName: suite)
+        let edited = LoginDraft(provider: "deye", preferences: prefs, vault: formVault)
+        edited.server = "https://us1.deyecloud.com"
+        edited.prefill(email: "saved@example.test", server: "https://eu1.deyecloud.com")
+        precondition(edited.server == "https://us1.deyecloud.com", "Late prefill must preserve the user's region")
+        prefs.set("https://www.deyecloud.com", forKey: "deye.loginServer")
+        let publicServer = LoginDraft(provider: "deye", preferences: prefs, vault: formVault)
+        precondition(publicServer.server == "https://deyecloud.com", "Legacy www origin must select Automatic")
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("superbar-credential-tests-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         defer { try? FileManager.default.removeItem(at: directory) }

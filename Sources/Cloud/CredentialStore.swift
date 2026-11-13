@@ -124,6 +124,48 @@ enum CredentialStorageError: LocalizedError {
     var errorDescription: String? { "Could not read or securely save the account. Please try again." }
 }
 
+// Form lifetime is independent of its SwiftUI view. Email/server are preferences;
+// A successful login saves the recoverable password with its provider session.
+// Failed/unfinished input stays in this draft without replacing working credentials.
+@MainActor final class LoginDraft: ObservableObject {
+    private struct Secret: Decodable { let email: String?; let password: String?; let base: String? }
+    private let provider: String
+    private let preferences: UserDefaults
+    private let vault: any CredentialVault
+    private var editedEmail = false
+    private var editedServer = false
+    @Published var email: String {
+        didSet { editedEmail = true; preferences.set(email, forKey: provider + ".loginEmail") }
+    }
+    @Published var password = ""
+    @Published var server: String {
+        didSet { editedServer = true; preferences.set(server, forKey: provider + ".loginServer") }
+    }
+    init(provider: String, preferences: UserDefaults = .standard, vault: any CredentialVault = CredentialAccess.shared) {
+        self.provider = provider; self.preferences = preferences; self.vault = vault
+        email = preferences.string(forKey: provider + ".loginEmail") ?? ""
+        server = Self.formServer(preferences.string(forKey: provider + ".loginServer") ?? "https://deyecloud.com")
+    }
+    func restore() {
+        guard password.isEmpty,
+              let data = try? vault.read(provider + "-session"), data.count <= PrivateJSONFile.maximumCredentialBytes,
+              let saved = try? JSONDecoder().decode(Secret.self, from: data),
+              let savedEmail = saved.email else { return }
+        prefill(email: savedEmail, server: saved.base)
+        if email.trimmingCharacters(in: .whitespacesAndNewlines).caseInsensitiveCompare(savedEmail) == .orderedSame {
+            password = saved.password ?? ""
+        }
+    }
+    func prefill(email saved: String, server savedServer: String? = nil) {
+        guard !editedEmail, email.isEmpty, !saved.isEmpty else { return }
+        email = saved
+        if !editedServer, preferences.string(forKey: provider + ".loginServer") == nil, let savedServer { server = Self.formServer(savedServer) }
+    }
+    private static func formServer(_ value: String) -> String {
+        value == "https://www.deyecloud.com" ? "https://deyecloud.com" : value
+    }
+}
+
 // No iCloud synchronization. iOS uses device-only after-first-unlock protection.
 // macOS uses the login Keychain and its code-signing access controls.
 struct KeychainCredentialVault: CredentialVault {

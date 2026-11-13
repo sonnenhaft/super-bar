@@ -4,7 +4,10 @@ struct TuyaPanel: View {
     @ObservedObject var model: TuyaStore
     @ObservedObject var selection: BarSelection
     @State private var signingIn = false
-    @State private var password = ""
+    @ObservedObject private var draft: LoginDraft
+    init(model: TuyaStore, selection: BarSelection) {
+        self.model = model; self.selection = selection; draft = model.loginDraft
+    }
     var body: some View {
         VStack(spacing: 2) {
             if model.needsSignIn {
@@ -52,13 +55,11 @@ struct TuyaPanel: View {
                 }
             }
             if signingIn {
-                VStack(alignment: .leading, spacing: 8) {
-                    TextField("Email", text: $model.email)
-                    SecureField("Password (leave blank to reuse)", text: $password)
-                    Text("Smart Life · Country 63 · EU").font(.caption).foregroundStyle(.secondary)
-                    if let problem = model.problem { Text(problem).font(.caption).foregroundStyle(.orange) }
-                    Button("Sign in") { let secret = password; password = ""; Task { if await model.signIn(password: secret) { signingIn = false } } }.disabled(model.refreshing || model.email.isEmpty)
-                }.textFieldStyle(.roundedBorder).padding(.leading, PanelLayout.logoColumn)
+                CloudLoginForm(draft: draft, provider: "Smart Life", unavailable: model.refreshing) { email, password, _ in
+                    model.email = email
+                    if await model.signIn(password: password) { signingIn = false; return nil }
+                    return model.problem ?? "Smart Life is busy. Try again shortly."
+                }.padding(.leading, PanelLayout.logoColumn)
             }
         }
     }

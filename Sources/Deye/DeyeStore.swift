@@ -3,6 +3,7 @@ import Combine
 
 @MainActor final class DeyeStore: ObservableObject {
     private let defaults: UserDefaults
+    let loginDraft: LoginDraft
     @Published private(set) var reading: DeyeReading?
     @Published private(set) var refreshing = false
     @Published private(set) var problem: String?
@@ -21,6 +22,7 @@ import Combine
     @Published private(set) var needsSignIn = false
     init(defaults: UserDefaults = .standard, cloud: DeyeCloud = DeyeCloud(file: PrivateJSONFile.appFile("Deye/session.json"), importFile: PrivateJSONFile.importFile("deye"))) {
         self.defaults = defaults
+        loginDraft = LoginDraft(provider: "deye", preferences: defaults)
         self.cloud = cloud
         pinned = defaults.bool(forKey: "deye.showPower")
         if let data = defaults.data(forKey: "deye.lastReading"), data.count <= 8 * 1024 * 1024 {
@@ -62,6 +64,8 @@ import Combine
                 }
             }
             do {
+                let saved = await cloud.savedLogin()
+                self?.loginDraft.prefill(email: saved.email, server: saved.server)
                 let result = try await cloud.snapshot(previous: previous, includeHistory: includeHistory)
                 guard let self, !Task.isCancelled else { return }
                 self.reading = result
@@ -79,6 +83,7 @@ import Combine
     func signIn(email: String, password: String, server: String) async -> Bool {
         guard !refreshing else { return false }
         CredentialAccess.retry()
+        loginDraft.email = email; loginDraft.password = password; loginDraft.server = server
         refreshing = true
         do {
             try await cloud.signIn(email: email, password: password, base: server)
@@ -91,7 +96,7 @@ import Combine
             refresh()
             return true
         } catch {
-            problem = (error as? DeyeError)?.errorDescription ?? "Could not sign in to Deye."
+            problem = (error as? DeyeError)?.errorDescription ?? ((error as NSError).domain == NSOSStatusErrorDomain ? error.localizedDescription : "Could not save the Deye login. Your entered password is still available.")
             refreshing = false
             return false
         }

@@ -1,6 +1,92 @@
 import SwiftUI
 
 #if !WIDGET_EXTENSION
+struct CloudLoginForm: View {
+    @ObservedObject var draft: LoginDraft
+    let provider: String
+    var unavailable = false
+    var hasServer = false
+    let submit: (String, String, String) async -> String?
+    @State private var busy = false
+    @State private var result: String?
+    @State private var succeeded = false
+    private static let servers = [("Automatic", "https://deyecloud.com"), ("Europe", "https://eu1.deyecloud.com"), ("US", "https://us1.deyecloud.com"), ("India", "https://india.deyecloud.com")]
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            TextField("Email", text: $draft.email).textContentType(.username)
+                #if os(iOS)
+                .keyboardType(.emailAddress).textInputAutocapitalization(.never)
+                #endif
+            PasswordEntry(text: $draft.password)
+            if hasServer {
+                Menu {
+                    ForEach(Self.servers, id: \.1) { name, value in
+                        Button { draft.server = value } label: {
+                            if draft.server == value { Label(name, systemImage: "checkmark") }
+                            else { Text(name) }
+                        }
+                    }
+                } label: {
+                    HStack {
+                        Text("Server")
+                        Spacer()
+                        Text(Self.servers.first { $0.1 == draft.server }?.0 ?? "Automatic")
+                        Image(systemName: "chevron.down").font(.caption)
+                    }.frame(minHeight: 32)
+                }.accessibilityLabel("Deye server")
+            } else {
+                Text("Smart Life · Country 63 · EU").font(.caption).foregroundStyle(.secondary)
+            }
+            Button {
+                let email = draft.email, password = draft.password, server = draft.server
+                busy = true; result = nil
+                Task {
+                    let error = await submit(email, password, server)
+                    succeeded = error == nil
+                    result = error ?? "Connected to \(provider). New credentials saved."
+                    busy = false
+                }
+            } label: {
+                HStack {
+                    if busy { ProgressView().controlSize(.small) }
+                    Text(busy ? "Signing in…" : "Login to " + provider)
+                }
+            }.buttonStyle(.borderedProminent)
+                .disabled(busy || unavailable || draft.email.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || draft.password.isEmpty)
+            if let result {
+                Label(result, systemImage: succeeded ? "checkmark.circle" : "exclamationmark.circle")
+                    .font(.callout).foregroundStyle(succeeded ? Color.green : Color.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }.textFieldStyle(.roundedBorder).autocorrectionDisabled()
+            .onAppear { draft.restore() }
+    }
+}
+
+struct PasswordEntry: View {
+    var title = "Password"
+    @Binding var text: String
+    @State private var visible = false
+    var body: some View {
+        HStack {
+            Group {
+                if visible { TextField(title, text: $text) }
+                else { SecureField(title, text: $text) }
+            }
+            .textContentType(.password)
+            .autocorrectionDisabled()
+            #if os(iOS)
+            .textInputAutocapitalization(.never)
+            #endif
+            Button { visible.toggle() } label: {
+                Image(systemName: visible ? "eye.slash" : "eye")
+                    .frame(minWidth: 32, minHeight: 32)
+            }.buttonStyle(.plain)
+                .accessibilityLabel(visible ? "Hide password" : "Show password")
+        }
+    }
+}
+
 struct KeychainAccessButton: View {
     @ObservedObject private var status = CredentialAccessStatus.shared
     var alwaysVisible = false

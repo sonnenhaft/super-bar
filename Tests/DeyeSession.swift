@@ -82,10 +82,19 @@ private final class MockDeye: URLProtocol {
         }
         let (login, loginVault) = try fixture("login")
         try await login.signIn(email:"test@example.com", password:"password", base:"https://eu1.deyecloud.com")
-        precondition(MockDeye.grants == ["password"])
+        precondition(MockDeye.grants == ["password"] && !MockDeye.paths.contains("/"), "Regional API login must not depend on the website homepage")
         let loginJSON = try JSONSerialization.jsonObject(with: loginVault.read("deye-session")!) as! [String:Any]
-        precondition(loginJSON["password"] == nil && loginJSON["password_sha256"] != nil)
+        precondition(loginJSON["password"] as? String == "password" && loginJSON["password_sha256"] != nil)
         precondition(loginJSON["token"] as? String == "new-token" && loginJSON["refresh_token"] as? String == "rotated")
+        let beforeFailure = try loginVault.read("deye-session")
+        MockDeye.mode = "badLogin"
+        do { try await login.signIn(email: "other@example.test", password: "wrong", base: "https://us1.deyecloud.com"); fatalError("Rejected login accepted") }
+        catch DeyeError.message(let message) { precondition(message.contains("regional server")) }
+        let afterFailure = try loginVault.read("deye-session")
+        let retainedLogin = await login.savedLogin()
+        precondition(beforeFailure == afterFailure && retainedLogin.email == "test@example.com" && retainedLogin.server == "https://eu1.deyecloud.com")
+        MockDeye.mode = "valid"
+        _ = try await login.snapshot(previous: previous, includeHistory: false)
         let (valid, _) = try fixture("valid")
         let reading = try await valid.snapshot(previous:nil,includeHistory:false)
         precondition(reading.id == 61011710 && reading.power_w == 3314 && reading.today_kwh == 2.7)

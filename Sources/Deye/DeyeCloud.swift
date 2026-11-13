@@ -27,6 +27,7 @@ actor DeyeCloud {
         var expires_at: Double?
         var email: String?
         var password_sha256: String?
+        var password: String?
     }
     private let credentials: CloudCredentialStore
     private let importFile: URL?
@@ -144,7 +145,7 @@ actor DeyeCloud {
     func signIn(email: String, password: String, base: String) async throws {
         var base = try Self.checkedBase(base)
         // Resolve public regional redirects before credentials are attached.
-        for _ in 0..<5 {
+        for _ in 0..<(base == "https://deyecloud.com" || base == "https://www.deyecloud.com" ? 5 : 0) {
             var request = URLRequest(url: URL(string: base + "/")!)
             request.setValue("Mozilla/5.0", forHTTPHeaderField: "User-Agent")
             let response: URLResponse
@@ -159,12 +160,21 @@ actor DeyeCloud {
             } else if (200..<300).contains(http.statusCode) { break }
             else { throw DeyeError.message("Deye HTTP \(http.statusCode).") }
         }
-        let previous = account
+        try? load()
+        let previous = account, previousFailure = recoveryFailed
         account = Session(base: base, token: "", email: email.trimmingCharacters(in: .whitespacesAndNewlines),
-                          password_sha256: SHA256.hash(data: Data(password.utf8)).map { String(format: "%02x", $0) }.joined())
+                          password_sha256: SHA256.hash(data: Data(password.utf8)).map { String(format: "%02x", $0) }.joined(), password: password)
         recoveryFailed = false
         do { try await passwordGrant() }
-        catch { account = previous; throw error }
+        catch DeyeError.unauthorized {
+            account = previous; recoveryFailed = previousFailure
+            throw DeyeError.message("Deye rejected sign-in. Check the email, password and selected regional server.")
+        }
+        catch { account = previous; recoveryFailed = previousFailure; throw error }
+    }
+    func savedLogin() -> (email: String, server: String?) {
+        try? load()
+        return (account?.email ?? "", account?.base)
     }
     func snapshot(previous: DeyeReading?, includeHistory: Bool) async throws -> DeyeReading {
         var stationID = previous?.id

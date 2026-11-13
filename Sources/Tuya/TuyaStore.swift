@@ -7,7 +7,8 @@ import Combine
     @Published private(set) var problem: String?
     @Published private(set) var needsSignIn = false
     @Published var selectedID: String?
-    @Published var email = ""
+    let loginDraft: LoginDraft
+    var email: String { get { loginDraft.email } set { loginDraft.email = newValue } }
     @Published private(set) var pinnedID: String?
     @Published var samples: [PowerPoint] = []
     @Published private(set) var history: TuyaHistory?
@@ -35,6 +36,7 @@ import Combine
     }
     init(defaults: UserDefaults = .standard, cloud: TuyaCloud = TuyaCloud()) {
         self.defaults = defaults; self.cloud = cloud
+        loginDraft = LoginDraft(provider: "tuya", preferences: defaults)
         pinnedID = defaults.string(forKey: "tuya.pinnedDevice")
         if let data = defaults.data(forKey: "tuya.readings"), data.count <= 8 * 1024 * 1024 {
             reading = try? JSONDecoder().decode(TuyaSnapshot.self, from: data)
@@ -52,7 +54,7 @@ import Combine
             defer { self?.accountTask = nil }
             let email = await cloud.savedEmail()
             guard !Task.isCancelled else { return }
-            self?.email = email
+            self?.loginDraft.prefill(email: email)
         }
     }
     func stop() { task?.cancel(); historyTask?.cancel(); accountTask?.cancel() }
@@ -100,6 +102,8 @@ import Combine
         task = Task { [weak self, cloud] in
             defer { self?.refreshing = false; self?.task = nil }
             do {
+                let savedEmail = await cloud.savedEmail()
+                self?.loginDraft.prefill(email: savedEmail)
                 let result = try await cloud.snapshot()
                 guard let self, !Task.isCancelled else { return }
                 self.reading = result; self.problem = nil; self.needsSignIn = false
@@ -123,6 +127,7 @@ import Combine
     func signIn(password: String) async -> Bool {
         guard !refreshing else { return false }
         CredentialAccess.retry()
+        if !password.isEmpty { loginDraft.password = password }
         refreshing = true
         do {
             historyTask?.cancel()
@@ -135,7 +140,7 @@ import Combine
             defaults.removeObject(forKey: "tuya.history")
             needsSignIn = false; problem = nil; refreshing = false; refresh(); return true
         }
-        catch { problem = (error as? TuyaError)?.errorDescription ?? "Could not sign in to Smart Life."; refreshing = false; return false }
+        catch { problem = (error as? TuyaError)?.errorDescription ?? ((error as NSError).domain == NSOSStatusErrorDomain ? error.localizedDescription : "Could not save the Smart Life login. Your entered password is still available."); refreshing = false; return false }
     }
     func useAsMeter(_ id: String) {
         Task { await selectMeter(id) }

@@ -38,28 +38,18 @@ struct DeyeCard: View {
 struct DeyeSignIn: View {
     @ObservedObject var model: DeyeStore
     let close: () -> Void
-    @State private var email = ""
-    @State private var password = ""
-    @State private var server = "https://deyecloud.com"
+    @ObservedObject private var draft: LoginDraft
+    init(model: DeyeStore, close: @escaping () -> Void) {
+        self.model = model; self.close = close; draft = model.loginDraft
+    }
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Deye Cloud").font(.headline)
-            TextField("Email", text: $email).textContentType(.username)
-            SecureField("Password", text: $password).textContentType(.password)
-            Picker("Server", selection: $server) {
-                Text("Automatic").tag("https://deyecloud.com")
-                Text("Europe").tag("https://eu1.deyecloud.com")
-                Text("US").tag("https://us1.deyecloud.com")
-                Text("India").tag("https://india.deyecloud.com")
+            CloudLoginForm(draft: draft, provider: "Deye", unavailable: model.refreshing, hasServer: true) { email, password, server in
+                if await model.signIn(email: email, password: password, server: server) { close(); return nil }
+                return model.problem ?? "Deye is busy. Try again shortly."
             }
-            if let problem = model.problem { Text(problem).font(.caption).foregroundStyle(.orange) }
-            Button(model.refreshing ? "Connecting…" : "Sign in") {
-                let secret = password
-                password = ""
-                Task { if await model.signIn(email: email, password: secret, server: server) { close() } }
-            }.disabled(model.refreshing || !email.contains("@") || password.isEmpty)
-        }.textFieldStyle(.roundedBorder).padding(12).frame(maxWidth: .infinity)
-            .onDisappear { password = "" }
+        }.padding(12).frame(maxWidth: .infinity)
     }
 }
 

@@ -51,12 +51,23 @@ described below.
 On Mac, credentials live in the login Keychain with synchronization disabled and
 normal macOS application access controls. iPhone uses device-only Keychain items
 available after first unlock. Access tokens, refresh tokens, session IDs, personal
-tokens and password hashes used for renewal are all treated as credentials; no
+tokens, passwords and password hashes used for renewal are all treated as credentials; no
 new session files are written by either production app. The credential API always
 requires a vault; standard builds do not compile the development file backend.
 Tests inject an isolated in-memory
-vault. Plaintext passwords are not retained after sign-in; short-lived network
-and Bluetooth session keys stay in memory only.
+vault. Deye and Smart Life retain the entered password inside the same protected
+session record after successful login, so their forms can restore it and offer
+Show/Hide password. Rejected login attempts never overwrite that record. Unsent
+or rejected passwords remain in the form's memory until the app exits; email and
+server drafts are ordinary preferences. Short-lived network and Bluetooth session
+keys stay in memory only.
+
+Settings → Connections offers **Login to Deye** and **Login to Smart Life** on
+Mac and iPhone even when an account is already connected. The shared form reports
+success or a specific authentication/network/storage error without clearing input.
+Changing credentials requires successful authentication before saving a new session;
+failed authentication keeps the previous account and readings. Existing hash-only
+sessions cannot reconstruct a password: enter it once for the new password field.
 
 Existing app-owned credential files in Application Support migrate automatically.
 The app verifies Keychain write/readback before removing a legacy file. Keychain
@@ -82,7 +93,7 @@ SUPER_BAR_DEV_CREDENTIALS=1 ./start.command
 
 This compiles the macOS-only development vault. The installed build keeps using
 it after relaunch without needing environment variables in Finder. Account
-tokens, refresh tokens and password hashes are saved as private local files in
+tokens, refresh tokens, passwords and password hashes are saved as private local files in
 this checkout's `.build/dev-credentials/` directory (directory
 0700, files 0600). The files are `deye-session.json`, `tuya-session.json`,
 `tcl-session.json` and `lg-token.txt`. They are plaintext development files,
