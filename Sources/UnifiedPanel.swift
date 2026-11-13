@@ -29,7 +29,6 @@ struct UnifiedPanel: View {
     var body: some View {
         ScrollView(.vertical) {
             VStack(alignment: .leading, spacing: SuperBarPanelStyle.gap) {
-                KeychainAccessButton(refresh: refreshAccounts)
                 climateTitle
                 ClimateDeviceList(devices: climateDevices, selected: activeClimate, select: selectClimate) { id in
                     switch id {
@@ -65,7 +64,7 @@ struct UnifiedPanel: View {
                 }.padding(.vertical, 4)
                 if showSettings {
                     AccountConnections(deye: deye, tuya: tuya, tcl: tcl,
-                                       connectLG: lg.configureMobileAccount, refresh: refreshAccounts)
+                                       connectLG: lg.configureMobileAccount, disconnectLG: lg.logout, refresh: refreshAccounts)
                     Divider()
                     EnergyTariffSettings()
                     Divider()
@@ -103,12 +102,12 @@ struct UnifiedPanel: View {
         tcl.devices.map { ac in
             ClimateDeviceItem(id: .tcl(ac.id), name: ac.name, room: tempText(ac.indoor),
                 target: ac.power == true ? tempText(ac.target) : "",
-                power: ac.online == true && !ac.failed && !tcl.offline ? ac.power : nil)
+                power: ac.online == true && !ac.failed && !tcl.offline ? ac.power : nil, online: ac.online)
         } + lg.devices.map { device in
             let sample = lg.sample(for: device.id)
             return ClimateDeviceItem(id: .lg(device.id), name: device.name, room: degree(sample?.room),
                 target: sample?.power == "POWER_ON" ? degree(sample?.target) : "",
-                power: sample?.power.map { $0 == "POWER_ON" })
+                power: sample?.powerOn, online: sample?.online)
         }
     }
     private func selectClimate(_ id: ClimateDeviceID) {

@@ -4,7 +4,7 @@ struct PhoneSettings: View {
     @ObservedObject var model: PhoneModel
     var body: some View {
         AccountConnections(deye: model.deye, tuya: model.tuya, tcl: model.tcl,
-                           connectLG: model.lg.configureMobile) { Task { await model.refresh() } }
+                           connectLG: model.lg.configureMobile, disconnectLG: model.lg.logout) { Task { await model.refresh() } }
             .phoneCard()
         EnergyTariffSettings().phoneCard()
         VStack(alignment: .leading, spacing: 12) {

@@ -42,7 +42,7 @@ struct PanelTemperatureControl: View {
                 if let directions { Rectangle().fill(.white.opacity(0.25)).frame(width: 0.5, height: 32); directions.frame(width: 116) }
                 if let turnOff {
                     Button(action: turnOff) { Image(systemName: "power").font(.system(size: 22)).frame(width: 38, height: 36).contentShape(Rectangle()) }
-                        .buttonStyle(.plain).deviceSurface(selected: false).foregroundStyle(powerOn == false ? Color.red : .white)
+                        .buttonStyle(.plain).deviceSurface(selected: false).foregroundStyle(powerOn == false ? Color.gray : .white)
                         .help("Turn off").accessibilityLabel("Turn off " + DeviceDisplayName.clean(name)).disabled(powerOn != true)
                 }
             }

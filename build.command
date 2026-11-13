@@ -41,6 +41,9 @@ cp Resources/* "$bundle/Resources/"
 if [[ "$dev_credentials" == 1 ]]; then
   printf '%s' "$dev_credentials_directory" > "$bundle/Resources/development-credentials-path.txt"
 fi
+if [[ "${SUPER_BAR_IMPORT_DEV_CREDENTIALS:-0}" == 1 && "$dev_credentials" == 0 && "${SUPER_BAR_RELEASE:-0}" != 1 ]]; then
+  printf '%s' "$PWD/.build/dev-credentials" > "$bundle/Resources/credential-import-path.txt"
+fi
 if [[ "${SUPER_BAR_RELEASE:-0}" != 1 ]]; then
   printf '%s' "$PWD/.env.deye-session.json" > "$bundle/Resources/deye-session-path.txt"
   printf '%s' "$PWD/.env.tuya-session.json" > "$bundle/Resources/tuya-session-path.txt"

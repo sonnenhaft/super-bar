@@ -126,7 +126,10 @@ private final class LGMemoryNetwork: URLProtocol {
         LGMemoryNetwork.hold(oldDevice.id)
         let oldAccount = Task { await phone.loadHistory(oldDevice) }
         try await wait { !LGMemoryNetwork.requests.isEmpty }
+        AccountConnection.setConnected(false, provider: "lg", preferences: preferences)
         try await phone.configure(token: "synthetic-new-token", country: "PH", region: "kic")
+        precondition(AccountConnection.connected("lg", preferences: preferences),
+                     "Successful PAT sign-in after logout must restore the connection")
         LGMemoryNetwork.finishHeld(); await oldAccount.value
         precondition(savedTokens == ["synthetic-new-token"])
         precondition(phone.devices.map(\.id) == ["new-account-device"])

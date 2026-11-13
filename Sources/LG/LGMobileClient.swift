@@ -193,8 +193,12 @@ actor LGMobileClient {
             return try await request("service/devices/\(try API.deviceComponent(id))/control-sync", session: session, payload: model.command(payload))
         default:
             let result = try await request("service/devices/\(try API.deviceComponent(id))", session: session)
+            let online = result["online"] as? Bool
+            if online == false { return ["online": false] }
             guard let snapshot = result["snapshot"] as? [String: Any] else { throw LGError(message: "LG device snapshot is missing.") }
-            return model.state(snapshot)
+            var state = model.state(snapshot)
+            if let online { state["online"] = online }
+            return state
         }
     }
 }

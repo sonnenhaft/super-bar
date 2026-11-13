@@ -38,7 +38,7 @@ import Combine
         self.defaults = defaults; self.cloud = cloud
         loginDraft = LoginDraft(provider: "tuya", preferences: defaults)
         pinnedID = defaults.string(forKey: "tuya.pinnedDevice")
-        if let data = defaults.data(forKey: "tuya.readings"), data.count <= 8 * 1024 * 1024 {
+        if !AccountConnection.signedOut("tuya", preferences: defaults), let data = defaults.data(forKey: "tuya.readings"), data.count <= 8 * 1024 * 1024 {
             reading = try? JSONDecoder().decode(TuyaSnapshot.self, from: data)
         }
         selectedID = reading?.meterID
@@ -48,6 +48,7 @@ import Combine
     }
     deinit { task?.cancel(); historyTask?.cancel(); accountTask?.cancel() }
     func start() {
+        guard !AccountConnection.signedOut("tuya", preferences: defaults) else { return }
         refresh()
         guard accountTask == nil else { return }
         accountTask = Task { [weak self, cloud] in
@@ -58,6 +59,10 @@ import Combine
         }
     }
     func stop() { task?.cancel(); historyTask?.cancel(); accountTask?.cancel() }
+    func logout() {
+        AccountConnection.setConnected(false, provider: "tuya", preferences: defaults)
+        stop(); reading = nil; samples = []; history = nil; needsSignIn = true; problem = "Logged out"
+    }
     func refreshAndWait() async {
         refresh()
         guard let task else { return }
@@ -72,6 +77,7 @@ import Combine
         if visible { refreshHistory() }
     }
     private func refreshHistory() {
+        guard !AccountConnection.signedOut("tuya", preferences: defaults) else { return }
         guard historyVisible, !historyRefreshing, let meter = reading?.meter else { return }
         let now = Date()
         let changed = historyAttemptMeterID != meter.id
@@ -97,6 +103,7 @@ import Combine
         }
     }
     func refresh() {
+        guard !AccountConnection.signedOut("tuya", preferences: defaults) else { return }
         guard !refreshing else { return }
         refreshing = true
         task = Task { [weak self, cloud] in
@@ -133,6 +140,7 @@ import Combine
             historyTask?.cancel()
             await historyTask?.value
             try await cloud.signIn(email: email, password: password)
+            AccountConnection.setConnected(true, provider: "tuya", preferences: defaults)
             // Do not expose a previous account's readings after switching accounts.
             reading = nil; selectedID = nil; samples = []
             defaults.removeObject(forKey: "tuya.readings")
@@ -146,6 +154,7 @@ import Combine
         Task { await selectMeter(id) }
     }
     func selectMeter(_ id: String) async {
+        guard !AccountConnection.signedOut("tuya", preferences: defaults) else { return }
         guard !refreshing else { return }
         refreshing = true
         defer { refreshing = false }

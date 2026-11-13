@@ -11,11 +11,11 @@ struct PhoneClimateView: View {
         tcl.devices.map { ac in
             ClimateDeviceItem(id: .tcl(ac.id), name: ac.name, room: tempText(ac.indoor),
                 target: ac.power == true ? tempText(ac.target) : "",
-                power: ac.online == true && !ac.failed && !tcl.offline ? ac.power : nil)
+                power: ac.online == true && !ac.failed && !tcl.offline ? ac.power : nil, online: ac.online)
         } + lg.devices.map { device in
             ClimateDeviceItem(id: .lg(device.id), name: device.name, room: degree(device.room),
                 target: device.power == true ? degree(device.target) : "",
-                power: device.problem == nil ? device.power : nil)
+                power: device.problem == nil ? device.power : nil, online: device.online)
         }
     }
     var body: some View {
@@ -145,7 +145,8 @@ struct PhoneLGCard: View {
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(device.name).font(.system(size: 13, weight: .semibold))
-                    Text("Room " + degree(device.room)).foregroundStyle(.secondary)
+                    if device.online == false { Text("Offline").foregroundStyle(.secondary) }
+                    else if device.power == true { Text("Room " + degree(device.room)).foregroundStyle(.secondary) }
                 }
                 Spacer()
                 Button { send("operation", "airConOperationMode", device.power == true ? "POWER_OFF" : "POWER_ON") } label: {

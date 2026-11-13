@@ -6,23 +6,57 @@ struct AccountConnections: View {
     @ObservedObject var tuya: TuyaStore
     let tcl: ClimateStore
     let connectLG: (String, String, String) async throws -> Void
+    let disconnectLG: () -> Void
     let refresh: () -> Void
+    @ObservedObject private var credentialStatus = CredentialAccessStatus.shared
     @State private var provider = "Deye"
     @StateObject private var tclDraft = LoginDraft(provider: "tcl")
     @StateObject private var lgDraft = LoginDraft(provider: "lg")
     @State private var country = UserDefaults.standard.string(forKey: "country") ?? "PH"
+    @State private var loadedLGDraft = false
+    @State private var canShowInputs = false
+    private var providerKey: String { ["Deye": "deye", "Smart Life": "tuya", "TCL Home": "tcl", "LG ThinQ": "lg"][provider]! }
+    private var connected: Bool { canShowInputs && AccountConnection.connected(providerKey) }
+    private func loadAccount(forceRestore: Bool = false) {
+        let data = try? CredentialAccess.shared.read(providerKey + "-session")
+        canShowInputs = !CredentialAccess.usesKeychain || data != nil || credentialStatus.authorizedProviders.contains(providerKey)
+        if data != nil, !AccountConnection.signedOut(providerKey), !connected {
+            AccountConnection.setConnected(true, provider: providerKey)
+        }
+        if !connected && canShowInputs {
+            switch providerKey {
+            case "deye": deye.loginDraft.restore(force: forceRestore)
+            case "tuya": tuya.loginDraft.restore(force: forceRestore)
+            case "tcl": tclDraft.restore(force: forceRestore)
+            default: lgDraft.restore(force: forceRestore)
+            }
+        }
+    }
+    private func logout() {
+        switch providerKey {
+        case "deye": deye.logout()
+        case "tuya": tuya.logout()
+        case "tcl": tcl.logout()
+        default: disconnectLG()
+        }
+        loadAccount(forceRestore: true)
+    }
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Connections").font(.headline)
-            KeychainAccessButton {
-                deye.loginDraft.restore(); tuya.loginDraft.restore(); tclDraft.restore(); lgDraft.restore()
-                refresh()
-            }
             // Background polling never locks navigation between accounts.
             Picker("Account", selection: $provider) {
                 ForEach(["Deye", "Smart Life", "TCL Home", "LG ThinQ"], id: \.self) { Text($0) }
             }
-            if provider == "Deye" {
+            if connected {
+                HStack {
+                    Label("Connected to " + provider, systemImage: "checkmark.circle")
+                    Spacer()
+                    Button("Logout", action: logout)
+                }
+            } else if !canShowInputs {
+                KeychainAccessButton(provider: providerKey, alwaysShow: true) { loadAccount(forceRestore: true); refresh() }
+            } else if provider == "Deye" {
                 CloudLoginForm(draft: deye.loginDraft, provider: provider, unavailable: deye.refreshing, hasServer: true) { email, password, server in
                     await deye.signIn(email: email, password: password, server: server) ? nil : (deye.problem ?? "Deye is busy. Try again shortly.")
                 }
@@ -43,6 +77,14 @@ struct AccountConnections: View {
                     catch { return error.localizedDescription }
                 }
             }
+        }.onChange(of: provider, initial: true) { _, _ in loadAccount() }
+        .onAppear {
+            guard !loadedLGDraft else { return }
+            loadedLGDraft = true
+            if let input = LGLoginInput.developmentDraft() {
+                lgDraft.email = input.email; lgDraft.password = input.password
+                country = input.country.uppercased()
+            }
         }
     }
 }
@@ -58,6 +100,12 @@ struct CloudLoginForm: View {
     @State private var result: String?
     @State private var succeeded = false
     private static let servers = [("Automatic", "https://deyecloud.com"), ("Europe", "https://eu1.deyecloud.com"), ("US", "https://us1.deyecloud.com"), ("India", "https://india.deyecloud.com")]
+    private static let countries = Locale.Region.isoRegions.map(\.identifier).filter { $0.count == 2 }
+        .map { (code: $0, name: Locale.current.localizedString(forRegionCode: $0) ?? $0) }
+        .sorted {
+            if $0.code == "PH" || $1.code == "PH" { return $0.code == "PH" && $1.code != "PH" }
+            return $0.name.localizedStandardCompare($1.name) == .orderedAscending
+        }
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             TextField("Email", text: $draft.email).textContentType(.username)
@@ -66,10 +114,11 @@ struct CloudLoginForm: View {
                 #endif
             PasswordEntry(text: $draft.password)
             if let country {
-                TextField("Country code", text: country)
-                    #if os(iOS)
-                    .textInputAutocapitalization(.characters)
-                    #endif
+                Picker("Account region", selection: country) {
+                    ForEach(Self.countries, id: \.code) { region in
+                        Text("\(region.name) (\(region.code))").tag(region.code)
+                    }
+                }.pickerStyle(.menu)
             } else if hasServer {
                 Menu {
                     ForEach(Self.servers, id: \.1) { name, value in
@@ -141,21 +190,19 @@ struct PasswordEntry: View {
 
 struct KeychainAccessButton: View {
     @ObservedObject private var status = CredentialAccessStatus.shared
+    var provider: String? = nil
+    var alwaysShow = false
     var refresh: () -> Void
     var body: some View {
-        if CredentialAccess.usesKeychain && status.needsAuthorization {
+        if CredentialAccess.usesKeychain && (alwaysShow || status.needsAuthorization) {
             VStack(alignment: .leading, spacing: 8) {
                 Button {
                     Task {
-                        await CredentialAccess.authorize()
+                        await CredentialAccess.authorize(provider: provider)
                         refresh()
                     }
                 } label: {
-                    #if os(iOS)
-                    Label(status.authorizing ? "Проверяем…" : "Повторить доступ к сохранённым аккаунтам", systemImage: "key")
-                    #else
-                    Label(status.authorizing ? "Ожидаем доступ…" : "Дать доступ к Keychain", systemImage: "key")
-                    #endif
+                    Label(status.authorizing ? "Opening Keychain…" : "Allow Keychain", systemImage: "key")
                 }
                 .disabled(status.authorizing)
                 if let result = status.result {

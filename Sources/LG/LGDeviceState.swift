@@ -78,6 +78,7 @@ struct LGSample {
     var eco: Bool?
     var fan: String?
     var power: String?
+    var online: Bool?
     init(_ snapshot: [String: Any]) {
         let temperature = celsius(find("temperature", in: snapshot) ?? [:])
         room = lgNumber(temperature["currentTemperature"] ?? temperature["currentTemperatureC"])
@@ -86,6 +87,9 @@ struct LGSample {
         let flow = find("airFlow", in: snapshot) ?? [:]
         fan = ((find("windStrengthDetail", in: flow) ?? find("windStrength", in: flow)) as? String)?.capitalized
         power = find("airConOperationMode", in: find("operation", in: snapshot) ?? [:]) as? String
+        online = snapshot["online"] as? Bool
+        // A powered-off LG can keep returning its last sensor value from the cloud.
+        if power != "POWER_ON" || online == false { room = nil }
     }
     var powerOn: Bool? {
         switch power {
@@ -94,7 +98,7 @@ struct LGSample {
         default: return nil
         }
     }
-    var status: String { power == "POWER_OFF" ? "OFF" : power == "POWER_ON" ? "ON" : "Connected" }
+    var status: String { online == false ? "Offline" : power == "POWER_OFF" ? "OFF" : power == "POWER_ON" ? "ON" : "Connected" }
     func value(_ key: String) -> String {
         key == "sensor" ? degree(room) : power == "POWER_OFF" ? "OFF" : degree(target)
     }

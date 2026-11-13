@@ -68,8 +68,9 @@ import Foundation
             "airFlow": ["windStrengthDetail": "LOW"],
         ]
         let sample = LGSample(state)
-        precondition(sample.room == 25 && sample.target == 22 && sample.powerOn == false)
-        precondition(sample.value("current") == "OFF" && sample.value("sensor") == "25°")
+        precondition(sample.room == nil && sample.target == 22 && sample.powerOn == false, "Powered-off LG readings must not present cached room temperature as current")
+        precondition(LGSample(["online": false]).status == "Offline")
+        precondition(sample.value("current") == "OFF" && sample.value("sensor") == "—")
         precondition(LGSample([:]).powerOn == nil)
         precondition(LGSample(["temperature": ["unit": "F", "currentTemperature": 77]]).room == nil)
         precondition(LGDeviceValues.value("temperature", "currentTemperature", in: state) == nil)

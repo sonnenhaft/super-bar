@@ -38,9 +38,11 @@ private final class MockMobileLG: URLProtocol {
             precondition(field("user_auth2") == expected, "Password must preserve whitespace and be hashed")
             value = ["signature": "pre-signature", "tStamp": "123", "encrypted_pw": "encrypted+password"]
         case let p where p.hasPrefix("/emp/v2.0/account/session/"):
+            precondition(URLComponents(url: url, resolvingAgainstBaseURL: false)!.percentEncodedPath.hasSuffix("test%2Blg%40example.com"))
             precondition(field("user_auth2") == "encrypted+password")
             precondition(request.value(forHTTPHeaderField: "X-Signature") == "pre-signature")
             value = Self.failure == "password" ? ["error": ["code": "INVALID_PASSWORD", "message": "do not echo credentials"]] : ["account": ["userIDType": "LGE", "country": "PH", "userID": "test+lg@example.com", "loginSessionID": "test-session"]]
+            if Self.failure == "wrong-email" { status = 406; value = ["error": ["code": "MS.001.01", "message": "do not echo credentials"]] }
         case "/spx/signature":
             let query = URLComponents(url: url, resolvingAgainstBaseURL: false)!.queryItems!
             let signed = query.first { $0.name == "timestamp" }!.value!
@@ -86,7 +88,7 @@ private final class MockMobileLG: URLProtocol {
 
 @main enum LGMobileCheck {
     static func main() async throws {
-        for absent in [nil, "", "  ", NSNull(), "null", "kr.lgeapi.com", "https://attacker.invalid"] as [Any?] {
+        for absent in [nil, "", "  ", NSNull(), "null", "kr.lgeapi.com", "https://attacker.invalid", "https://kr.lgeapi.com/?unexpected=hint"] as [Any?] {
             let selected = try LGMobileHTTP.oauthBackend(absent, fallback: "https://kr.lgeapi.com/")
             precondition(selected == "https://kr.lgeapi.com/")
         }
@@ -109,10 +111,13 @@ private final class MockMobileLG: URLProtocol {
         let before = MockMobileLG.paths.count
         do { _ = try await client.requestIfConfigured("devices/test-device/control", payload: ["temperature": ["targetTemperature": 99]]); fatalError("Out-of-range control accepted") } catch {}
         precondition(MockMobileLG.paths.count == before)
-        for failure in ["password", "devices", "signature", "state", "host"] {
+        for failure in ["password", "wrong-email", "devices", "signature", "state", "host"] {
             MockMobileLG.failure = failure
             do { try await LGMobileClient.connect(email: "test+lg@example.com", password: " pass +& word ", country: "PH", vault: vault, network: network); fatalError("Bad login succeeded") }
-            catch { precondition(!error.localizedDescription.contains("do not echo")) }
+            catch {
+                precondition(!error.localizedDescription.contains("do not echo"))
+                if failure == "wrong-email" { precondition(error.localizedDescription.contains("could not find this email")) }
+            }
             let unchanged = try vault.read("lg-session")
             precondition(unchanged == saved, "Failed login replaced working credentials")
         }

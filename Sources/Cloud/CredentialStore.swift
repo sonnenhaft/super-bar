@@ -93,8 +93,25 @@ final class CredentialAccessStatus: ObservableObject {
     @Published var needsAuthorization = false
     @Published var authorizing = false
     @Published var result: String?
+    @Published var authorizedProviders: Set<String> = []
+    @Published var accountRevision = 0
     static func requireAuthorization() {
         DispatchQueue.main.async { shared.needsAuthorization = true }
+    }
+}
+
+// Logout suspends the connection; saved passwords remain available for sign-in.
+enum AccountConnection {
+    static func signedOut(_ provider: String, preferences: UserDefaults = .standard) -> Bool {
+        preferences.bool(forKey: provider + ".signedOut")
+    }
+    static func connected(_ provider: String, preferences: UserDefaults = .standard) -> Bool {
+        !signedOut(provider, preferences: preferences) && preferences.bool(forKey: provider + ".connected")
+    }
+    static func setConnected(_ connected: Bool, provider: String, preferences: UserDefaults = .standard) {
+        preferences.set(!connected, forKey: provider + ".signedOut")
+        preferences.set(connected, forKey: provider + ".connected")
+        DispatchQueue.main.async { CredentialAccessStatus.shared.accountRevision &+= 1 }
     }
 }
 
@@ -107,7 +124,7 @@ enum CredentialAccess {
     static let shared = SessionCredentialVault(backing: KeychainCredentialVault())
 #endif
     static func retry() { shared.retryAccess() }
-    @MainActor static func authorize() async {
+    @MainActor static func authorize(provider: String? = nil) async {
         guard usesKeychain else { return }
         let status = CredentialAccessStatus.shared
         guard !status.authorizing else { return }
@@ -116,11 +133,24 @@ enum CredentialAccess {
         defer { status.authorizing = false }
         let count: Int? = await Task.detached {
             do {
-                return try shared.authorizeAccess(keys: ["deye-session", "tuya-session", "tcl-session", "lg-session", "lg-token"])
+                let keys = provider.map { [$0 + "-session"] } ?? ["deye-session", "tuya-session", "tcl-session", "lg-session", "lg-token"]
+                var count = try shared.authorizeAccess(keys: keys)
+                // Explicit one-time import from the previous local dev build, only
+                // after Allow Keychain. Existing Keychain accounts take precedence.
+                if let provider, count == 0,
+                   let resource = Bundle.main.url(forResource: "credential-import-path", withExtension: "txt"),
+                   let path = try? String(contentsOf: resource, encoding: .utf8), path.hasPrefix("/"),
+                   let data = try PrivateJSONFile.snapshotIfPresent(from: URL(fileURLWithPath: path).appendingPathComponent(provider + "-session.json"))?.data,
+                   (try? JSONSerialization.jsonObject(with: data)) is [String: Any] {
+                    try shared.write(data, key: provider + "-session")
+                    count = 1
+                }
+                return count
             } catch { return nil }
         }.value
         status.needsAuthorization = count == nil
         if let count {
+            if let provider { status.authorizedProviders.insert(provider) }
             status.result = count == 0
                 ? "Сохранённых аккаунтов на этом устройстве нет. Войдите в нужный сервис ниже."
                 : "Доступ открыт. Сохранённые аккаунты загружены."
@@ -157,11 +187,16 @@ enum CredentialStorageError: LocalizedError {
         email = preferences.string(forKey: provider + ".loginEmail") ?? ""
         server = Self.formServer(preferences.string(forKey: provider + ".loginServer") ?? "https://deyecloud.com")
     }
-    func restore() {
-        guard password.isEmpty,
+    func restore(force: Bool = false) {
+        guard force || password.isEmpty,
               let data = try? vault.read(provider + "-session"), data.count <= PrivateJSONFile.maximumCredentialBytes,
               let saved = try? JSONDecoder().decode(Secret.self, from: data),
               let savedEmail = saved.email else { return }
+        if force {
+            email = savedEmail; password = saved.password ?? ""
+            if let base = saved.base { server = Self.formServer(base) }
+            return
+        }
         prefill(email: savedEmail, server: saved.base)
         if email.trimmingCharacters(in: .whitespacesAndNewlines).caseInsensitiveCompare(savedEmail) == .orderedSame {
             password = saved.password ?? ""
@@ -222,7 +257,7 @@ struct KeychainCredentialVault: CredentialVault {
     }
     private func failure(_ status: OSStatus) -> NSError {
         CredentialAccessStatus.requireAuthorization()
-        return NSError(domain: NSOSStatusErrorDomain, code: Int(status), userInfo: [NSLocalizedDescriptionKey: "Нажмите «Дать доступ к Keychain». Сохранённые показания доступны."])
+        return NSError(domain: NSOSStatusErrorDomain, code: Int(status), userInfo: [NSLocalizedDescriptionKey: "Click Allow Keychain in Settings. Saved readings remain available."])
     }
 }
 

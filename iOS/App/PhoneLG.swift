@@ -15,6 +15,7 @@ struct PhoneLGDevice: Identifiable {
     var room: Double? { sample.room }
     var windKey: String { LGDeviceValues.windKey(in: profile) }
     var power: Bool? { sample.powerOn }
+    var online: Bool? { sample.online }
     private func capability(_ group: String, _ key: String) -> LGCapability {
         LGCapability(profile: profile, group: group, key: key)
     }
@@ -59,6 +60,7 @@ struct PhoneLGDevice: Identifiable {
         busy = true
         do { try await LGMobileClient.connect(email: email, password: password, country: country) }
         catch { busy = false; throw error }
+        AccountConnection.setConnected(true, provider: "lg", preferences: preferences)
         preferences.set(country.uppercased(), forKey: "country")
         accountGeneration &+= 1
         api = makeAPI(); devices = []; history = [:]; historyAttempt = [:]; historyProblem = [:]
@@ -78,6 +80,7 @@ struct PhoneLGDevice: Identifiable {
             try await validateCredentials(token, country, region)
             try saveToken(token)
         } catch { busy = false; throw error }
+        AccountConnection.setConnected(true, provider: "lg", preferences: preferences)
         preferences.set(country.uppercased(), forKey: "country")
         preferences.set(region, forKey: "region")
         accountGeneration &+= 1
@@ -86,12 +89,15 @@ struct PhoneLGDevice: Identifiable {
         await refresh()
     }
     func refresh() async {
+        guard !AccountConnection.signedOut("lg", preferences: preferences) else { return }
         guard !busy else { return }
+        let generation = accountGeneration
         busy = true
         defer { busy = false; changed?() }
         do {
             if devices.isEmpty {
                 let response = try await api.request("devices")
+                guard generation == accountGeneration else { return }
                 let list = response as? [[String: Any]] ?? find("devices", in: response) as? [[String: Any]] ?? []
                 devices = list.compactMap { item in
                     let info = object(item["deviceInfo"] ?? item)
@@ -105,17 +111,26 @@ struct PhoneLGDevice: Identifiable {
                 try Task.checkCancellation()
                 do {
                     if devices[index].profile.isEmpty {
-                        devices[index].profile = object(try await api.request("devices/\(try API.deviceComponent(devices[index].id))/profile"))
+                        let profile = object(try await api.request("devices/\(try API.deviceComponent(devices[index].id))/profile"))
+                        guard generation == accountGeneration else { return }
+                        devices[index].profile = profile
                     }
-                    devices[index].state = object(try await api.request("devices/\(try API.deviceComponent(devices[index].id))/state"))
+                    let state = object(try await api.request("devices/\(try API.deviceComponent(devices[index].id))/state"))
+                    guard generation == accountGeneration else { return }
+                    devices[index].state = state
                     devices[index].checked = Date(); devices[index].problem = nil
-                } catch { devices[index].problem = error.localizedDescription }
+                } catch {
+                    guard generation == accountGeneration else { return }
+                    devices[index].problem = error.localizedDescription
+                }
             }
             problem = nil
-        } catch { if !Task.isCancelled { problem = error.localizedDescription } }
+        } catch { if !Task.isCancelled && generation == accountGeneration { problem = error.localizedDescription } }
     }
     func send(_ device: PhoneLGDevice, group: String, key: String, value: Any) async {
+        guard !AccountConnection.signedOut("lg", preferences: preferences) else { return }
         guard !busy, let index = devices.firstIndex(where: { $0.id == device.id }) else { return }
+        let generation = accountGeneration
         guard device.allowed(group, key, value) else { problem = "This setting is not supported."; return }
         if group == "temperature", let n = lgNumber(value), !device.bounds.contains(n) { return }
         busy = true
@@ -124,22 +139,33 @@ struct PhoneLGDevice: Identifiable {
             var payload = [key: value]
             if group == "temperature" { payload["unit"] = "C" }
             _ = try await api.request("devices/\(try API.deviceComponent(device.id))/control", payload: [group: payload])
+            guard generation == accountGeneration else { return }
             var confirmed = false
             for _ in 0..<5 {
                 try await Task.sleep(nanoseconds: 800_000_000)
-                devices[index].state = object(try await api.request("devices/\(try API.deviceComponent(device.id))/state"))
+                guard generation == accountGeneration else { return }
+                let state = object(try await api.request("devices/\(try API.deviceComponent(device.id))/state"))
+                guard generation == accountGeneration else { return }
+                devices[index].state = state
                 devices[index].checked = Date()
                 if let actual = devices[index].value(group, key), equal(actual, value) { confirmed = true; break }
             }
             devices[index].problem = confirmed ? nil : "LG has not confirmed this change."
             problem = nil
-        } catch { devices[index].problem = error.localizedDescription }
+        } catch { if generation == accountGeneration { devices[index].problem = error.localizedDescription } }
     }
     var widgetMetrics: [WidgetMetric] {
         devices.map(\.widgetMetric)
     }
+    func logout() {
+        AccountConnection.setConnected(false, provider: "lg", preferences: preferences)
+        accountGeneration &+= 1
+        problem = "Logged out"
+        devices = []; history = [:]; changed?()
+    }
 
     func loadHistory(_ device: PhoneLGDevice) async {
+        guard !AccountConnection.signedOut("lg", preferences: preferences) else { return }
         let now = Date()
         if let previous = historyAttempt[device.id], now.timeIntervalSince(previous) < 3600,
            Calendar.current.isDate(previous, inSameDayAs: now) { return }

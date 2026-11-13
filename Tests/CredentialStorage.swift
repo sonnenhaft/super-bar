@@ -95,6 +95,10 @@ private final class ConcurrentVault: CredentialVault, @unchecked Sendable {
         draft.email = "new@example.test"; draft.password = "  unsuccessful draft  "
         draft.restore(); draft.prefill(email: "saved@example.test")
         precondition(draft.email == "new@example.test" && draft.password == "  unsuccessful draft  " && formVault.writes == 0)
+        AccountConnection.setConnected(true, provider: "deye", preferences: prefs)
+        AccountConnection.setConnected(false, provider: "deye", preferences: prefs)
+        precondition(AccountConnection.signedOut("deye", preferences: prefs) && !AccountConnection.connected("deye", preferences: prefs))
+        precondition(formVault.values["deye-session"] != nil && formVault.writes == 0, "Logout must preserve saved login credentials")
         precondition(!prefs.dictionaryRepresentation().values.contains { String(describing: $0).contains("synthetic password") || String(describing: $0).contains("unsuccessful draft") })
         let restarted = LoginDraft(provider: "deye", preferences: prefs, vault: formVault)
         restarted.restore()

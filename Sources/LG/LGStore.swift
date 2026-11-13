@@ -296,6 +296,7 @@ let intervals: [Double] = [1, 5, 30, 60, 300, 600]
     message = ""
   }
   func refresh() {
+    guard !AccountConnection.signedOut("lg") else { return }
     guard !autoRetry.stopped && !polling && !sending else { return }
     polling = true
     let gen = generation
@@ -383,6 +384,7 @@ let intervals: [Double] = [1, 5, 30, 60, 300, 600]
     send(edits)
   }
   func send(_ commands: [ControlChange]) {
+    guard !AccountConnection.signedOut("lg") else { return }
     guard !selected.isEmpty, commands.allSatisfy({ allowed($0.0, $0.1, $0.2) }) else { return }
     selections.enqueue(commands)
     message = ""
@@ -699,7 +701,9 @@ let intervals: [Double] = [1, 5, 30, 60, 300, 600]
     guard !connectingAccount else { throw LGError(message: "LG sign-in is already in progress.") }
     connectingAccount = true
     defer { connectingAccount = false }
+    try LGLoginInput(email: email, password: password, country: country).saveDevelopmentDraft()
     try await LGMobileClient.connect(email: email, password: password, country: country)
+    AccountConnection.setConnected(true, provider: "lg")
     defaults.set(country.uppercased(), forKey: "country")
     reloadAccount()
   }
@@ -711,6 +715,7 @@ let intervals: [Double] = [1, 5, 30, 60, 300, 600]
     let token = token.trimmingCharacters(in: .whitespacesAndNewlines)
     try await API.validateCredentials(token: token, country: country, region: region)
     try TokenFile.save(token)
+    AccountConnection.setConnected(true, provider: "lg")
     defaults.set(country.uppercased(), forKey: "country")
     defaults.set(region, forKey: "region")
     reloadAccount()
@@ -724,6 +729,11 @@ let intervals: [Double] = [1, 5, 30, 60, 300, 600]
     samples.removeAll()
     checked.removeAll()
     refresh()
+  }
+  func logout() {
+    AccountConnection.setConnected(false, provider: "lg")
+    reset(); devices = []; profiles.removeAll(); snapshots.removeAll(); samples.removeAll(); checked.removeAll()
+    message = "Logged out"; updateStatus()
   }
 }
 func flag(_ code: String) -> String {

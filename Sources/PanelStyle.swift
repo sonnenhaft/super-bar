@@ -114,7 +114,7 @@ struct ClimateDeviceCard<Controls: View>: View {
                 Text(DeviceDisplayName.clean(name)).font(.system(size: 12, weight: .medium)).lineLimit(1)
                 if let powerOn {
                     if powerOn { Circle().fill(leafGreen).frame(width:6,height:6).accessibilityLabel("ON") }
-                    else { Image(systemName:"power").foregroundStyle(.red).font(.system(size:14,weight:.semibold)).accessibilityLabel("OFF") }
+                    else { Image(systemName:"power").foregroundStyle(.gray).font(.system(size:14,weight:.semibold)).accessibilityLabel("OFF") }
                 }
                 Spacer(minLength:8)
                 if selected {

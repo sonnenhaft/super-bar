@@ -373,12 +373,12 @@ import AppKit
         var lgUpdates = 0
         lg.didRender = { lgUpdates += 1 }
         lg.connected = true
-        lg.state = ["temperature":["currentTemperature":21,"targetTemperature":22]]
+        lg.state = ["operation": ["airConOperationMode": "POWER_ON"], "temperature":["currentTemperature":21,"targetTemperature":22]]
         lg.updateStatus()
         lgUpdates = 0
         for _ in 0..<30 { lg.updateStatus() }
         precondition(lgUpdates == 0, "unchanged LG rendered repeatedly")
-        lg.state = ["temperature":["currentTemperature":22,"targetTemperature":23]]
+        lg.state = ["operation": ["airConOperationMode": "POWER_ON"], "temperature":["currentTemperature":22,"targetTemperature":23]]
         lg.updateStatus()
         precondition(lgUpdates > 0, "changed LG did not update")
         lgUpdates = 0
@@ -400,18 +400,19 @@ import AppKit
         lg.state = ["operation": ["airConOperationMode": "POWER_OFF"],
                     "temperature": ["currentTemperature": 28, "targetTemperature": 22]]
         lg.updateStatus()
-        precondition(lg.readout.image == nil && lg.readout.attributedTitle.string == "⏻ / 28°")
+        precondition(lg.readout.image == nil && lg.readout.attributedTitle.string == "⏻")
         precondition(lg.readout.attributedTitle.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor == .systemRed)
         lg.toggleVisibility("icon")
-        precondition(lg.readout.image == nil && lg.readout.attributedTitle.string == "⏻ / 28°")
+        precondition(lg.readout.image == nil && lg.readout.attributedTitle.string == "⏻")
         lg.toggleVisibility("sensor")
         precondition(lg.readout.image == nil && lg.readout.attributedTitle.string == "⏻")
         lg.toggleVisibility("current")
         precondition(lg.readout.image == nil && lg.readout.attributedTitle.string.isEmpty)
-        precondition(lg.sample(for: testID)?.value("sensor") == "28°")
+        precondition(lg.sample(for: testID)?.room == nil && lg.sample(for: testID)?.value("sensor") == "—", "Powered-off LG must hide its cached room reading")
         lg.state["operation"] = ["airConOperationMode": "POWER_ON"]
         lg.toggleVisibility("current")
         precondition(lg.readout.image == nil && lg.readout.attributedTitle.string == "22°")
+        precondition(lg.sample(for: testID)?.value("sensor") == "28°", "Powered-on LG must expose its room reading again")
         let pinnedTitle = lg.readout.attributedTitle.string
         lg.samples[testID] = LGSample(lg.state)
         lg.selected = "another-device"

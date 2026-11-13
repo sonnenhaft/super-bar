@@ -25,7 +25,7 @@ import Combine
         loginDraft = LoginDraft(provider: "deye", preferences: defaults)
         self.cloud = cloud
         pinned = defaults.bool(forKey: "deye.showPower")
-        if let data = defaults.data(forKey: "deye.lastReading"), data.count <= 8 * 1024 * 1024 {
+        if !AccountConnection.signedOut("deye", preferences: defaults), let data = defaults.data(forKey: "deye.lastReading"), data.count <= 8 * 1024 * 1024 {
             reading = try? JSONDecoder().decode(DeyeReading.self, from: data)
         }
     }
@@ -39,6 +39,10 @@ import Combine
     }
     func start() { refresh() }
     func stop() { task?.cancel() }
+    func logout() {
+        AccountConnection.setConnected(false, provider: "deye", preferences: defaults)
+        stop(); reading = nil; needsSignIn = true; problem = "Logged out"
+    }
     // iOS foreground/background work awaits the same operation used by the Mac menu.
     func refreshAndWait() async {
         refresh()
@@ -48,6 +52,7 @@ import Combine
         }
     }
     func refresh() {
+        guard !AccountConnection.signedOut("deye", preferences: defaults) else { return }
         guard !refreshing else { return }
         refreshing = true
         let previous = reading
@@ -87,6 +92,7 @@ import Combine
         refreshing = true
         do {
             try await cloud.signIn(email: email, password: password, base: server)
+            AccountConnection.setConnected(true, provider: "deye", preferences: defaults)
             reading = nil
             historyFetchedAt = nil
             defaults.removeObject(forKey: "deye.lastReading")

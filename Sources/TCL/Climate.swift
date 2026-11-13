@@ -256,7 +256,7 @@ final class ClimateStore: ObservableObject {
                   let rows = try? JSONSerialization.jsonObject(with: data) as? [JSONObject] else { return }
             let timestamp = (try? file.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
             DispatchQueue.main.async {
-                if !self.didRead { self.accept(rows, at: timestamp) }
+                if !self.didRead && !AccountConnection.signedOut("tcl") { self.accept(rows, at: timestamp) }
             }
         }
     }
@@ -267,6 +267,7 @@ final class ClimateStore: ObservableObject {
             DispatchQueue.main.async {
                 switch result {
                 case .success:
+                    AccountConnection.setConnected(true, provider: "tcl")
                     self.problem = nil
                     self.commandError = nil
                     self.needsSignIn = false
@@ -281,6 +282,11 @@ final class ClimateStore: ObservableObject {
         guard selection != ac.id else { return }
         selection = ac.id
         UserDefaults.standard.set(ac.id, forKey: "selectedAirconID")
+    }
+    func logout() {
+        AccountConnection.setConnected(false, provider: "tcl")
+        pending = []; refreshRequested = false; devices = []; confirmedRows = []
+        needsSignIn = true; offline = true; problem = "Logged out"
     }
     var refreshInterval: TimeInterval {
         let saved = UserDefaults.standard.double(forKey:"tcl.refreshInterval")
@@ -378,6 +384,7 @@ final class ClimateStore: ObservableObject {
         }
     }
     private func enqueue(_ ac: Aircon, _ fields: [(String, Int)], label: String) {
+        guard !AccountConnection.signedOut("tcl") else { return }
         guard ac.online == true, !ac.failed else { return }
         let index = pending.firstIndex { $0.deviceID == ac.id } ?? pending.count
         if index == pending.count { pending.append(Batch(deviceID: ac.id, name: ac.name, edits: [])) }
@@ -396,11 +403,13 @@ final class ClimateStore: ObservableObject {
     }
     func manualRefresh() { refreshRequested = true; advance() }
     func refresh() {
+        guard !AccountConnection.signedOut("tcl") else { return }
         if refreshing { return } // The current read already covers this request.
         refreshRequested = true
         advance()
     }
     private func advance() {
+        guard !AccountConnection.signedOut("tcl") else { return }
         guard active == nil, !refreshing else { return }
         if !pending.isEmpty {
             guard !collecting else { return }
@@ -418,6 +427,7 @@ final class ClimateStore: ObservableObject {
                 let result = Result { try self.fetch() }
                 DispatchQueue.main.async {
                     self.refreshing = false
+                    guard !AccountConnection.signedOut("tcl") else { return }
                     switch result {
                     case .success(let rows):
                         self.needsSignIn = false
@@ -436,6 +446,7 @@ final class ClimateStore: ObservableObject {
     }
     private func finish(_ batch: Batch, result: Result<JSONObject, Error>) {
         active = nil
+        guard !AccountConnection.signedOut("tcl") else { return }
         switch result {
         case .success(let row):
             if let index = confirmedRows.firstIndex(where: { Self.id(of: $0) == batch.deviceID }) {

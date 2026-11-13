@@ -1,6 +1,25 @@
 import Foundation
 import CryptoKit
 
+// The explicit desktop dev build shares this draft with the curl check.
+// Production builds keep credentials in Keychain and never read/write this file.
+struct LGLoginInput: Codable {
+    let email: String, password: String, country: String
+    static func developmentDraft() -> Self? {
+        #if SUPER_BAR_DEV_CREDENTIALS && os(macOS)
+        guard let data = try? DevelopmentCredentialVault().read("lg-login-input") else { return nil }
+        return try? JSONDecoder().decode(Self.self, from: data)
+        #else
+        return nil
+        #endif
+    }
+    func saveDevelopmentDraft() throws {
+        #if SUPER_BAR_DEV_CREDENTIALS && os(macOS)
+        try DevelopmentCredentialVault().write(JSONEncoder().encode(self), key: "lg-login-input")
+        #endif
+    }
+}
+
 // Native implementation of the ThinQ mobile account protocol. Protocol references:
 // https://github.com/RobotPool/homebridge-lg-thinq/blob/master/src/lib/Auth.ts
 // https://github.com/ollo69/ha-smartthinq-sensors/issues/1016
@@ -80,20 +99,29 @@ struct LGMobileHTTP {
         }
         let (data, response) = try await CloudResponse.data(for: request, using: network)
         guard let response = response as? HTTPURLResponse else { throw LGError(message: "LG \(stage): no response.") }
-        guard (200..<300).contains(response.statusCode) else { throw LGError(message: "LG \(stage): HTTP \(response.statusCode).") }
+        guard (200..<300).contains(response.statusCode) else {
+            let result = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
+            throw Self.rejection(result, stage: stage, status: response.statusCode)
+        }
         return data
     }
     func json(_ url: URL, headers: [String: String] = [:], body: String? = nil, payload: [String: Any]? = nil, stage: String) async throws -> [String: Any] {
         let data = try await data(url, headers: headers, body: body, json: payload, stage: stage)
         guard let result = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw LGError(message: "LG \(stage): invalid response.") }
         if result["error"] != nil || result["lgoauth_error_code"] != nil || (result["status"] as? Int).map({ $0 != 1 }) == true || (result["resultCode"] as? String).map({ $0 != "0000" }) == true {
-            // Provider messages may echo user input or tokens. Expose bounded codes only.
-            let code = object(result["error"] ?? [:])["code"] ?? result["lgoauth_error_code"] ?? result["resultCode"] ?? "rejected"
-            let raw = String(describing: code)
-            let safe = raw.range(of: "^[A-Za-z0-9_.-]{1,80}$", options: .regularExpression) != nil ? raw : "rejected"
-            throw LGError(message: "LG \(stage): \(safe).")
+            throw Self.rejection(result, stage: stage)
         }
         return result
+    }
+    static func rejection(_ result: [String: Any], stage: String, status: Int? = nil) -> LGError {
+        // Provider messages can echo credentials. Translate verified codes ourselves.
+        let code = object(result["error"] ?? [:])["code"] ?? result["lgoauth_error_code"] ?? result["resultCode"]
+        let raw = code.map { String(describing: $0) } ?? "rejected"
+        let safe = raw.range(of: "^[A-Za-z0-9_.-]{1,80}$", options: .regularExpression) != nil ? raw : "rejected"
+        if stage == "account login", safe == "MS.001.01" {
+            return LGError(message: "LG could not find this email. Check the email and account region (MS.001.01).")
+        }
+        return LGError(message: "LG \(stage): \(status.map { "HTTP \($0), " } ?? "")\(safe).")
     }
     func oauth(_ base: String, fields: [(String, String)]) async throws -> [String: Any] {
         let date = Self.date(), body = Self.form(fields)
@@ -117,7 +145,8 @@ struct LGMobileHTTP {
         // Never send credentials to it unless it is a trusted HTTPS LG endpoint;
         // retain the already validated server that completed the token exchange.
         let value = (value as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let selected = !value.isEmpty && (try? url(value)) != nil ? value : fallback
+        let hint = try? url(value)
+        let selected = hint != nil && hint?.query == nil ? value : fallback
         _ = try url(selected, stage: "token backend")
         return selected
     }
