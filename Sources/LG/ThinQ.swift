@@ -28,59 +28,28 @@ func degree(_ value: Double?) -> String {
   guard let v = value else { return "—" }
   return v == v.rounded() ? String(format: "%.0f°", v) : String(format: "%.1f°", v)
 }
-enum TokenFile {
-  private static var store: TokenCredentialStore {
-    #if os(macOS)
-    TokenCredentialStore(key: "lg-token", legacyFile: FileManager.default.homeDirectoryForCurrentUser
-      .appendingPathComponent("Library/Application Support/LGBar/token.txt"))
-    #else
-    TokenCredentialStore(key: "lg-token")
-    #endif
-  }
-  static func readSecure() throws -> String {
-    var source: URL?
-    #if os(macOS)
-    source = PrivateJSONFile.importFile("lg")
-    // An explicitly local checkout can import, but never delete a CLI-owned token.
-    let dist = Bundle.main.bundleURL.deletingLastPathComponent()
-    if source == nil && dist.lastPathComponent == "dist" {
-      source = dist.deletingLastPathComponent().appendingPathComponent("token.txt")
-    }
-    #endif
-    return try store.read(importFile: source) ?? ""
-  }
-  static func read() -> String { (try? readSecure()) ?? "" }
-  static func save(_ token: String) throws { CredentialAccess.retry(); try store.save(token) }
-}
-
+// Shared adapter for the mobile ThinQ account API. There is no PAT fallback.
 final class API {
-  private let network: URLSession
-  private let ownsSession: Bool
-  private let readToken: () throws -> String
+  private let network: URLSession?
   private let mobile: LGMobileClient?
-  deinit { if ownsSession { network.invalidateAndCancel() } }
+  @MainActor lazy var history = LGCloudHistory()
+  private let ownsSession: Bool
+  private let requestBody: (String, [String: Any]?) async throws -> Any?
   private(set) var needsSignIn = false
-  let country: String, region: String, client: String
-  init(network: URLSession? = nil, readToken: (() throws -> String)? = nil,
-       preferences: UserDefaults = defaults, country: String? = nil, region: String? = nil) {
-    self.ownsSession = network == nil
-    self.network = network ?? CloudRedirects.session()
-    self.readToken = readToken ?? TokenFile.readSecure
-    mobile = readToken == nil ? LGMobileClient(network: self.network) : nil
-    self.country = country ?? preferences.string(forKey: "country") ?? "PH"
-    self.region = region ?? preferences.string(forKey: "region") ?? "kic"
-    client = preferences.string(forKey: "client") ?? UUID().uuidString
-    preferences.set(client, forKey: "client")
+  deinit { if ownsSession { network?.invalidateAndCancel() } }
+  init(network: URLSession? = nil, vault: any CredentialVault = CredentialAccess.shared) {
+    let connection = network ?? CloudRedirects.session()
+    self.network = connection; ownsSession = network == nil
+    let mobile = LGMobileClient(network: connection, vault: vault)
+    self.mobile = mobile
+    requestBody = { try await mobile.requestIfConfigured($0, payload: $1) }
   }
-  static func validateCredentials(token: String, country: String, region: String, network: URLSession? = nil) async throws {
-    guard !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-          country.range(of: "^[A-Za-z]{2}$", options: .regularExpression) != nil,
-          ["kic", "eic", "aic"].contains(region) else {
-      throw LGError(message: "Enter a token, two-letter country and a valid region.")
-    }
-    // A candidate client must not change the saved token or regional preferences.
-    let candidate = API(network: network, readToken: { token }, country: country.uppercased(), region: region)
-    _ = try await candidate.request("devices")
+  init(request: @escaping (String, [String: Any]?) async throws -> Any?) {
+    network = nil; mobile = nil; ownsSession = false; requestBody = request
+  }
+  func energyHistory(_ id: String, _ query: LGHistoryQuery) async throws -> LGHistoryPage {
+    guard let mobile else { throw LGError(message: "LG history unavailable.") }
+    return try await mobile.energyHistory(id, query: query)
   }
   static func deviceComponent(_ id: String) throws -> String {
     guard !id.isEmpty, id.utf8.count <= 512, id != ".", id != "..",
@@ -89,81 +58,84 @@ final class API {
     }
     return value
   }
-  static func checkedURL(region: String, path: String) throws -> URL {
-    guard ["kic", "eic", "aic"].contains(region),
-          path == "devices" || path.hasPrefix("devices/"),
+  static func validatePath(_ path: String) throws {
+    guard path == "devices" || path.hasPrefix("devices/"),
           let relative = URLComponents(string: path), relative.scheme == nil, relative.host == nil,
           relative.user == nil, relative.password == nil, relative.fragment == nil,
+          relative.query == nil,
           !relative.path.split(separator: "/").contains(where: { $0 == "." || $0 == ".." }) else {
-      throw LGError(message: "Invalid LG API address or region")
+      throw LGError(message: "Invalid LG request path")
     }
-    var endpoint = URLComponents()
-    endpoint.scheme = "https"
-    endpoint.host = "api-" + region + ".lgthinq.com"
-    endpoint.percentEncodedPath = "/" + relative.percentEncodedPath
-    endpoint.percentEncodedQuery = relative.percentEncodedQuery
-    guard let url = endpoint.url else { throw LGError(message: "Invalid LG API address") }
-    return url
+  }
+  @MainActor private var nextDirectoryRead: Date?
+  @MainActor func accountDirectoryIfNeeded(hasDevices: Bool) async throws -> LGAccountDirectory? {
+    let now = Date()
+    if hasDevices && (nextDirectoryRead ?? .distantFuture) > now { return nil }
+    // Device membership changes much less often than readings. A failed background
+    // inventory refresh must not interrupt reads for devices we already know.
+    nextDirectoryRead = now.addingTimeInterval(15 * 60)
+    do { return try await accountDirectory() }
+    catch is CancellationError { throw CancellationError() }
+    catch { if hasDevices { return nil }; throw error }
+  }
+  private func accountDirectory() async throws -> LGAccountDirectory {
+    if let mobile {
+      return try requireSession(try await mobile.accountDirectoryIfConfigured())
+    }
+    let response = try await request("devices")
+    if let directory = response as? LGAccountDirectory { return directory }
+    let rows = response as? [[String: Any]] ?? find("devices", in: response) as? [[String: Any]] ?? []
+    let conditioners = rows.compactMap { item -> Device? in
+      let info = object(item["deviceInfo"] ?? item)
+      guard info["deviceType"] as? String == "DEVICE_AIR_CONDITIONER",
+            let id = item["deviceId"] as? String ?? info["deviceId"] as? String else { return nil }
+      return Device(id: id, name: info["alias"] as? String ?? "LG")
+    }
+    return LGAccountDirectory(airConditioners: conditioners, televisions: [])
+  }
+  static func connectHistoryAPIKey(vault: any CredentialVault) throws -> String {
+    if let value = ProcessInfo.processInfo.environment["SUPER_BAR_LG_CONNECT_API_KEY"], !value.isEmpty { return value }
+    if let data = try vault.read("lg-connect-api-key"), let value = String(data: data, encoding: .utf8), !value.isEmpty { return value }
+    throw LGError(message: "ThinQ Connect history API key is not configured.")
   }
   func request(_ path: String, payload: [String: Any]? = nil) async throws -> Any {
-    // Validate persisted preferences at the boundary before reading/attaching the PAT.
-    let url = try Self.checkedURL(region: region, path: path)
-    if let result = try await mobile?.requestIfConfigured(path, payload: payload) {
-      needsSignIn = false
-      return result
+    try Self.validatePath(path)
+    return try requireSession(try await requestBody(path, payload))
+  }
+  private func requireSession<T>(_ result: T?) throws -> T {
+    guard let result else {
+      needsSignIn = true
+      throw LGError(message: "Sign in to LG ThinQ in Settings with your email and password.")
     }
-    // Do not mistake a locked Keychain for a missing account. Retry after unlock.
-    let token = try readToken()
-    needsSignIn = token.isEmpty
-    guard !needsSignIn else { throw LGError(message: "No token configured") }
-    var r = URLRequest(url: url)
-    r.timeoutInterval = 20
-    r.httpMethod = payload == nil ? "GET" : "POST"
-    var uuid = UUID().uuid
-    let message = withUnsafeBytes(of: &uuid) { Data($0) }.base64EncodedString()
-      .replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_")
-      .replacingOccurrences(of: "=", with: "")
-    let headers = [
-      "Authorization": "Bearer \(token)", "x-country": country, "x-client-id": client,
-      "x-message-id": message, "x-service-phase": "OP",
-      "x-api-key": "ZkVkqP9jq44HuWkbNX9EKzZmmn7ToPY3A4vQ4tY8", "Content-Type": "application/json",
-    ]
-    for (k, v) in headers { r.setValue(v, forHTTPHeaderField: k) }
-    if let p = payload {
-      r.setValue("true", forHTTPHeaderField: "x-conditional-control")
-      r.httpBody = try JSONSerialization.data(withJSONObject: p)
-    }
-    let data: Data, response: URLResponse
-    do {
-      (data, response) = try await CloudResponse.data(for: r, using: network)
-    } catch let error as URLError {
-      switch error.code {
-      case .cannotFindHost, .dnsLookupFailed: throw LGError(message: "DNS lookup failed")
-      case .notConnectedToInternet: throw LGError(message: "No internet connection")
-      case .timedOut: throw LGError(message: "ThinQ timed out")
-      case .cancelled: throw CancellationError()
-      default: throw LGError(message: "Network error (\(error.code.rawValue))")
-      }
-    }
-    guard let h = response as? HTTPURLResponse else {
-      throw LGError(message: "No response from LG")
-    }
-    guard (200..<300).contains(h.statusCode) else {
-      throw LGError(message: "LG HTTP \(h.statusCode). Check token, country and region.")
-    }
-    if data.isEmpty { return [:] as [String: Any] }
-    guard let json = try? JSONSerialization.jsonObject(with: data) else { throw LGError(message: "LG returned invalid JSON") }
-    if let e = object(json)["error"] {
-      let code = object(e)["code"] as? String ?? "error"
-      let safe = code.range(of: "^[A-Za-z0-9_.-]{1,64}$", options: .regularExpression) != nil ? code : "error"
-      throw LGError(message: "LG: \(safe)")
-    }
-    return object(json)["response"] ?? json
+    needsSignIn = false
+    return result
   }
 }
 struct Device {
   let id: String
   let name: String
+}
+struct LGAccountTelevision: Identifiable, Equatable {
+  let id: String
+  let name: String
+  let macAddress: String?
+  let online: Bool?
+  static func cloudOnline(_ raw: Any?) -> Bool? {
+    if let number = raw as? NSNumber {
+      if number.doubleValue == 1 { return true }
+      if number.doubleValue == 0 { return false }
+      return nil
+    }
+    switch (raw as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+    case "true", "1", "y", "online": return true
+    case "false", "0", "n", "offline": return false
+    default: return nil
+    }
+  }
+}
+struct LGAccountDirectory {
+  let airConditioners: [Device]
+  let televisions: [LGAccountTelevision]
 }
 
 func liveWatts(_ value: Any) -> Double? {
@@ -178,27 +150,6 @@ func liveWatts(_ value: Any) -> Double? {
     case "w", "watt", "watts": return n
     case "kw", "kilowatt", "kilowatts": return 1000 * n
     default: continue
-    }
-  }
-  return nil
-}
-func formatEnergy(_ wattHours: Double) -> String {
-  DisplayUnits.energy(wattHours)
-}
-
-func energyTotal(_ value: Any) -> Double? {
-  let result = object(object(value)["result"] ?? value)
-  if let n = lgNumber(result["total"]) { return n }
-  if let n = lgNumber(result["energyUsage"]) { return n }
-  if let n = lgNumber(result["value"]) { return n }
-  for key in ["dataList", "usage", "data", "values", "energyUsage", "details"] {
-    if let a = result[key] as? [Any], !a.isEmpty {
-      let readings = a.compactMap { v -> Double? in
-        if let n = lgNumber(v) { return n }
-        let d = object(v)
-        return lgNumber(d["value"] ?? d["energyUsage"] ?? d["usage"])
-      }
-      if readings.count == a.count { return readings.reduce(0, +) }
     }
   }
   return nil

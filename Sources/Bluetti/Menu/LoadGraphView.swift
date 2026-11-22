@@ -7,7 +7,7 @@ struct LoadChartPoint {
 }
 
 struct LoadChartHistory {
-    static let window: TimeInterval = 30 * 60
+    static let window: TimeInterval = 60 * 60
     private(set) var points: [LoadChartPoint] = []
     private var pendingGap = true
 
@@ -33,8 +33,8 @@ struct LoadChartHistory {
         if let first = points.first, first.timestamp < cutoff {
             points.removeFirst(points.prefix { $0.timestamp < cutoff }.count)
         }
-        // Include both ends of the 30-minute window at one sample per second.
-        if points.count > 1801 { points.removeFirst(points.count - 1801) }
+        // Include both ends of the hour at one sample per second.
+        if points.count > 3601 { points.removeFirst(points.count - 3601) }
     }
 
     mutating func markGap() { pendingGap = true }
@@ -65,7 +65,7 @@ final class LoadGraphView: NSView {
     init() {
         super.init(frame: NSRect(x: 0, y: 0, width: 240, height: 106))
         autoresizingMask = [.width]
-        toolTip = "AC and DC output power over the past 30 minutes."
+        toolTip = "AC and DC output power over the last hour."
         setAccessibilityElement(true)
         setAccessibilityRole(.image)
         setAccessibilityLabel("BLUETTI output power in watts over time")
@@ -105,8 +105,7 @@ final class LoadGraphView: NSView {
         let plot = NSRect(x: bounds.minX + 44, y: bounds.minY + 24,
                           width: bounds.width - 56, height: bounds.height - 36)
         guard plot.width > 0, plot.height > 0 else { return }
-        let available = points.first.map { now.timeIntervalSince($0.timestamp) } ?? 60
-        let span = min(LoadChartHistory.window, max(60, available))
+        let span = LoadChartHistory.window
         let start = now.addingTimeInterval(-span)
         let maximum = scaleMaximum()
         let labelAttributes: [NSAttributedString.Key: Any] = [

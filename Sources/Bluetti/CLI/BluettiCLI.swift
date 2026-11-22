@@ -103,13 +103,13 @@ enum BluettiNativeCommand {
     status   Read one fresh Bluetooth sample as JSON.
     percent  Read a fresh sample and print its integer battery percentage.
     scan     Find nearby AC50P stations and print their names and IDs as JSON.
-    cached   Read BluettiBar's saved sample without Bluetooth; reject stale data.
+    cached   Read Super Bar's saved sample without Bluetooth; reject stale data.
 
     --device accepts an exact ID or part of the Bluetooth name (not case-sensitive).
     Multiple matching stations are an error. Default operation timeout: 25 seconds.
 
     Close the official BLUETTI phone app before connecting. macOS may request
-    Bluetooth access for BluettiBar or the terminal used to launch this helper.
+    Bluetooth access for Super Bar or the terminal used to launch this helper.
 
     """
 
@@ -150,13 +150,15 @@ enum BluettiNativeCommand {
         _ = signal(SIGPIPE, SIG_IGN)
         do {
             var command = arguments[...]
+            let stationPreview = command.first == "--station-preview"
+            if stationPreview { command = command.dropFirst() }
             let menuRead = command.first == "--menu-read"
             if menuRead { command = command.dropFirst() }
             let interval: PollInterval?
             if command.first == "--poll-session" {
                 command = command.dropFirst()
                 guard let value = command.first, let seconds = Int(value),
-                      let choice = PollInterval(rawValue: seconds), choice.keepsConnection,
+                      let choice = PollInterval(rawValue: seconds), menuRead || choice.keepsConnection,
                       command.dropFirst().first == "status" else {
                     throw BluettiCommandError("arguments", "Invalid polling session.")
                 }
@@ -164,6 +166,9 @@ enum BluettiNativeCommand {
                 command = command.dropFirst()
             } else { interval = nil }
             let options = try BluettiOptions.parse(Array(command))
+            if stationPreview, menuRead || interval != nil || options.command != .status || UUID(uuidString: options.device ?? "") == nil {
+                throw BluettiCommandError("arguments", "Station preview requires status and one station UUID.")
+            }
             if options.command == .help {
                 try BluettiFiles.writeAll(Data(usage.utf8), descriptor: STDOUT_FILENO)
                 return 0
@@ -174,7 +179,8 @@ enum BluettiNativeCommand {
                                                        now: BluettiFiles.unixNow()))
                 return 0
             }
-            let bluetoothLock = try BluettiBluetoothLock(directory: directory)
+            let bluetoothLock = try BluettiBluetoothLock(directory: directory,
+                filename: stationPreview ? "bluetooth-preview.lock" : "bluetooth.lock")
             defer { bluetoothLock.release() }
             let cancellation = BluettiCancellationSignals()
             return try withExtendedLifetime(cancellation) {
@@ -185,17 +191,25 @@ enum BluettiNativeCommand {
                     try writeJSONObject(["ok": true, "devices": entries])
                 } else {
                     try BluettiBluetooth.readSamples(device: options.device, timeout: TimeInterval(options.timeout),
-                                                     interval: interval, discovered: { devices in
+                                                     interval: interval, menuRead: menuRead, directory: directory,
+                                                     stationPreview: stationPreview, discovered: { devices in
                         // Keep nearby batteries selectable even if the connection fails.
-                        if menuRead, !devices.isEmpty {
+                        if menuRead {
                             try writeJSONObject(["phase": "discovered", "devices": devices.map(\.json)])
+                        }
+                    }, connectionChanged: { station in
+                        guard menuRead else { return }
+                        if let station {
+                            try writeJSONObject(["phase": "connected", "device": station.json])
+                        } else {
+                            try writeJSONObject(["phase": "disconnected"])
                         }
                     }, willRead: {
                         if menuRead { try writeJSONObject(["phase": "reading"]) }
                     }) { object in
                         var status = try BluettiStatus.fromNative(object)
                         try BluettiFiles.validateStatus(status, now: BluettiFiles.unixNow())
-                        BluettiRuntimeEstimator.attach(to: &status, directory: directory)
+                        BluettiRuntimeEstimator.attach(to: &status, directory: stationPreview ? nil : directory)
                         if options.command == .percent {
                             try BluettiFiles.writeAll(Data("\(status.batteryPercent)\n".utf8), descriptor: STDOUT_FILENO)
                         } else { try writeJSON(status) }

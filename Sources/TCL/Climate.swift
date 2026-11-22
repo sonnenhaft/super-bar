@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import Combine
 
 let tclModes = [(0, "Auto"), (1, "Cool"), (2, "Dry"), (3, "Fan"), (4, "Heat")]
 let verticalStops = ["Up", "Upper middle", "Center", "Lower middle", "Down"]
@@ -26,6 +27,14 @@ struct Aircon: Identifiable {
     let report: [String: Any]
     let modeName: String
     let sensorTime: Date?
+    let powerChangedAt: TimeInterval?
+    private let wattSample: WattSample?
+    func measuredWatts(at date: Date = .now) -> Double? {
+        guard online == true, !failed, let wattSample,
+              wattSample.timestamp >= (powerChangedAt ?? 0),
+              (0...300).contains(date.timeIntervalSince1970 - wattSample.timestamp) else { return nil }
+        return wattSample.watts
+    }
     let failed: Bool
     init?(_ row: [String: Any]) {
         guard let name = row["name"] as? String, !name.isEmpty else { return nil }
@@ -38,6 +47,10 @@ struct Aircon: Identifiable {
         let code = whole(report["workMode"])
         modeName = tclModes.first { $0.0 == code }?.1 ?? words[(row["mode"] as? String) ?? ""] ?? "—"
         sensorTime = (row["indoor_reported_at"] as? String).flatMap { ISO8601DateFormatter().date(from: $0) }
+        powerChangedAt = EnergyHistory.number(row["power_changed_at"])
+        if let watts = EnergyHistory.reportedWatts(row), let timestamp = EnergyHistory.number(row["watts_reported_at"]) {
+            wattSample = WattSample(timestamp: timestamp, watts: watts)
+        } else { wattSample = nil }
         failed = row["error"] is String
     }
     func has(_ key: String) -> Bool { report[key] != nil && !(report[key] is NSNull) && number(report[key]) != -1 }
@@ -46,7 +59,8 @@ struct Aircon: Identifiable {
     static func setpoints(in report: [String: Any]) -> [Int] {
         let low = whole(report["lowerTemperatureLimit"]).flatMap { (16...30).contains($0) ? $0 : nil } ?? 16
         let high = whole(report["upperTemperatureLimit"]).flatMap { (16...30).contains($0) ? $0 : nil } ?? 30
-        return low <= high ? Array(low...high) : Array(16...30)
+        guard low <= high else { return Array(16...26) }
+        return low <= min(high, 26) ? Array(low...min(high, 26)) : []
     }
     var fanField: String { has("windSpeed7Gear") ? "windSpeed7Gear" : "windSpeed" }
     var fanOptions: [(Int, String)] {
@@ -129,11 +143,20 @@ struct Aircon: Identifiable {
         }
         return fields
     }
+    var ecoEnabled: Bool { DeviceService.flag(report["ECO"]) == true || DeviceService.flag(report["advancedECOMode"]) == true }
     var ecoChanges: [(String, Int)]? {
         guard has("ECO") else { return nil }
-        if code("ECO") == 1 { return [("ECO", 0)] }
-        guard has("targetTemperature"), setpoints.contains(26), has(fanField), has("silenceSwitch") else { return nil }
-        var fields = [("targetTemperature", 26)] + fanChanges(1)
+        // Eco is a cooling option. Switching it off returns to ordinary Cool,
+        // including when a different mode was selected in the vendor app.
+        let cooling = has("workMode") && code("workMode") != 1 ? [("workMode", 1)] : []
+        if ecoEnabled {
+            var fields = cooling + [("ECO", 0)]
+            if DeviceService.flag(report["advancedECOMode"]) == true { fields.append(("advancedECOMode", 0)) }
+            return fields
+        }
+        guard has("targetTemperature"), setpoints.contains(26) else { return nil }
+        var fields = cooling + [("targetTemperature", 26)]
+        if has(fanField) && has("silenceSwitch") { fields += fanChanges(1) }
         if has("turbo") { fields.append(("turbo", 0)) }
         fields.append(("ECO", 1))
         return fields
@@ -206,6 +229,18 @@ final class ClimateStore: ObservableObject {
             edits.removeAll { $0.field == edit.field }
             edits.append(edit)
         }
+
+        func followed(by batch: Batch) -> Batch {
+            var combined = self
+            for edit in batch.edits { combined.add(edit) }
+            return combined
+        }
+
+        func matches(_ row: JSONObject?) -> Bool {
+            guard let row, let device = Aircon(row), device.online == true, !device.failed,
+                  let expected = try? DeviceService.desired(fields, report: device.report) else { return false }
+            return expected.allSatisfy { device.code($0.key) == $0.value }
+        }
     }
 
     @Published private(set) var devices: [Aircon] = []
@@ -217,6 +252,8 @@ final class ClimateStore: ObservableObject {
     @Published private(set) var problem: String?
     @Published private(set) var offline = true
     @Published private(set) var didRead = false
+    // Emitted after confirmedRows and the displayed devices are reconciled.
+    @Published private(set) var reportedRevision: UInt64 = 0
 
     let directory: URL
     let history: EnergyHistory
@@ -227,15 +264,23 @@ final class ClimateStore: ObservableObject {
     private let batchingDelay: TimeInterval
     // Only the main queue changes these. The worker gets an immutable batch.
     private var confirmedRows: [JSONObject] = []
+    private var confirmedDates: [String: Date] = [:]
     private var active: Batch?
     private var pending: [Batch] = []
+    // A publish may reach the unit even if its acknowledgement is lost.
+    // Keep that choice visible until the already scheduled status read returns.
+    private var awaitingReadback: [String: (batch: Batch, message: String)] = [:]
     private var collecting = false
-    private var refreshRequested = false
+    @Published private var refreshRequested = false
+    private let finishedReads = CurrentValueSubject<Int, Never>(0)
+    private var accountGeneration = 0
+    var isRefreshingReadings: Bool { refreshRequested || refreshing }
     private var commandError: String?
     private var lastManualFan: [String: Int] = [:]
     private var timer: Timer?
 
     var selected: Aircon? { devices.first { $0.id == selection } ?? devices.first { $0.name == selection } ?? devices.first }
+    var hasPendingCommands: Bool { active != nil || !pending.isEmpty || !awaitingReadback.isEmpty }
 
     init(directory: URL = DeviceService.directory, batchingDelay: TimeInterval = 0.25,
          fetch: (() throws -> [JSONObject])? = nil,
@@ -285,17 +330,22 @@ final class ClimateStore: ObservableObject {
     }
     func logout() {
         AccountConnection.setConnected(false, provider: "tcl")
-        pending = []; refreshRequested = false; devices = []; confirmedRows = []
+        accountGeneration &+= 1
+        pending = []; active = nil; awaitingReadback.removeAll()
+        command = nil; commandError = nil
+        refreshRequested = false; devices = []; confirmedRows = []; confirmedDates = [:]
         needsSignIn = true; offline = true; problem = "Logged out"
+        reportedRevision &+= 1
+        finishedReads.send(finishedReads.value + 1)
     }
     var refreshInterval: TimeInterval {
-        let saved = UserDefaults.standard.double(forKey:"tcl.refreshInterval")
-        return saved >= 1 ? saved : 60
+        TimeInterval(RefreshPreferences.seconds(.tcl))
     }
     func setRefreshInterval(_ seconds:Int) {
-        UserDefaults.standard.set(seconds,forKey:"tcl.refreshInterval")
+        RefreshPreferences.shared.set(.tcl, seconds: seconds)
         restartTimer()
     }
+    func refreshScheduleChanged() { if timer != nil { restartTimer() } }
     private func restartTimer() {
         timer?.invalidate()
         timer = Timer.scheduledTimer(withTimeInterval:refreshInterval,repeats:true) { [weak self] _ in self?.refresh() }
@@ -305,8 +355,9 @@ final class ClimateStore: ObservableObject {
     func reportedDevice(id: String) -> Aircon? {
         confirmedRows.first { Self.id(of: $0) == id }.flatMap(Aircon.init)
     }
+    func reportedDate(id: String) -> Date? { confirmedDates[id] }
     func isPending(id: String) -> Bool {
-        active?.deviceID == id || pending.contains { $0.deviceID == id }
+        awaitingReadback[id] != nil || active?.deviceID == id || pending.contains { $0.deviceID == id }
     }
     private static func id(of row: JSONObject) -> String? {
         (row["id"] ?? row["name"]) as? String
@@ -321,15 +372,22 @@ final class ClimateStore: ObservableObject {
             if matches.count == 1, let id = matches[0]["id"] as? String { pending[index].deviceID = id }
         }
         confirmedRows = rows
+        confirmedDates = [:]
+        if let timestamp {
+            for row in rows {
+                if let id = Self.id(of: row) { confirmedDates[id] = timestamp }
+            }
+        }
         didRead = true
         statusDate = timestamp
         history.ingest(rows)
         updateDisplay()
         if let resolved = selected, selection != resolved.id { selection = resolved.id }
+        reportedRevision &+= 1
     }
 
     private func updateDisplay() {
-        let batches = [active].compactMap { $0 } + pending
+        let batches = awaitingReadback.values.map { $0.batch } + [active].compactMap { $0 } + pending
         devices = confirmedRows.compactMap { original in
             var row = original
             var report = row["reported"] as? JSONObject ?? [:]
@@ -351,6 +409,7 @@ final class ClimateStore: ObservableObject {
             command = active.name + " · " + labels + (queued > 0 ? " · queued " + String(queued) : " · sending")
         } else {
             command = pending.first.map { $0.name + " · queued " + String(queued) }
+                ?? awaitingReadback.values.first.map { $0.batch.name + " · checking" }
         }
     }
     func set(_ ac: Aircon, _ field: String, _ value: Int, _ description: String) {
@@ -365,7 +424,7 @@ final class ClimateStore: ObservableObject {
         if let fields = preset.fields(for: ac) { enqueue(ac, fields, label: preset.label) }
     }
     func toggleEco(_ ac: Aircon) {
-        if let fields = ac.ecoChanges { enqueue(ac, fields, label: ac.code("ECO") == 1 ? "Eco off" : "Eco · 26° Quiet") }
+        if let fields = ac.ecoChanges { enqueue(ac, fields, label: ac.ecoEnabled ? "Eco off" : "Eco · 26°") }
     }
     func fanLevel(for ac: Aircon) -> Int {
         ac.manualFanCode ?? lastManualFan[ac.id] ?? 4
@@ -401,12 +460,28 @@ final class ClimateStore: ObservableObject {
             self?.advance()
         }
     }
-    func manualRefresh() { refreshRequested = true; advance() }
+    func manualRefresh() {
+        guard !AccountConnection.signedOut("tcl") else { return }
+        refreshRequested = true
+        advance()
+    }
     func refresh() {
         guard !AccountConnection.signedOut("tcl") else { return }
         if refreshing { return } // The current read already covers this request.
         refreshRequested = true
         advance()
+    }
+
+    @MainActor func refreshAndWait() async {
+        guard !Task.isCancelled, !AccountConnection.signedOut("tcl") else { return }
+        let generation = accountGeneration
+        // A read already in flight predates any edits queued behind it.
+        let needsFollowingRead = refreshing && !pending.isEmpty
+        let expected = finishedReads.value + (needsFollowingRead ? 2 : 1)
+        if needsFollowingRead { manualRefresh() } else { refresh() }
+        for await count in finishedReads.values {
+            if count >= expected || generation != accountGeneration || Task.isCancelled { return }
+        }
     }
     private func advance() {
         guard !AccountConnection.signedOut("tcl") else { return }
@@ -416,53 +491,80 @@ final class ClimateStore: ObservableObject {
             let batch = pending.removeFirst()
             active = batch
             updateDisplay()
+            let generation = accountGeneration
             worker.async {
                 let result = Result { try self.apply(batch.deviceID, batch.fields) }
-                DispatchQueue.main.async { self.finish(batch, result: result) }
+                DispatchQueue.main.async {
+                    guard generation == self.accountGeneration else { return }
+                    self.finish(batch, result: result)
+                }
             }
         } else if refreshRequested {
             refreshRequested = false
             refreshing = true
+            let generation = accountGeneration
             worker.async {
                 let result = Result { try self.fetch() }
                 DispatchQueue.main.async {
                     self.refreshing = false
-                    guard !AccountConnection.signedOut("tcl") else { return }
+                    defer { self.finishedReads.send(self.finishedReads.value + 1); self.advance() }
+                    guard generation == self.accountGeneration, !AccountConnection.signedOut("tcl") else { return }
                     switch result {
                     case .success(let rows):
                         self.needsSignIn = false
                         self.offline = false
+                        self.reconcileReadback(with: rows)
                         self.accept(rows, at: Date())
                         self.problem = self.commandError
                     case .failure(let error):
+                        if !self.awaitingReadback.isEmpty {
+                            self.reconcileReadback(with: [])
+                            self.updateDisplay()
+                        }
                         if (error as? TCLCloudError)?.needsSignIn == true { self.needsSignIn = true }
                         self.offline = true
                         self.problem = self.commandError ?? error.localizedDescription
+                        self.reportedRevision &+= 1
                     }
-                    self.advance()
                 }
             }
         }
+    }
+    private func reconcileReadback(with rows: [JSONObject]) {
+        for (id, check) in awaitingReadback where !pending.contains(where: { $0.deviceID == id }) {
+            if !check.batch.matches(rows.first(where: { Self.id(of: $0) == id })) {
+                commandError = check.message
+            }
+        }
+        awaitingReadback.removeAll()
     }
     private func finish(_ batch: Batch, result: Result<JSONObject, Error>) {
         active = nil
         guard !AccountConnection.signedOut("tcl") else { return }
         switch result {
         case .success(let row):
+            if let check = awaitingReadback.removeValue(forKey: batch.deviceID),
+               !check.batch.followed(by: batch).matches(row) {
+                commandError = check.message
+                problem = commandError
+            }
             if let index = confirmedRows.firstIndex(where: { Self.id(of: $0) == batch.deviceID }) {
                 confirmedRows[index] = row
             }
             offline = false
-            statusDate = Date()
+            let confirmedAt = Date()
+            confirmedDates[batch.deviceID] = confirmedAt
+            statusDate = confirmedAt
             history.ingest(confirmedRows)
             // Reconcile other TCL clients and save the snapshot once the burst finishes.
             refreshRequested = true
         case .failure(let error):
-            commandError = batch.name + " · " + error.localizedDescription
-            problem = commandError
+            let check = awaitingReadback[batch.deviceID]?.batch.followed(by: batch) ?? batch
+            awaitingReadback[batch.deviceID] = (check, batch.name + " · " + error.localizedDescription)
             refreshRequested = true
         }
         updateDisplay()
+        if case .success = result { reportedRevision &+= 1 }
         advance()
     }
 }

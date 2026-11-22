@@ -55,27 +55,19 @@ import ServiceManagement
 }
 
 @MainActor final class SuperFooter: NSView {
-    static let height: CGFloat = 176
+    static let height: CGFloat = 140
     let state: BarSelection
     let changed: () -> Void
-    let refresh: () -> Void
     let settings: (NSView) -> Void
-    let interval: () -> ([Int],Int)
-    let setInterval: (Int) -> Void
     private var loginEnabled = SMAppService.mainApp.status == .enabled
     let slider = NSSlider()
     let value = NSTextField(labelWithString:"")
     private let login = FooterMenuButton(title:"Launch at login",target:nil,action:nil)
-    private let intervalTitle = NSTextField(labelWithString:"Refresh interval")
-    private let intervalValue = NSTextField(labelWithString:"")
-    private let intervalSlider = NSSlider()
     private let settingsButton = FooterMenuButton(title:"LG settings…",target:nil,action:nil)
     private let exit = FooterMenuButton(title:"Quit",target:NSApp,action:#selector(NSApplication.terminate(_:)))
-    init(state:BarSelection = .shared, refresh:@escaping () -> Void = {}, settings:@escaping (NSView)->Void = { _ in },
-         interval:@escaping () -> ([Int],Int) = { ([1,5,30,60,300,600],60) }, setInterval:@escaping (Int)->Void = { _ in },
+    init(state:BarSelection = .shared, settings:@escaping (NSView)->Void = { _ in },
          changed:@escaping () -> Void) {
-        self.state = state; self.changed = changed; self.refresh = refresh; self.settings = settings
-        self.interval = interval; self.setInterval = setInterval
+        self.state = state; self.changed = changed; self.settings = settings
         super.init(frame:NSRect(x:0,y:0,width: 420,height:Self.height))
         slider.cell = IntervalSliderCell()
         slider.minValue = Double(BarSelection.sizeRange.lowerBound)
@@ -87,14 +79,8 @@ import ServiceManagement
         login.target = self; login.action = #selector(toggleLogin)
         settingsButton.isBordered = false; settingsButton.alignment = .left
         settingsButton.target = self; settingsButton.action = #selector(showSettings)
-        intervalTitle.font = .systemFont(ofSize:12); intervalValue.font = .monospacedDigitSystemFont(ofSize:12,weight:.regular)
-        intervalSlider.cell = IntervalSliderCell()
-        intervalSlider.allowsTickMarkValuesOnly = true
-        intervalSlider.tickMarkPosition = .below
-        intervalSlider.isContinuous = false; intervalSlider.target = self; intervalSlider.action = #selector(changeInterval)
-        intervalSlider.trackFillColor = BarTheme.cobalt; intervalSlider.setAccessibilityLabel("Refresh interval")
         exit.isBordered = false; exit.keyEquivalent = "q"; exit.keyEquivalentModifierMask = .command
-        [slider,value,login,settingsButton,intervalTitle,intervalValue,intervalSlider,exit].forEach(addSubview)
+        [slider,value,login,settingsButton,exit].forEach(addSubview)
         sync()
     }
     required init?(coder:NSCoder) { nil }
@@ -103,13 +89,6 @@ import ServiceManagement
         slider.doubleValue = Double(state.size)
         login.marked = loginEnabled
         settingsButton.isHidden = state.chartBrand != .lg
-        let (choices,current) = interval()
-        intervalSlider.numberOfTickMarks = choices.count
-        intervalSlider.isEnabled = choices.count > 1
-        intervalSlider.minValue = 0; intervalSlider.maxValue = Double(max(1,choices.count-1))
-        intervalSlider.doubleValue = Double(choices.firstIndex(of:current) ?? 0)
-        intervalTitle.stringValue = state.chartBrand.rawValue + " refresh"
-        intervalValue.stringValue = current < 60 ? "\(current)s" : "\(current/60)m"
         needsLayout = true
     }
     override func layout() {
@@ -118,10 +97,7 @@ import ServiceManagement
         login.frame = NSRect(x:0,y:34,width:bounds.width,height:36)
         slider.frame = NSRect(x:14,y:79,width:bounds.width-76,height:24)
         value.frame = NSRect(x:bounds.width-50,y:82,width:36,height:18)
-        intervalTitle.frame = NSRect(x:14,y:110,width:110,height:18)
-        intervalSlider.frame = NSRect(x:125,y:107,width:max(30,bounds.width-187),height:24)
-        intervalValue.frame = NSRect(x:bounds.width-50,y:110,width:36,height:18)
-        settingsButton.frame = NSRect(x:0,y:140,width:bounds.width,height:36)
+        settingsButton.frame = NSRect(x:0,y:104,width:bounds.width,height:36)
     }
     private func resize(_ value:Int) {
         guard value != state.size else { return }
@@ -129,12 +105,6 @@ import ServiceManagement
     }
     @objc private func changeTextSize() { resize(Int(slider.doubleValue.rounded())) }
     @objc private func showSettings() { settings(settingsButton) }
-    @objc private func changeInterval() {
-        let choices = interval().0
-        let index = Int(intervalSlider.doubleValue.rounded())
-        guard choices.indices.contains(index) else { return }
-        setInterval(choices[index]); sync()
-    }
     @objc private func toggleLogin() {
         do {
             if SMAppService.mainApp.status == .enabled { try SMAppService.mainApp.unregister() }

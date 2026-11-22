@@ -97,7 +97,7 @@ struct LGMobileHTTP {
             request.httpBody = try JSONSerialization.data(withJSONObject: json)
             request.setValue("application/json;charset=UTF-8", forHTTPHeaderField: "Content-Type")
         }
-        let (data, response) = try await CloudResponse.data(for: request, using: network)
+        let (data, response) = try await CloudResponse.data(for: request, using: network, provider: .lg)
         guard let response = response as? HTTPURLResponse else { throw LGError(message: "LG \(stage): no response.") }
         guard (200..<300).contains(response.statusCode) else {
             let result = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]

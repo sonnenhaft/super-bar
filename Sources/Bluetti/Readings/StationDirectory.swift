@@ -1,5 +1,24 @@
 import Foundation
 
+/// Missing advertisements need a bounded retry, not an immediate offline verdict.
+struct BluettiDiscoveryRetry {
+    private var attempted: [String: TimeInterval] = [:]
+    mutating func candidates(knownIDs: [String], found: Set<String>, now: TimeInterval) -> [String] {
+        var seen = Set<String>()
+        let known = knownIDs.compactMap { UUID(uuidString: $0)?.uuidString.lowercased() }
+            .filter { seen.insert($0).inserted }
+        attempted = attempted.filter { seen.contains($0.key) }
+        let due = known.enumerated().filter { _, id in
+            !found.contains(id) && (attempted[id].map { now - $0 >= 60 || now < $0 } ?? true)
+        }.sorted { left, right in
+            let a = attempted[left.element] ?? -.infinity, b = attempted[right.element] ?? -.infinity
+            return a == b ? left.offset < right.offset : a < b
+        }.prefix(2).map(\.element)
+        for id in due { attempted[id] = now }
+        return due
+    }
+}
+
 /// Persist independently from BlueBar's normal preferences. Removing the main
 /// app preferences does not remove this suite or the user's station aliases.
 struct BlueBarKnownStation: Codable, Equatable {

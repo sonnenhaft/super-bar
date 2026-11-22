@@ -3,18 +3,26 @@ import SwiftUI
 struct PhoneSettings: View {
     @ObservedObject var model: PhoneModel
     var body: some View {
-        AccountConnections(deye: model.deye, tuya: model.tuya, tcl: model.tcl,
-                           connectLG: model.lg.configureMobile, disconnectLG: model.lg.logout) { Task { await model.refresh() } }
-            .phoneCard()
-        EnergyTariffSettings().phoneCard()
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Widget").font(.title3.bold())
-            Text("Add Super Bar from the Home Screen widget gallery. One large widget shows Climate, BLUETTI and Energy together, just like the app panel.")
-            Text("The widget shows saved readings and their age. Open Super Bar to refresh; background refresh timing is decided by iOS.").foregroundStyle(.secondary)
-            Button("Update shared readings") { model.saveWidgets() }
-            if let problem = model.widgetProblem { Text(problem).foregroundStyle(.orange) }
-        }.font(.callout).phoneCard()
-        PhonePrivacyView().phoneCard()
+        PanelSettings(deye: model.deye, tuya: model.tuya, tcl: model.tcl,
+                      connectLG: model.lg.configureMobile, disconnectLG: model.lg.logout,
+                      refresh: { Task { await model.refresh() } }, visibilityChanged: model.saveWidgets) {
+            VStack(alignment: .leading, spacing: 12) {
+                Button { Task { await model.manualRefresh() } } label: {
+                    HStack {
+                        RefreshGlyph(isRefreshing: model.manuallyRefreshing, size: 14)
+                        Text("Update widget").frame(minHeight: 44)
+                    }
+                }.disabled(model.manuallyRefreshing)
+                if let problem = model.widgetProblem {
+                    Text(problem).foregroundStyle(.orange)
+                } else if !model.manuallyRefreshing, let date = model.manualWidgetSaveDate {
+                    Text("Widget data saved at \(date.formatted(date: .omitted, time: .standard))")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }.font(.callout)
+            Divider()
+            PhonePrivacyView()
+        }
     }
 }
 
@@ -30,18 +38,22 @@ private struct PhonePrivacyView: View {
         return text
     }
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        DisclosureGroup {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("When you connect an account, Super Bar communicates directly with that provider to sign in, read your devices and send the controls you choose. Account identifiers, authentication data and device requests are processed by the provider under its own policies.")
+                Text("Account tokens, saved passwords and the password hashes needed to renew access are stored in this app’s device-only Keychain. They do not sync through iCloud or transfer to another device. Credentials are available after the first unlock following a restart so background refresh can work. Deye, Smart Life and TCL Home save a new password only after successful sign-in; their forms let you show or hide it.")
+                Text("The widget receives device names, readings and update times from the app. It receives no account credentials and makes no cloud requests. Widget readings can be visible to anyone who can see your Home Screen.")
+                Text("Bluetooth automatically finds nearby BLUETTI stations and refreshes their readings while the app is open. You can withdraw Bluetooth permission in iOS Settings. Super Bar includes no advertising or analytics SDK.")
+                Text("To revoke cloud access, use your provider’s account or token controls. Removing Super Bar does not delete your provider account or its cloud records.")
+                if let policyURL { Link("Privacy policy", destination: policyURL) }
+                DisclosureGroup("Open-source licenses") {
+                    Text(notice("THIRD_PARTY_NOTICES") + "\n\n" + notice("TUYA-NOTICE"))
+                        .font(.caption).textSelection(.enabled).padding(.top, 8)
+                }
+            }.font(.callout).padding(.top, 8)
+        } label: {
             Text("Privacy & acknowledgements").font(.title3.bold())
-            Text("When you connect an account, Super Bar communicates directly with that provider to sign in, read your devices and send the controls you choose. Account identifiers, authentication data and device requests are processed by the provider under its own policies.")
-            Text("Account tokens, saved passwords and the password hashes needed to renew access are stored in this app’s device-only Keychain. They do not sync through iCloud or transfer to another device. Credentials are available after the first unlock following a restart so background refresh can work. Deye, Smart Life and TCL Home save a new password only after successful sign-in; their forms let you show or hide it.")
-            Text("The widget receives device names, readings and update times from the app. It receives no account credentials and makes no cloud requests. Widget readings can be visible to anyone who can see your Home Screen.")
-            Text("Bluetooth automatically finds nearby BLUETTI stations and refreshes their readings while the app is open. You can withdraw Bluetooth permission in iOS Settings. Super Bar includes no advertising or analytics SDK.")
-            Text("To revoke cloud access, use your provider’s account or token controls. Removing Super Bar does not delete your provider account or its cloud records.")
-            if let policyURL { Link("Privacy policy", destination: policyURL) }
-            DisclosureGroup("Open-source licenses") {
-                Text(notice("THIRD_PARTY_NOTICES") + "\n\n" + notice("TUYA-NOTICE"))
-                    .font(.caption).textSelection(.enabled).padding(.top, 8)
-            }
-        }.font(.callout)
+                .frame(minHeight: 44, alignment: .leading)
+        }
     }
 }

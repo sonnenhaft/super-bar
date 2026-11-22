@@ -1,181 +1,163 @@
 import Foundation
 
-// Counter observations use calendar-day totals from a single TCL response.
-// Yesterday is needed across midnight, when the calendar-day counter resets.
-struct MeterObservation: Codable, Equatable {
-    let at: TimeInterval
-    let today: Double
-    let yesterday: Double?
-}
-
 struct MeterHour: Codable, Equatable {
     let start: TimeInterval
     let kwh: Double
 }
 
-enum EnergyPeriod {
-    static let zone = TimeZone(identifier: "Asia/Manila")!
-    static var calendar: Calendar {
-        var cal = Calendar(identifier: .gregorian)
-        cal.timeZone = zone
-        return cal
-    }
-    static func formatter(_ format: String) -> DateFormatter {
-        let f = DateFormatter()
-        f.locale = Locale(identifier: "en_US_POSIX")
-        f.calendar = calendar
-        f.timeZone = zone
-        f.dateFormat = format
-        f.isLenient = false
-        return f
-    }
-    static func start(at date: Date) -> TimeInterval {
-        let midnight = calendar.startOfDay(for: date).timeIntervalSince1970
-        let nine = midnight + 9 * 3600
-        return date.timeIntervalSince1970 < nine ? nine - 86400 : nine
-    }
-    static func pretty(_ value: Double) -> String {
-        value.formatted(.number.locale(Locale(identifier: "ru_RU")).precision(.fractionLength(0...2)))
-    }
-    struct Reading {
-        let lower: Double
-        let upper: Double
+// Receipt times bound the interval between TCL daily-counter observations.
+// An unchanged counter can mean the cloud has not published its next batch.
+struct TCLCounterWindow: Codable, Equatable {
+    struct Reading: Codable, Equatable {
         let at: TimeInterval
-        let source: String
-        var text: String {
-            if upper == .infinity { return "≥" + DisplayUnits.energy(floor((lower + 1e-9) * 100) * 10) }
-            if upper - lower < 0.00001 { return DisplayUnits.energy(lower * 1000) }
-            return DisplayUnits.energy((lower + (upper - lower) / 2) * 1000)
-        }
-        var detail: String {
-            (upper.isFinite && upper - lower >= 0.00001 ? "Estimated midpoint of available consumption bounds. " : "") + "From 9am to " + EnergyPeriod.formatter("dd.MM HH:mm").string(from: Date(timeIntervalSince1970: at)) + ". " + source
-        }
+        let kwh: Double
     }
+    let first: Reading
+    let last: Reading?
+    private static let maximumSpan = 2 * HistoryPolling.tclSummary + 120
 
-    static func reading(_ report: DailyEnergyReport, now: Date) -> Reading? {
-        let boundary = start(at: now), end = now.timeIntervalSince1970
-        if end == boundary { return Reading(lower: 0, upper: 0, at: end, source: "Start of the day.") }
-        let firstMidnight = boundary - 9 * 3600
-        let nextMidnight = firstMidnight + 86400
-        let meters = (report.meters ?? []).filter { $0.at >= firstMidnight && $0.at <= end }.sorted { $0.at < $1.at }
-        let buckets = (report.hours ?? []).filter { $0.start >= firstMidnight && $0.start < end }
-        let hours = Dictionary(buckets.map { ($0.start, $0.kwh) }, uniquingKeysWith: { _, latest in latest })
-        let pre = (0..<9).compactMap { hours[firstMidnight + Double($0)*3600] }
-        var lowerAtNine = meters.last { $0.at <= boundary }?.today ?? 0
-        var upperAtNine = meters.first { $0.at >= boundary && $0.at < nextMidnight }?.today
-        if pre.count == 9 {
-            lowerAtNine = pre.reduce(0, +)
-            upperAtNine = lowerAtNine
-        }
-        // Compare exact readings with measured intervals. On each refresh, use
-        // the latest exact result if one is available in the latest report.
-        var results: [Reading] = []
-        if let meter = meters.last, meter.at >= boundary {
-            let afterMidnight = meter.at >= nextMidnight
-            if !afterMidnight || meter.yesterday != nil {
-                let finished = afterMidnight ? meter.yesterday! : meter.today
-                let endTotal = finished + (afterMidnight ? meter.today : 0)
-                let upper = min(upperAtNine ?? finished, finished)
-                if lowerAtNine <= upper + 0.00001 {
-                    let lo = max(0, endTotal - upper), hi = max(lo, endTotal - lowerAtNine)
-                    results.append(Reading(lower: lo, upper: hi, at: meter.at,
-                                           source: hi - lo < 0.00001 ? "From TCL readings." :
-                                              "Estimate from the daily meter. No reading at 9am."))
-                }
+    init(kwh: Double, at date: Date, previous: Self?) {
+        let next = Reading(at: date.timeIntervalSince1970, kwh: kwh)
+        let anchor = previous.flatMap { $0.last ?? $0.first }
+        if let anchor, next.at >= anchor.at, kwh >= anchor.kwh,
+           ChartHistory.calendar.isDate(date, inSameDayAs: Date(timeIntervalSince1970: anchor.at)) {
+            if kwh == anchor.kwh, let previous {
+                self = previous
+                return
+            }
+            let span = next.at - anchor.at
+            if (HistoryPolling.tclSummary...Self.maximumSpan).contains(span) {
+                first = anchor
+                last = next
+                return
             }
         }
-        var hour = boundary, sum = 0.0
-        // Only completed hours have an unambiguous end. A missing bucket breaks
-        // coverage; the server may omit empty or unknown hours.
-        while hour + 3600 <= end, let value = hours[hour] { sum += value; hour += 3600 }
-        if hour > boundary {
-            results.append(Reading(lower: sum, upper: sum, at: hour, source: "From TCL hourly readings."))
-        }
-        let freshExact = results.filter { $0.upper - $0.lower < 0.00001 && end - $0.at < 3700 }
-        guard let latest = (freshExact.isEmpty ? results : freshExact).max(by: { $0.at < $1.at }) else { return nil }
-        if end - latest.at > 3700 {
-            guard latest.lower > 0 else { return nil }
-            return Reading(lower: latest.lower, upper: .infinity, at: latest.at,
-                           source: "Lower bound from the latest TCL report.")
-        }
-        return latest
+        first = next
+        last = nil
     }
 
-    // Accept explicit local dates and hours only. A date without an hour
-    // denotes a daily total and must never become a midnight hourly interval.
+    func average(at now: Date) -> (watts: Double, minutes: Int)? {
+        guard let last, first.kwh >= 0, last.kwh > first.kwh,
+              (0...HistoryPolling.tclSummary + 60).contains(now.timeIntervalSince1970 - last.at),
+              ChartHistory.calendar.isDate(now, inSameDayAs: Date(timeIntervalSince1970: first.at)) else { return nil }
+        let span = last.at - first.at
+        guard (HistoryPolling.tclSummary...Self.maximumSpan).contains(span) else { return nil }
+        let watts = (last.kwh - first.kwh) * 3_600_000 / span
+        guard watts.isFinite else { return nil }
+        return (watts, Int((span / 60).rounded()))
+    }
+
+    var interval: PowerInterval? {
+        guard let last, first.at.isFinite, last.at.isFinite, first.kwh.isFinite, last.kwh.isFinite,
+              first.kwh >= 0, last.kwh > first.kwh,
+              ChartHistory.calendar.isDate(Date(timeIntervalSince1970: first.at), inSameDayAs: Date(timeIntervalSince1970: last.at)) else { return nil }
+        let span = last.at - first.at
+        guard (HistoryPolling.tclSummary...Self.maximumSpan).contains(span) else { return nil }
+        let watts = (last.kwh - first.kwh) * 3_600_000 / span
+        guard watts.isFinite else { return nil }
+        return PowerInterval(start: Date(timeIntervalSince1970: first.at), end: Date(timeIntervalSince1970: last.at), watts: watts)
+    }
+}
+
+enum EnergyPeriod {
+    static func dayLabel(_ key: String, now: Date) -> String {
+        let calendar = ChartHistory.calendar
+        let iso = ChartHistory.formatter("yyyy-MM-dd")
+        guard let date = iso.date(from: key),
+              let days = calendar.dateComponents([.day], from: calendar.startOfDay(for: date), to: calendar.startOfDay(for: now)).day else { return "—" }
+        switch days {
+        case 0: return "Today"
+        case 1: return "Yesterday"
+        default: return "\(days)d ago"
+        }
+    }
+
+    // TCL's electricity fields default to kWh. Honor an explicit energy unit
+    // and ignore other quantities (for example W or a percentage).
+    static func kilowattHours(_ row: [String: Any], unit: String?) -> Double? {
+        guard let amount = CloudValue.number(row["totalElectricity"]) ?? CloudValue.number(row["electricity"]) ?? CloudValue.number(row["consumption"]),
+              amount >= 0 else { return nil }
+        switch unit?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case nil, "kwh": return amount
+        case "wh": return amount / 1000
+        default: return nil
+        }
+    }
+
+    // Only hour-stamped leaf readings are meter intervals. Daily/monthly group
+    // totals may appear in the same response.
     static func parseHours(_ reply: [String: Any], now: Date) -> [MeterHour] {
-        guard EnergyHistory.number(reply["code"]) == 0, let data = reply["data"] as? [String: Any] else { return [] }
-        let dateOnly = formatter("yyyy-MM-dd")
-        let full = formatter("yyyy-MM-dd HH:mm")
+        guard CloudValue.number(reply["code"]) == 0, let data = reply["data"] as? [String: Any] else { return [] }
+        let dateOnly = ChartHistory.formatter("yyyy-MM-dd")
+        let full = ChartHistory.formatter("yyyy-MM-dd HH:mm")
         var values: [TimeInterval: Double] = [:]
-        func visit(_ row: [String: Any], parentDay: String? = nil) {
-            let time = (row["time"] as? String) ?? (row["date"] as? String) ?? ""
+        func visit(_ row: [String: Any], parentDay: String? = nil, parentUnit: String? = nil) {
+            let date = row["date"] as? String ?? ""
+            let time = row["time"] as? String ?? ""
+            let stamp = [time, date].first { $0.count >= 10 }
             var day = parentDay
-            if time.count >= 10 {
-                let prefix = String(time.prefix(10))
-                if let d = dateOnly.date(from: prefix), dateOnly.string(from: d) == prefix { day = prefix }
+            if let stamp {
+                let prefix = String(stamp.prefix(10))
+                day = dateOnly.date(from: prefix).flatMap { dateOnly.string(from: $0) == prefix ? prefix : nil }
             }
-            for key in ["dataList","ecoDetails","consumptionDetails"] {
-                if let entries = row[key] as? [[String: Any]] { for entry in entries { visit(entry, parentDay: day) } }
+            let unit = row["unit"] as? String ?? parentUnit
+            let groups = ["dataList", "ecoDetails", "consumptionDetails"].compactMap { row[$0] as? [[String: Any]] }
+            if !groups.isEmpty {
+                for entry in groups.joined() { visit(entry, parentDay: day, parentUnit: unit) }
+                return
             }
-            guard let day else { return }
+            guard let day, let kwh = kilowattHours(row, unit: unit) else { return }
             let hourText: String
-            if time.count > 10 && ["T"," "].contains(String(time.dropFirst(10).prefix(1))) {
-                hourText = String(time.dropFirst(11))
+            if let stamp, stamp.count > 10, ["T", " "].contains(String(stamp.dropFirst(10).prefix(1))) {
+                hourText = String(stamp.dropFirst(11))
             } else if let hour = row["hour"] {
                 hourText = String(describing: hour)
-            } else if time.count < 10 {
+            } else {
                 hourText = time
-            } else { return }
+            }
             let parts = hourText.split(separator: ":", omittingEmptySubsequences: false)
-            guard (1...3).contains(parts.count), parts[0].count <= 2, let hour = Int(parts[0]), (0...23).contains(hour),
+            guard (1...3).contains(parts.count), (1...2).contains(parts[0].count),
+                  parts[0].allSatisfy(\.isNumber), let hour = Int(parts[0]), (0...23).contains(hour),
                   parts.dropFirst().allSatisfy({ $0 == "00" }),
-                  let date = full.date(from: day + String(format: " %02d:00", hour)),
-                  date <= now && date >= now.addingTimeInterval(-3 * 86400),
-                  let kwh = EnergyHistory.number(row["totalElectricity"]) ?? EnergyHistory.number(row["electricity"]) ?? EnergyHistory.number(row["consumption"]),
-                  kwh >= 0 else { return }
-            values[date.timeIntervalSince1970] = kwh
+                  let start = full.date(from: day + String(format: " %02d:00", hour)),
+                  start >= now.addingTimeInterval(-3 * 86400), start.addingTimeInterval(3600) <= now else { return }
+            values[start.timeIntervalSince1970] = kwh
         }
         visit(data)
         return values.sorted { $0.key < $1.key }.map { MeterHour(start: $0.key, kwh: $0.value) }
     }
 
     static func confirmedHours(_ reply: [String: Any], calendarTotals: [String: Double], now: Date) -> [MeterHour] {
-        let dateOnly = formatter("yyyy-MM-dd")
+        let formatter = ChartHistory.formatter("yyyy-MM-dd")
+        let today = formatter.string(from: now)
         let groups = Dictionary(grouping: parseHours(reply, now: now)) {
-            dateOnly.string(from: Date(timeIntervalSince1970: $0.start))
+            formatter.string(from: Date(timeIntervalSince1970: $0.start))
         }
-        var checked: [MeterHour] = []
-        for (day, entries) in groups {
-            // Some products use timeType=1 for a different granularity or
-            // counter. Only use explicit hour values that reconcile with the
-            // independently retrieved calendar total at TCL's 0.01 kWh precision.
-            guard let total = calendarTotals[day],
-                  entries.contains(where: { calendar.component(.hour, from: Date(timeIntervalSince1970: $0.start)) == 0 }),
-                  abs(total - entries.reduce(0.0, { $0 + $1.kwh })) < 0.0051 else { continue }
-            checked.append(contentsOf: entries.filter { $0.start + 3600 <= now.timeIntervalSince1970 })
-        }
-        return checked
+        return groups.flatMap { day, rows -> [MeterHour] in
+            // Only a finished day with all 24 Manila clock hours can be compared
+            // for equality. Each meter reading can round to the nearest 0.01 kWh.
+            if day < today, let dayTotal = calendarTotals[day] {
+                let sum = rows.reduce(0) { $0 + $1.kwh }
+                let rounding = 0.005 * Double(rows.count + 1) + 1e-9
+                if sum > dayTotal + rounding || (rows.count == 24 && abs(sum - dayTotal) > rounding) { return [] }
+            }
+            return rows
+        }.sorted { $0.start < $1.start }
     }
 
-    // Prefer confirmed hourly buckets. Where unavailable, show the average
-    // between consecutive daily-counter observations, never instantaneous power.
     static func powerIntervals(_ report: DailyEnergyReport, now: Date) -> [PowerInterval] {
-        let start = calendar.startOfDay(for: now).timeIntervalSince1970
         let end = now.timeIntervalSince1970
         let hours = (report.hours ?? []).filter {
-            $0.start >= start && $0.start + 3600 <= end && $0.kwh.isFinite && $0.kwh >= 0
-        }.map { PowerInterval(start: Date(timeIntervalSince1970: $0.start), end: Date(timeIntervalSince1970: $0.start + 3600), watts: $0.kwh * 1000) }
-        let meters = Dictionary((report.meters ?? []).filter {
-            $0.at >= start && $0.at <= end && $0.today.isFinite && $0.today >= 0
-        }.map { ($0.at, $0) }, uniquingKeysWith: { _, last in last }).values.sorted { $0.at < $1.at }
-        let intervals = zip(meters, meters.dropFirst()).compactMap { a, b -> PowerInterval? in
-            let duration = b.at - a.at
-            guard duration > 0, duration <= 2 * HistoryPolling.tclSummary + 60, b.today >= a.today else { return nil }
-            let lower = Date(timeIntervalSince1970: a.at), upper = Date(timeIntervalSince1970: b.at)
-            guard !hours.contains(where: { $0.start < upper && $0.end > lower }) else { return nil }
-            return PowerInterval(start: lower, end: upper, watts: (b.today - a.today) * 3_600_000 / duration)
+            $0.start + 3600 > end - 86400 && $0.start + 3600 <= end && $0.kwh.isFinite && $0.kwh >= 0
+        }.map {
+            PowerInterval(start: Date(timeIntervalSince1970: $0.start),
+                          end: Date(timeIntervalSince1970: $0.start + 3600), watts: $0.kwh * 1000)
         }
-        return (hours + intervals).sorted { $0.start < $1.start }
+        var estimates = (report.counterHistory ?? []).compactMap(\.interval)
+        if let latest = report.counter?.interval, !estimates.contains(where: { $0.start == latest.start }) { estimates.append(latest) }
+        estimates = estimates.filter { estimate in
+            estimate.end <= now && !hours.contains { $0.start < estimate.end && $0.end > estimate.start }
+        }
+        return RollingEnergy.clipped((hours + estimates).sorted { $0.start < $1.start }, to: RollingEnergy.last24Hours(endingAt: now))
     }
 }

@@ -33,7 +33,7 @@ enum DeviceService {
     static func desired(_ field: String, _ value: Int, report r: JSONObject) throws -> [String: Int] {
         let supported: Bool
         switch field {
-        case "powerSwitch", "ECO", "verticalSwitch", "horizontalSwitch", "turbo", "silenceSwitch": supported = (0...1).contains(value)
+        case "powerSwitch", "ECO", "advancedECOMode", "verticalSwitch", "horizontalSwitch", "turbo", "silenceSwitch": supported = (0...1).contains(value)
         case "targetTemperature": supported = (16...30).contains(value)
         case "workMode": supported = (0...4).contains(value)
         case "windSpeed": supported = [0,2,3,4,5,6].contains(value)
@@ -181,10 +181,12 @@ enum DeviceService {
         func temp(_ key: String) -> Double? { number(r[key]).flatMap { $0 == -1 ? nil : $0 } }
         let modes = ["auto","cool","dry","fan","heat"]
         let mode = whole(r["workMode"]).flatMap { modes.indices.contains($0) ? modes[$0] : nil }
-        let wattKey = EnergyHistory.wattFields.first { k in EnergyHistory.watts(in: [k:r[k] ?? NSNull()]) != nil }
+        let wattKey = EnergyHistory.wattFields.filter { key in
+            EnergyHistory.watts(in: [key: r[key] ?? NSNull()]) != nil && stamp(key).map { $0 > 0 && $0 <= Date().timeIntervalSince1970 } == true
+        }.max { (stamp($0) ?? 0) < (stamp($1) ?? 0) }
         var row: JSONObject = ["name":name(device), "id":(try? id(device)) ?? "", "online":optional(flag(device["isOnline"] ?? device["is_online"])),
             "power": optional(flag(r["powerSwitch"])), "indoor":optional(temp("currentTemperature")), "target":optional(temp("targetTemperature")),
-            "mode":optional(mode), "reported":optional(report), "watts_reported_at":optional(wattKey.flatMap(stamp)),
+            "mode":optional(mode), "reported":optional(report), "watts_field":optional(wattKey), "watts_reported_at":optional(wattKey.flatMap(stamp)), "power_changed_at":optional(stamp("powerSwitch")),
             "indoor_reported_at":optional(stamp("currentTemperature").map { ISO8601DateFormatter().string(from: Date(timeIntervalSince1970:$0)) })]
         if report == nil { row["error"] = "shadow unavailable" }
         return row

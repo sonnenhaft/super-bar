@@ -4,12 +4,13 @@ import CryptoKit
 private final class MockMobileLG: URLProtocol {
     static var failure = "", tokenRequests = 0
     static var paths: [String] = []
+    static var controls: [[String: Any]] = []
     static var authorizePath = "", authorizeDate = ""
     static let model: [String: Any] = ["MonitoringValue": [
         "airState.operation": ["dataType": "Enum", "valueMapping": ["0": ["label": "@AC_MAIN_OPERATION_OFF_W"], "1": ["label": "@AC_MAIN_OPERATION_ALL_ON_W"]]],
         "airState.opMode": ["dataType": "Enum", "valueMapping": ["0": ["label": "@AC_MAIN_OPERATION_MODE_COOL_W"]]],
         "airState.windStrength": ["dataType": "Enum", "valueMapping": ["2": ["label": "@AC_MAIN_WIND_STRENGTH_LOW_W"], "4": ["label": "@AC_MAIN_WIND_STRENGTH_HIGH_W"]]],
-        "airState.tempState.target": ["dataType": "Range", "valueMapping": ["min": 16, "max": 30, "step": 1]]
+        "airState.tempState.target": ["dataType": "Range", "valueMapping": ["min": 18, "max": 30, "step": 1]]
     ]]
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
@@ -67,15 +68,59 @@ private final class MockMobileLG: URLProtocol {
         case "/v1/service/application/dashboard":
             precondition(request.value(forHTTPHeaderField: "x-emp-token") == "test-access")
             if Self.failure == "devices" { status = 503 }
-            value = ["resultCode": "0000", "result": ["item": [["deviceType": 401, "deviceId": "test-device", "alias": "Window AC", "platformType": "thinq2", "modelJsonUri": "https://objectcontent.lgthinq.com/model.json"]]]]
+            let legacy: [String: Any] = ["deviceType": 401, "deviceId": "legacy", "platformType": "thinq1"]
+            let valid: [String: Any] = ["deviceType": 401, "deviceId": "test-device", "alias": "Window AC", "platformType": "thinq2", "modelJsonUri": "https://objectcontent.lgthinq.com/model.json"]
+            let malformed: [String: Any] = ["deviceType": 401, "platformType": "thinq2"]
+            let television: [String: Any] = ["deviceType": 701, "deviceId": "television", "alias": "Living TV",
+                                              "macAddress": "02:00:00:00:00:01", "online": false]
+            let second: [String: Any] = ["deviceType": "701", "deviceId": "other-tv", "alias": "Living TV", "online": true]
+            let items: [[String: Any]]
+            switch Self.failure {
+            case "unsupported": items = [legacy]
+            case "tv-only": items = [legacy, television, second, television]
+            default: items = [legacy, malformed, valid, television, second, television]
+            }
+            value = ["resultCode": "0000", "result": ["item": items]]
         case "/model.json":
             precondition(request.value(forHTTPHeaderField: "x-emp-token") == nil && request.value(forHTTPHeaderField: "Authorization") == nil)
             value = Self.model
         case "/v1/service/devices/test-device":
-            value = ["resultCode": "0000", "result": ["snapshot": ["airState": ["operation": 1, "opMode": 0, "windStrength": 4, "tempState": ["current": 27, "target": 22]]]]]
+            value = ["resultCode": "0000", "result": ["online": true, "snapshot": ["airState": ["operation": Self.failure == "off" ? 0 : 1, "opMode": 0, "windStrength": 4, "tempState": ["current": 27, "target": 22]]]]]
+        case "/v1/service/aircon/test-device/energy-history":
+            precondition(request.httpMethod == "GET" && bodyData.isEmpty)
+            precondition(request.value(forHTTPHeaderField: "x-emp-token") == "test-access" && request.value(forHTTPHeaderField: "Authorization") == nil)
+            let query = URLComponents(url: url, resolvingAgainstBaseURL: false)!.queryItems!
+            let param = Dictionary(uniqueKeysWithValues: query.map { ($0.name, $0.value!) })
+            precondition(param["type"] == "period", "The real ThinQ endpoint requires type=period")
+            let hourly = param["period"] == "hour"
+            precondition(hourly ? param["startDate"] == param["endDate"] : param["period"] == "day")
+            if Self.failure == "history" { status = 503 }
+            let rows: [[String: Any]] = hourly
+                ? [["usedDate": param["endDate"]! + " 02:00:00", "energyData": 300, "unit": "Wh"],
+                   ["usedDate": param["endDate"]! + " 03:00:00", "energyData": "0"],
+                   ["usedDate": param["endDate"]! + " 04:00:00", "energyData": "100", "unit": "Wh"]]
+                : [["usedDate": param["startDate"]!, "energyData": "1.5", "energyDataUnit": "kWh"],
+                   ["usedDate": param["endDate"]!, "energyData": "10"],
+                   ["usedDate": "2000-01-01", "energyData": 100, "unit": "Wh"],
+                   ["usedDate": param["endDate"]!, "energyData": NSNull()]]
+            value = ["resultCode": "0000", "result": Self.failure == "empty" ? [] : rows]
+            if Self.failure == "archive" {
+                value = ["resultCode": "0000", "result": hourly
+                    ? [["usedDate": param["endDate"]! + " 02:00:00", "energyData": 372]]
+                    : (1...3).map { ["usedDate": "2026-11-0\($0)", "energyData": $0 * 730] as [String: Any] }]
+            }
+        case "/devices/energy/test-device/usage":
+            precondition(request.httpMethod == "GET" && bodyData.isEmpty && url.host == "api-kic.lgthinq.com")
+            precondition(request.value(forHTTPHeaderField: "Authorization") == "Bearer test-history-token"
+                         && request.value(forHTTPHeaderField: "x-emp-token") == nil)
+            let query = Dictionary(uniqueKeysWithValues: URLComponents(url: url, resolvingAgainstBaseURL: false)!.queryItems!.map { ($0.name, $0.value!) })
+            precondition(query["period"] == "DAILY" && query["property"] == "energyUsage")
+            value = ["response": ["result": ["dataList": (1...3).map {
+                ["date": "2026110\($0)", "energyUsage": $0 * 730] as [String: Any]
+            }]]]
         case "/v1/service/devices/test-device/control-sync":
             let payload = try! JSONSerialization.jsonObject(with: bodyData) as! [String: Any]
-            precondition(payload["dataKey"] as? String == "airState.windStrength" && payload["dataValue"] as? String == "4")
+            Self.controls.append(payload)
             value = ["resultCode": "0000", "result": [:]]
         default: fatalError("Unexpected mobile request: " + path)
         }
@@ -87,6 +132,40 @@ private final class MockMobileLG: URLProtocol {
 }
 
 @main enum LGMobileCheck {
+    @MainActor static func checkHistory(_ client: LGMobileClient) async throws {
+        let now = ChartHistory.formatter("yyyy-MM-dd HH:mm").date(from: "2026-11-05 04:15")!
+        let queries = LGHistoryQuery.chartQueries(at: now)
+        let day = try await client.energyHistory("test-device", query: queries[0])
+        precondition(day.rowCount == 4 && day.records.count == 2 && day.records[0].wattHours == 1500
+                     && day.records[1].wattHours == nil)
+        let cloud = LGCloudHistory()
+        func load(_ q: LGHistoryQuery) async throws -> LGHistoryPage { try await client.energyHistory("test-device", query: q) }
+        await cloud.refresh("A", now: now, load: load)
+        let series = cloud.devices["A"]!
+        precondition(series.days.count == 1 && series.hasUnspecifiedUnit && series.hours.count == 3)
+        precondition(series.hours.values.allSatisfy { $0.end <= now && $0.end > now.addingTimeInterval(-86400) })
+        precondition(series.hours.values.contains { $0.watts == 0 } && series.hours.values.contains { $0.watts == 300 })
+        let count = MockMobileLG.paths.count
+        await cloud.refresh("A", now: now, load: load)
+        precondition(count == MockMobileLG.paths.count, "Reopening the chart must reuse its cache")
+        MockMobileLG.failure = "empty"
+        await cloud.refresh("B", now: now, load: load)
+        precondition(cloud.devices["B"]?.days.isEmpty == true && cloud.devices["B"]?.hours.isEmpty == true)
+        MockMobileLG.failure = "history"
+        do { _ = try await load(queries[0]); fatalError("Provider error treated as successful history") }
+        catch { precondition(error.localizedDescription.contains("503")) }
+        await cloud.refresh("A", now: now.addingTimeInterval(301), load: load)
+        precondition(cloud.devices["A"]?.days.count == 1 && cloud.devices["A"]?.hasUnspecifiedUnit == true)
+        MockMobileLG.failure = ""
+        let dates = (1...4).map { ChartHistory.calendar.date(byAdding: .day, value: -$0, to: now)! }
+        let raw = LGHistoryPage(records: dates.enumerated().map { LGHistoryRecord(start: $0.element, wattHours: nil, unscaled: Double($0.offset + 1) * 100) })
+        let official = LGHistoryPage(records: dates.enumerated().map { LGHistoryRecord(start: $0.element, wattHours: Double($0.offset + 1) * 100) })
+        precondition(raw.confirmedScale(against: official, before: now) == 1)
+        precondition(raw.scaled(raw.confirmedScale(against: official, before: now)).records.map(\.wattHours) == [100, 200, 300, 400])
+        let conflicting = LGHistoryPage(records: Array(official.records.prefix(3)) + [LGHistoryRecord(start: dates[3], wattHours: 900)])
+        precondition(raw.confirmedScale(against: conflicting, before: now) == nil, "Conflicting dates must not produce a guessed energy unit")
+        precondition(raw.confirmedScale(against: LGHistoryPage(records: Array(official.records.prefix(2))), before: now) == nil)
+    }
     static func main() async throws {
         for absent in [nil, "", "  ", NSNull(), "null", "kr.lgeapi.com", "https://attacker.invalid", "https://kr.lgeapi.com/?unexpected=hint"] as [Any?] {
             let selected = try LGMobileHTTP.oauthBackend(absent, fallback: "https://kr.lgeapi.com/")
@@ -96,22 +175,64 @@ private final class MockMobileLG: URLProtocol {
         let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [MockMobileLG.self]
         let network = URLSession(configuration: config); defer { network.invalidateAndCancel() }
         let vault = MemoryCredentialVault()
+        try vault.write(Data("fixture-connect-api-key".utf8), key: "lg-connect-api-key")
         try await LGMobileClient.connect(email: "test+lg@example.com", password: " pass +& word ", country: "ph", vault: vault, network: network)
         let saved = try vault.read("lg-session")!
         var session = try LGMobileCredentials.read(vault: vault)!
         precondition(session.password == " pass +& word " && session.country == "PH")
         let client = LGMobileClient(network: network, vault: vault)
+        try await checkHistory(client)
+        try vault.write(Data("test-history-token".utf8), key: "lg-token")
+        MockMobileLG.failure = "archive"
+        let historyQueries = LGHistoryQuery.chartQueries(at: ChartHistory.formatter("yyyy-MM-dd").date(from: "2026-11-05")!)
+        let knownDays = try await client.energyHistory("test-device", query: historyQueries[0])
+        let confirmedHours = try await client.energyHistory("test-device", query: historyQueries[1])
+        precondition(knownDays.records.map(\.wattHours) == [730, 1460, 2190] && confirmedHours.records.first?.wattHours == 372,
+                     "Real-shaped mobile history and separately authenticated DAILY usage must populate both charts")
+        MockMobileLG.failure = ""
+        let beforeDashboard = MockMobileLG.paths.count
+        let api = API(network: network, vault: vault)
+        let directory = try await api.accountDirectoryIfNeeded(hasDevices: false)!
+        precondition(directory.airConditioners.map(\.id) == ["test-device"])
+        precondition(directory.televisions == [
+            LGAccountTelevision(id: "television", name: "Living TV", macAddress: "02:00:00:00:00:01", online: false),
+            LGAccountTelevision(id: "other-tv", name: "Living TV", macAddress: nil, online: true)])
+        let secondPass = try await api.accountDirectoryIfNeeded(hasDevices: true)
+        precondition(secondPass == nil && MockMobileLG.paths.count == beforeDashboard + 1)
+        MockMobileLG.failure = "tv-only"
+        let tvOnly = try await client.accountDirectoryIfConfigured()!
+        precondition(tvOnly.airConditioners.isEmpty && tvOnly.televisions.count == 2)
+        MockMobileLG.failure = ""
         let list = try await client.requestIfConfigured("devices", payload: nil) as! [[String: Any]]
-        precondition(list.count == 1)
+        precondition(list.compactMap { $0["deviceId"] as? String } == ["test-device"],
+                     "Unsupported or incomplete devices must not suppress a supported AC in the same account")
         let profile = try await client.requestIfConfigured("devices/test-device/profile", payload: nil) as! [String: Any]
         precondition(LGCapability(profile: profile, group: "airFlow", key: "windStrength").options == ["HIGH", "LOW"])
         let state = try await client.requestIfConfigured("devices/test-device/state", payload: nil) as! [String: Any]
         precondition(LGSample(state).target == 22 && LGSample(state).room == 27 && LGSample(state).powerOn == true)
+        MockMobileLG.failure = "off"
+        let off = LGSample(try await client.requestIfConfigured("devices/test-device/state", payload: nil) as! [String: Any])
+        precondition(off.online == true && off.powerOn == false)
+        _ = try await client.requestIfConfigured("devices/test-device/control", payload: ["operation": ["airConOperationMode": "POWER_ON"]])
+        precondition(MockMobileLG.controls.count == 1 && MockMobileLG.controls[0]["dataKey"] as? String == "airState.operation"
+                     && MockMobileLG.controls[0]["dataValue"] as? String == "1", "Turning on an available LG sends only the power command")
+        MockMobileLG.failure = ""
         _ = try await client.requestIfConfigured("devices/test-device/control", payload: ["airFlow": ["windStrength": "HIGH"]])
+        precondition(MockMobileLG.controls.last?["dataValue"] as? String == "4")
+        for preset in LGCoolingPreset.allCases {
+            MockMobileLG.controls = []
+            for (group, key, value) in preset.changes(windKey: "windStrength") {
+                _ = try await client.requestIfConfigured("devices/test-device/control", payload: [group: [key: value]])
+            }
+            precondition(MockMobileLG.controls.map { $0["dataKey"] as! String } == ["airState.operation", "airState.opMode", "airState.tempState.target", "airState.windStrength"])
+            precondition(MockMobileLG.controls[1]["dataValue"] as? String == "0")
+            precondition(lgNumber(MockMobileLG.controls[2]["dataValue"]) == Double(preset.degrees))
+            precondition(MockMobileLG.controls[3]["dataValue"] as? String == (preset == .high ? "4" : "2"))
+        }
         let before = MockMobileLG.paths.count
         do { _ = try await client.requestIfConfigured("devices/test-device/control", payload: ["temperature": ["targetTemperature": 99]]); fatalError("Out-of-range control accepted") } catch {}
         precondition(MockMobileLG.paths.count == before)
-        for failure in ["password", "wrong-email", "devices", "signature", "state", "host"] {
+        for failure in ["password", "wrong-email", "devices", "unsupported", "signature", "state", "host"] {
             MockMobileLG.failure = failure
             do { try await LGMobileClient.connect(email: "test+lg@example.com", password: " pass +& word ", country: "PH", vault: vault, network: network); fatalError("Bad login succeeded") }
             catch {
@@ -131,6 +252,6 @@ private final class MockMobileLG: URLProtocol {
         for url in ["http://ph.m.lgaccount.com/", "https://lgaccount.com.attacker.invalid/", "https://user:password@lgaccount.com/", "https://127.0.0.1/", "https://lgaccount.com:1234/"] {
             do { _ = try LGMobileHTTP.url(url); fatalError("Unsafe server accepted") } catch {}
         }
-        print("LG mobile: password flow/signatures, device adapter, refresh, failed-login preservation and credential host isolation verified with synthetic fixtures.")
+        print("LG mobile: chart history, units, zero, empty and failed responses, cache isolation, password login, refresh and device adapter verified with synthetic fixtures.")
     }
 }

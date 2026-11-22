@@ -11,6 +11,7 @@ final class BluettiCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDele
     private var deadline: TimeInterval
     private var central: CBCentralManager!
     private var discovered: [String: (CBPeripheral, BluettiNativeDevice)] = [:]
+    private var onDiscovery: (([BluettiNativeDevice]) throws -> Void)?
     private var peripheral: CBPeripheral?
     private var service: CBService?
     private var notifyCharacteristic: CBCharacteristic?
@@ -84,6 +85,20 @@ final class BluettiCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDele
 
     var readRequested = false
 
+    func observeNewStations(_ notify: @escaping ([BluettiNativeDevice]) throws -> Void) {
+        onDiscovery = notify
+        central.scanForPeripherals(withServices: nil)
+    }
+
+    func retrieveStation(_ id: UUID) throws -> BluettiNativeDevice? {
+        try wait(until: min(deadline, now + 5), message: "Bluetooth did not become ready.") { self.central.state == .poweredOn }
+        guard let peripheral = central.retrievePeripherals(withIdentifiers: [id]).first,
+              let name = peripheral.name, name.uppercased().contains("AC50P") else { return nil }
+        let device = BluettiNativeDevice(id: id.uuidString, name: name)
+        discovered[device.id] = (peripheral, device)
+        return device
+    }
+
     func waitForNextRead(at start: TimeInterval, timeout: TimeInterval) throws {
         // Give each poll its own deadline; the handshake belongs to the first poll.
         deadline = max(start, now) + timeout - 2
@@ -109,7 +124,7 @@ final class BluettiCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDele
         return discovered.values.map { $0.1 }.sorted { $0.name == $1.name ? $0.id < $1.id : $0.name < $1.name }
     }
 
-    func connect(_ device: BluettiNativeDevice) throws {
+    func connect(_ device: BluettiNativeDevice, didConnect: () throws -> Void) throws {
         try check()
         guard let found = discovered[device.id.lowercased()] else {
             throw BluettiNativeFailure.failed(code: "not_found", message: "Selected AC50P is no longer available.")
@@ -139,6 +154,7 @@ final class BluettiCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDele
         }
         guard connected else { throw lastError }
         expectingDisconnect = false
+        try didConnect()
         target.discoverServices([Self.serviceID])
         try wait(until: min(deadline, now + 5), message: "AC50P service discovery timed out.") { self.service != nil }
         guard let service = service else { throw BluettiNativeFailure.failed(code: "bluetooth", message: "Missing AC50P service FF00.") }
@@ -254,9 +270,11 @@ final class BluettiCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDele
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
         if closing { return }
         switch central.state {
-        case .poweredOn, .unknown, .resetting: break
+        case .poweredOn: break
+        case .unknown, .resetting:
+            if peripheral != nil { failure = .failed(code: "bluetooth", message: "Bluetooth is restarting.") }
         case .poweredOff: failure = .failed(code: "bluetooth", message: "Bluetooth is off. Turn it on in System Settings.")
-        case .unauthorized: failure = .failed(code: "permission", message: "Allow Bluetooth access for BluettiBar in System Settings > Privacy & Security > Bluetooth.")
+        case .unauthorized: failure = .failed(code: "permission", message: "Allow Bluetooth access for Super Bar in System Settings > Privacy & Security > Bluetooth.")
         case .unsupported: failure = .failed(code: "bluetooth", message: "This Mac does not support Bluetooth Low Energy.")
         @unknown default: failure = .failed(code: "bluetooth", message: "Bluetooth is unavailable.")
         }
@@ -268,7 +286,12 @@ final class BluettiCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDele
         let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard name.uppercased().contains("AC50P") else { return }
         let id = peripheral.identifier.uuidString.lowercased()
+        guard discovered[id]?.1.name != name else { return }
         discovered[id] = (peripheral, BluettiNativeDevice(id: id, name: name))
+        if let onDiscovery {
+            do { try onDiscovery(discovered.values.map { $0.1 }) }
+            catch { failure = .failed(code: "output", message: "Could not report the discovered station.") }
+        }
     }
 
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {

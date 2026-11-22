@@ -8,6 +8,11 @@ final class BarSelection: ObservableObject {
     static let shared = BarSelection()
     private let defaults: UserDefaults
     @Published var climateDevice: ClimateDeviceID?
+    @Published var batteryStationKey: String?
+    private enum AuxiliarySection { case settings, television }
+    @Published private var auxiliary: AuxiliarySection?
+    var showSettings: Bool { auxiliary == .settings }
+    var showTelevision: Bool { auxiliary == .television }
     @Published var current: Brand = .tcl
     @Published var expanded: Brand = .tcl { didSet { chartOverride = nil } }
     @Published var chartOverride: Brand? {
@@ -16,19 +21,36 @@ final class BarSelection: ObservableObject {
     @Published var detailsCollapsed = false
     var chartBrand: Brand { chartOverride ?? expanded }
     var openBrand: Brand? { chartOverride ?? (detailsCollapsed ? nil : expanded) }
-    func showEnergy() { chartOverride = .deye }
+    func openSettings() {
+        collapseSections()
+        auxiliary = .settings
+    }
+    func openTelevision() {
+        collapseSections()
+        auxiliary = .television
+    }
+    func collapseSections() {
+        chartOverride = nil
+        detailsCollapsed = true
+        auxiliary = nil
+    }
+    func showEnergy() {
+        auxiliary = nil
+        chartOverride = .deye
+    }
     func toggleEnergy() {
         if openBrand == .deye || openBrand == .tuya {
-            chartOverride = nil
-            detailsCollapsed = true
+            collapseSections()
         } else { showEnergy() }
     }
     func select(_ brand: Brand, sameDevice: Bool) {
+        auxiliary = nil
         detailsCollapsed = chartBrand == brand && expanded == brand && sameDevice ? !detailsCollapsed : false
         expanded = brand
         if !detailsCollapsed { pin(brand); didExpand?(brand) }
     }
     func activate(_ brand: Brand) {
+        auxiliary = nil
         expanded = brand
         detailsCollapsed = false
         pin(brand)

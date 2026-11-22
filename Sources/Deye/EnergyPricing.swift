@@ -50,12 +50,62 @@ struct EnergyTariff: Codable {
     // Today's known sale rate is separate from the historical estimate.
     func bill(generationKWh: Double?, consumptionKWh: Double?, today: Bool = false) -> Bill? {
         guard let consumption = consumptionKWh, consumption.isFinite, consumption >= 0,
-              let sold = revenue(generationKWh: generationKWh, today: today) else { return nil }
+              let sold = revenue(generationKWh: generationKWh ?? 0, today: today) else { return nil }
         return Bill(importCost: consumption * purchasePerKWh, exportRevenue: sold)
     }
 
+    struct RollingSummary {
+        let range: ClosedRange<Date>
+        let generation: RollingEnergy.Total
+        let consumption: RollingEnergy.Total
+        let revenue: Double?
+        let bill: Bill?
+
+        var dailyReadout: String {
+            guard let bill else { return EnergyTariff.money(0) + "/d" }
+            let balance = -bill.netCost
+            return "≈" + (balance > 0 ? "+" : "") + EnergyTariff.money(balance) + "/d" + (partial ? "*" : "")
+        }
+        var partial: Bool { min(generation.coverage, consumption.coverage) < 85_800 }
+    }
+
+    func last24Hours(generation points: [PowerPoint], load: [PowerPoint], intervals: [PowerInterval],
+                     now: Date = Date()) -> RollingSummary {
+        let range = RollingEnergy.last24Hours(endingAt: now)
+        let generation = RollingEnergy.total(points: points, in: range)
+        let consumption = RollingEnergy.total(points: load, intervals: intervals, in: range)
+        let midnight = ChartHistory.calendar.startOfDay(for: now)
+        let today = RollingEnergy.total(points: points, in: midnight...now)
+        let previousKWh = max(0, generation.wattHours - today.wattHours) / 1000
+        var sold: Double?
+        if generation.coverage > 0, let previousRevenue = revenue(generationKWh: previousKWh),
+           let todayRevenue = revenue(generationKWh: today.wattHours / 1000, today: true) {
+            sold = previousRevenue + todayRevenue
+        }
+        let bill = consumption.coverage > 0 && purchasePerKWh.isFinite && purchasePerKWh >= 0
+            ? Bill(importCost: consumption.wattHours / 1000 * purchasePerKWh, exportRevenue: sold ?? 0)
+            : nil
+        return RollingSummary(range: range, generation: generation, consumption: consumption, revenue: sold, bill: bill)
+    }
+
+    func pesosPerHour(netWatts: Double?) -> Double? {
+        guard let netWatts, netWatts.isFinite, purchasePerKWh.isFinite, purchasePerKWh >= 0 else { return nil }
+        return (netWatts / 1000) * purchasePerKWh * (netWatts > 0 ? 0.5 : 1)
+    }
+
+    func hourlyReadout(netWatts: Double?) -> String {
+        let rate = pesosPerHour(netWatts: netWatts) ?? 0
+        return (rate > 0 ? "+" : "") + Self.money(rate) + "/h"
+    }
+
     static func money(_ value: Double) -> String {
-        value.formatted(.currency(code: "PHP").locale(Locale(identifier: "en_PH")))
+        guard value.isFinite else { return "—" }
+        let magnitude = abs(value)
+        let thousands = magnitude >= 999.95
+        let number = thousands ? magnitude / 1000 : magnitude
+        let digits = thousands ? 2 : 1
+        let amount = number.formatted(.number.locale(Locale(identifier: "en_PH")).grouping(.never).precision(.fractionLength(digits)))
+        return (value <= -0.05 ? "-₱" : "₱") + amount + (thousands ? "k" : "")
     }
 }
 

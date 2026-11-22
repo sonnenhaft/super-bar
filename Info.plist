@@ -26,10 +26,17 @@
 	<string>15.0</string>
 	<key>LSUIElement</key>
 	<true/>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Super Bar finds LG TVs and connects to the TV you select to show its volume and use the remote.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_airplay._tcp</string>
+		<string>_hap._tcp</string>
+	</array>
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>Super Bar uses Bluetooth to read your BLUETTI station.</string>
 	<key>NSBluetoothPeripheralUsageDescription</key>
-	<string>BluettiBar reads the battery level of your BLUETTI AC50P over Bluetooth.</string>
+	<string>Super Bar reads the battery level of your BLUETTI AC50P over Bluetooth.</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 </dict>

@@ -1,4 +1,5 @@
 import AppKit
+import CryptoKit
 import Foundation
 
 func fail(_ message: String) -> Never {
@@ -19,6 +20,16 @@ func describeErrorChain(_ error: Error) -> String {
 
 let args = Array(CommandLine.arguments.dropFirst())
 guard let command = args.first else { fail("No action specified.") }
+if command == "checksum" {
+    guard args.count == 2 else { fail("Expected a file to checksum.") }
+    do {
+        let bytes = try Data(contentsOf: URL(fileURLWithPath: args[1]), options: .mappedIfSafe)
+        print(SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined())
+        exit(0)
+    } catch {
+        fail("Could not checksum the file: \(error.localizedDescription)")
+    }
+}
 if command == "stop" {
     let apps = ["local.SuperBar", "com.local.bluebar", "ru.tclbar.app", "local.LGBar"]
         .flatMap(NSRunningApplication.runningApplications(withBundleIdentifier:))

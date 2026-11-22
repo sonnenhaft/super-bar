@@ -2,11 +2,13 @@
 
 A native macOS menu bar app for BLUETTI power stations and TCL Home and LG ThinQ air conditioners. Requires macOS 15 or later.
 
-The Mac app, iPhone app and widget use Swift and Apple's system frameworks only.
-Building and checking the apps requires Apple's developer tools (full Xcode for
-iOS), with no Python, Node, package manager or third-party SDK. The checked-in
-iOS Xcode project is edited directly, without a project generator. Python
-sources, tests and launchers have been removed from this repository.
+The Mac app, iPhone app and widget use Swift and Apple’s system frameworks.
+Build and run the Swift checks with Apple Command Line Tools on macOS or full
+Xcode for iOS. The iOS app and widget share a checked-in Xcode project.
+
+Mac and iPhone render the same desktop-based SwiftUI screen and device cards
+from `Sources/Shared/`. Platform adapters retain menu-bar controls, app lifecycle
+and widget navigation; narrow screens adapt the shared layout for touch.
 
 ![Super Bar menu with TCL air conditioner controls and energy history](docs/super-bar.png)
 
@@ -22,13 +24,35 @@ cd super-bar
 
 `start.command` and `install.command` always build a fresh version, close the previous menu bar apps, and install Super Bar in `~/Applications`. The installer verifies the running app's path, process, version, build number, and executable checksum. If verification fails, it restores the previous installation.
 
+Traffic counters publish one saved summary per completed minute. The average
+KB/min and the total use the same window of up to 60 completed minutes, including
+idle minutes. Before a full hour is available, the total shows the actual observed
+duration. A first partial minute is normalized by its actual duration. Both rows
+use decimal KB (1,000 bytes); chart traffic is already part of the total.
+Minute counts and unrounded averages are cached locally in
+`~/Library/Caches/local.SuperBar/traffic-minutes.json`, once per minute, with no
+URLs, credentials or extra provider requests. Late metrics join the next summary.
+The shared Mac/iPhone view refreshes once per minute; on iPhone both traffic rows
+sit below Settings/Refresh. Observation starts with the app model, and standalone
+probes do not use the app's cache.
+Settings offers **All** accounts and an **All** refresh view with separate sliders
+for TCL, LG, BLUETTI, Deye and Tuya. Cloud brands show their own incoming/outgoing
+minute averages from that same ledger; earlier unattributed totals remain Other.
+BLUETTI uses Bluetooth and is labelled separately from internet traffic. Sliders
+reschedule existing live readers without triggering a read or speeding up history.
+Grid voltage from the selected Tuya meter appears in Energy and all widget sizes;
+stale values carry a clock mark. Climate widgets publish confirmed command results,
+keep per-device check times and flush the shared snapshot when leaving the app.
+No additional provider polling is introduced. Validation and deployment follow after
+completing this code queue.
+
 ## Use
 
 - The 460-point panel uses a shared dark palette, thin borders and cyan selection accents. TCL, LG and BLUETTI use text labels; device buttons share a brand column and row height, with text aligned at the top. LG units use window-unit artwork and TCL uses wall-unit artwork. Clicking an AC device always opens its controls and chart and activates its menu-bar readout, including repeated clicks. Section headings still collapse their contents while keeping the readout. Powered-off AC readouts show a red power symbol beside the pinned room temperature.
 - Only one section expands at a time; collapsing it also hides its charts. TCL and LG share the same brand typography, and Energy has no Deye label. The daily chart tooltip and Energy summary show estimated net cost: the whole-house consumption cost minus revenue from selling all generation. A negative balance is labelled Credit. All generation is valued as sold: previous days default to 70% of the purchase tariff, today to 50%. Days missing either generation or consumption are excluded and coverage is shown. The purchase tariff defaults to ₱13/kWh; the resulting sale prices are ₱9.10/kWh for previous days and ₱6.50/kWh today. These are estimates, not billing measurements.
-- Green, red and gray dots mean on, off and offline/unknown. Online devices show room temperature even when off; offline summaries show only the name and dot. TCL summaries use two lines; LG cards pair a device icon with name, temperature pins and available power. Set/Room values are independent pin buttons in summaries and expanded controls. ECO leaves sit beside the set temperature. The expanded card keeps the temperature picker and adds bounded minus/plus controls.
+- Offline devices are hidden by default. Enable **Settings → Show offline devices** to see them. A reachable AC stays visible when powered off, with its room temperature and an **Off** label. Reachable BLUETTI stations keep their cards side by side, including at 0% or 0 W. Opening a card shows its readings and their age. ECO leaves sit beside the set temperature, and the expanded card has a temperature picker and bounded minus/plus controls.
 - TCL and battery controls align with their device buttons. The selected chart appears in its own Climate, LG, Battery or Energy section. Settings expand inline from the bottom row; refresh, 9–24 pt text size, login and LG settings remain available. Refresh and text-size sliders share a blue filled track. The panel fits its content and scrolls only when taller than the available screen.
-- Refresh settings follow the selected brand. Missing credentials show `Sign in to …`; Bluetooth starts only after **Allow Bluetooth**.
+- Refresh settings follow the selected brand. Missing credentials show `Sign in to …`; the first Bluetooth connection requires **Allow Bluetooth**.
 - Energy shows yellow production / blue Tuya consumption without a separate meter row or Deye label. Power tiles open the charts and toggle net power beside the clock; the Energy heading collapses the charts. The chart shows 30 days plus a rolling 24-hour generation/consumption curve, including yesterday's readings. Both headings show estimated net cost after generation credit; the detailed calculation remains below. Rolling totals integrate measured power and meter intervals without filling gaps; `*` marks incomplete coverage. Readings become bold while pinned: production minus consumption, yellow for surplus and blue for deficit. Missing/stale readings produce `—`; the selected consumption meter is never silently replaced.
 - Energy compares the net bill with a struck-through bill for the same household consumption without solar. Today, calendar month and 30 days each show sale revenue and ROI for that same period: all generation valued at its applicable sale rate divided by panel cost (default ₱400,000, editable in Settings). Coverage is shown; missing days are not extrapolated, and this is not an annualized return. Existing tariff settings are preserved when adding panel cost.
 - Power and energy use integers below 800 W/Wh and one decimal with a comma above it: `735 W`, `1,3 kW`, `28,2 kWh`. Completed Deye days and Tuya schemas are cached instead of refetched every poll.
@@ -37,9 +61,9 @@ cd super-bar
 
 **TCL:** Super Bar reuses the local TCL Home session. If sign-in is required, enter your TCL Home email and password in the TCL panel.
 
-**LG:** Settings → Connections → LG ThinQ accepts email, password and account country. The shared native Swift client uses the mobile ThinQ account flow (SPX server-side signing), stores credentials only after login and device discovery succeed, and renews access tokens from the refresh token. Existing PAT accounts continue to work until a mobile login succeeds. Mobile mode currently supports ThinQ2 AC power, temperature, mode and fan controls advertised by the model; ThinQ1 and energy history remain unsupported. Protocol fixtures pass, but live LG login still needs verification.
+**LG:** Settings → Connections → LG ThinQ accepts email, password and account country. The shared native Swift client uses the mobile ThinQ account flow (SPX server-side signing), stores credentials only after login and device discovery succeed, and renews access tokens from the refresh token. Mobile mode currently supports ThinQ2 AC power, temperature, mode and fan controls advertised by the model; ThinQ1 and energy history remain unsupported. The email/password login and device reads have been verified live; protocol fixtures also cover the session flow.
 
-**BLUETTI:** Press **Allow Bluetooth** on the BLUETTI row to start discovery and grant macOS Bluetooth access. Opening the app or panel never starts Bluetooth. Polling continues in the background after the first connection.
+**BLUETTI:** Press **Allow Bluetooth** in the app to grant access. Super Bar discovers nearby AC50P stations after permission is granted and on later launches. The selected station follows its polling interval. Other discovered stations update through independent, bounded reads. Opening a card or closing the panel preserves the existing polling session.
 
 **Deye:** The native Swift client imports an existing protected Deye session once and stores its own session in macOS Keychain. Requests, token renewal and saved-login recovery use URLSession directly. If credentials are missing, use **Sign in to Deye Cloud** in its row. No Python, helper scripts, packages, or external runtime are required; credentials are never bundled.
 
@@ -76,11 +100,7 @@ while the nonactivating menu panel owns keyboard focus.
 Existing app-owned credential files in Application Support migrate automatically.
 The app verifies Keychain write/readback before removing a legacy file. Keychain
 errors preserve the old file and never trigger a plaintext fallback. The native
-app preserves independently owned import sources. The Deye and Tuya diagnostic
-tools also use macOS Keychain: their own legacy session/login files migrate on
-first use and are removed only after verified storage. Discovered external
-imports remain untouched. The installer and simulator helper do not create
-plaintext token copies.
+app preserves independently owned import sources.
 
 Development builds use ad-hoc signing. A rebuilt Mac app can require macOS
 Keychain access approval again because its signing identity changed; the app does
@@ -100,7 +120,7 @@ it after relaunch without needing environment variables in Finder. Account
 tokens, refresh tokens, passwords and password hashes are saved as private local files in
 this checkout's `.build/dev-credentials/` directory (directory
 0700, files 0600). The files are `deye-session.json`, `tuya-session.json`,
-`tcl-session.json`, `lg-session.json` and legacy `lg-token.txt`. They are plaintext development files,
+`tcl-session.json` and `lg-session.json`. They are plaintext development files,
 excluded from Git by `.build/` and kept outside the application bundle.
 The bundle contains only a text resource with the directory's absolute path,
 so restarting the installed desktop app reuses the same local files. If that
@@ -159,8 +179,7 @@ Live status polling and chart history have independent schedules. Deye and Tuya
 update today's history at most every five minutes while their charts are selected;
 their APIs return a whole day, so completed hours are not separately requested.
 Completed days are cached and the previous day's partial total is finalized after
-midnight. TCL's summary API is polled every 15 minutes (hourly data once an hour),
-with one-minute sampling near its 09:00 accounting boundary. LG fetches missing
+midnight. TCL requests daily totals every 15 minutes and hourly statistics once an hour. The 24-hour graph uses timestamped device power and confirmed hourly energy from TCL. The power readout uses device watts for up to five minutes. Without fresh watts, a running unit can show an approximate average from the increase between two recent readings of the same daily kWh counter, labelled with the observation interval. A counter reset or a long gap starts a new interval. The daily total is displayed separately. LG fetches missing
 completed dates, then keeps that archive until another day is complete; failed or
 missing archive data is retried at most hourly. Fast live samples for LG, TCL and
 BLUETTI still extend local power curves without additional history API requests.
@@ -203,8 +222,14 @@ and LG UTF-8 token migration, failed reads/writes/readback, corrupt data and
 preservation of independent import sources. After removing the file backend,
 the native test suite and iOS project checks passed again; the updated iPhone
 app launched with existing connections. The new optimized Mac bundle built and
-passed signature verification, but its runtime check is blocked by the local
-launch environment. No hardware control commands were sent.
+passed signature verification. On 2026-11-18 Mac build 1794993054 was installed
+and restarted through the Mac UI; its local launch receipt confirmed the new
+build and installed executable path, and the executable checksum matched the
+built app. Energy charts and TCL/LG readings rendered. Super Bar was also built,
+signed, installed and launched through Xcode on the actual miloradovich iPhone;
+the screenshot is `.build/deployment/miloradovich.png`. These runtime checks
+preceded the traffic-summary changes above. Widget taps and both Mac BLUETTI
+connections remain unverified. No hardware control commands were sent.
 
 ## Swagger / OpenAPI JSON
 
@@ -220,3 +245,5 @@ results are described in `x-rpc-actions` and component schemas. Dynamic TCL host
 must come from discovery. Tuya signatures, TCL SaaS signatures and AWS SigV4
 require an authorized signing-aware client; Swagger UI alone does not generate
 these signatures. BLUETTI uses BLE and is not represented as a fictional HTTP API.
+
+The optional ThinQ Connect energy archive reads its API key from the `lg-connect-api-key` credential-vault entry or `SUPER_BAR_LG_CONNECT_API_KEY`. Keep this credential outside source control. Mobile ThinQ device control uses its existing account session.

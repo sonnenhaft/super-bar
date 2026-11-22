@@ -2,40 +2,40 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 bash Tests/RepositoryPolicy.command
-mkdir -p .build
-xcrun swiftc -module-cache-path .build/modules Sources/EditingCommands.swift Tests/EditingCommandsCheck.swift -o .build/editing-commands-check
-.build/editing-commands-check
-xcrun swiftc -module-cache-path .build/modules Sources/Cloud/CloudSupport.swift Tests/CloudResponse.swift -o .build/cloud-response-check
-.build/cloud-response-check
-xcrun swiftc -module-cache-path .build/modules Sources/Bluetti/Polling/CLIJob.swift Tests/BluetoothStream.swift -o .build/bluetooth-stream-check
-.build/bluetooth-stream-check
-xcrun swiftc -swift-version 5 -module-cache-path .build/modules iOS/App/WidgetCommandQueue.swift Tests/WidgetCommandQueueCheck.swift -o .build/widget-command-queue-check
-.build/widget-command-queue-check
-xcrun swiftc -module-cache-path .build/modules Sources/Cloud/CloudSupport.swift Sources/Cloud/CredentialStore.swift Tests/CredentialStorage.swift -o .build/credential-storage-check
-.build/credential-storage-check
-xcrun swiftc -swift-version 5 -D SUPER_BAR_DEV_CREDENTIALS -module-cache-path .build/modules Sources/Cloud/CloudSupport.swift Sources/Cloud/CredentialStore.swift Sources/Cloud/DevelopmentCredentialVault.swift Tests/DevelopmentCredentials.swift -o .build/development-credentials-check
-.build/development-credentials-check
-xcrun swiftc -module-cache-path .build/modules Sources/Readings.swift Sources/Shared/PanelTheme.swift Sources/Shared/DeviceIdentity.swift Sources/Shared/ReadingAge.swift Sources/BarSelection.swift Sources/SuperHeader.swift Tests/HeaderCheck.swift -o .build/header-check
-.build/header-check
-xcrun swiftc -module-cache-path .build/modules Sources/Cloud/CloudSupport.swift Sources/Cloud/CredentialStore.swift Sources/TCL/TCLCloud.swift Tests/CredentialFixtures.swift Tests/SessionReuse.swift -o .build/session-check
-.build/session-check
-xcrun swiftc -swift-version 5 -module-cache-path .build/modules Sources/Readings.swift Sources/Cloud/CloudSupport.swift Sources/Cloud/CredentialStore.swift Sources/LG/ThinQ.swift Sources/LG/LGMobileAuth.swift Sources/LG/LGMobileClient.swift Sources/LG/LGDeviceState.swift Tests/LGSharedState.swift -o .build/lg-shared-check
-.build/lg-shared-check
-xcrun swiftc -swift-version 5 -module-cache-path .build/modules Sources/Readings.swift Sources/Cloud/CloudSupport.swift Sources/Cloud/CredentialStore.swift Sources/LG/ThinQ.swift Sources/LG/LGMobileAuth.swift Sources/LG/LGMobileClient.swift Sources/LG/LGDeviceState.swift Tests/CredentialFixtures.swift Tests/LGMobile.swift -o .build/lg-mobile-check
-.build/lg-mobile-check
-xcrun swiftc -swift-version 5 -module-cache-path .build/modules Sources/Readings.swift Sources/Shared/ReadingAge.swift Sources/Cloud/CloudSupport.swift Sources/Cloud/CredentialStore.swift Sources/Deye/DeyeReading.swift Sources/Deye/DeyeCloud.swift Sources/Deye/DeyeStore.swift Sources/Tuya/TuyaCrypto.swift Sources/Tuya/TuyaCloud.swift Sources/Tuya/TuyaReading.swift Sources/Tuya/TuyaStore.swift Tests/CredentialFixtures.swift Tests/EnergyStoreLifecycle.swift -o .build/energy-store-check
-.build/energy-store-check
-sources=()
-while IFS= read -r -d '' source; do sources+=("$source"); done < <(find Sources -name '*.swift' ! -name main.swift -print0)
-xcrun swiftc -swift-version 5 -target "$(uname -m)-apple-macosx15.0" -module-cache-path .build/modules -import-objc-header Sources/Bluetti/Bluetooth/BluettiPOSIX.h "${sources[@]}" iOS/App/PhoneLG.swift iOS/App/WidgetClimateMetrics.swift iOS/Shared/WidgetSnapshot.swift Tests/MemoryLifecycle.swift -o .build/memory-lifecycle-check
-.build/memory-lifecycle-check
-xcrun swiftc -swift-version 5 -target "$(uname -m)-apple-macosx15.0" -module-cache-path .build/modules -import-objc-header Sources/Bluetti/Bluetooth/BluettiPOSIX.h "${sources[@]}" Tests/StatusStability.swift -o .build/status-stability
-.build/status-stability
+source Scripts/SwiftChecks.sh
+mkdir -p .build/modules
 
-xcrun swiftc -swift-version 5 -module-cache-path .build/modules Sources/Readings.swift Sources/Cloud/CloudSupport.swift Sources/Cloud/CredentialStore.swift Sources/Deye/DeyeReading.swift Sources/Deye/DeyeCloud.swift Tests/CredentialFixtures.swift Tests/DeyeSession.swift -o .build/deye-session-check
-.build/deye-session-check
+cloud=(Sources/Cloud/CloudSupport.swift Sources/Cloud/CredentialStore.swift)
+lg=(Sources/LG/ThinQ.swift Sources/LG/LGMobileAuth.swift Sources/LG/LGMobileClient.swift Sources/LG/LGDeviceState.swift)
+deye=(Sources/Deye/DeyeReading.swift Sources/Deye/DeyeCloud.swift)
+tuya=(Sources/Tuya/TuyaCrypto.swift Sources/Tuya/TuyaCloud.swift Sources/Tuya/TuyaReading.swift)
 
-/usr/bin/openssl genrsa -out .build/tuya-test-key.pem 2048 2>/dev/null
-/usr/bin/openssl rsa -in .build/tuya-test-key.pem -outform DER -out .build/tuya-test-key.der 2>/dev/null
-xcrun swiftc -swift-version 5 -module-cache-path .build/modules Sources/Readings.swift Sources/Cloud/CloudSupport.swift Sources/Cloud/CredentialStore.swift Sources/Tuya/TuyaCrypto.swift Sources/Tuya/TuyaCloud.swift Sources/Tuya/TuyaReading.swift Sources/Deye/DeyeReading.swift Sources/Deye/EnergyBalance.swift Tests/CredentialFixtures.swift Tests/TuyaNative.swift -o .build/tuya-native-check
-.build/tuya-native-check
+run_swift_check editing-commands-check Sources/EditingCommands.swift Tests/EditingCommandsCheck.swift
+run_swift_check cloud-response-check Sources/Cloud/CloudSupport.swift Tests/CloudResponse.swift
+run_swift_check bluetooth-stream-check Sources/Bluetti/Polling/CLIJob.swift Tests/BluetoothStream.swift
+run_swift_check widget-command-queue-check iOS/App/WidgetCommandQueue.swift Tests/WidgetCommandQueueCheck.swift
+run_swift_check credential-storage-check "${cloud[@]}" Tests/CredentialStorage.swift
+run_swift_check development-credentials-check -D SUPER_BAR_DEV_CREDENTIALS "${cloud[@]}" \
+  Sources/Cloud/DevelopmentCredentialVault.swift Tests/DevelopmentCredentials.swift
+run_swift_check header-check Sources/Readings.swift Sources/Shared/PanelTheme.swift Sources/Shared/DeviceIdentity.swift \
+  Sources/Shared/ReadingAge.swift Sources/BarSelection.swift Sources/SuperHeader.swift Tests/HeaderCheck.swift
+run_swift_check session-check "${cloud[@]}" Sources/TCL/TCLCloud.swift Tests/CredentialFixtures.swift Tests/SessionReuse.swift
+
+run_swift_check lg-shared-check Sources/Readings.swift "${cloud[@]}" "${lg[@]}" Tests/LGSharedState.swift
+run_swift_check lg-mobile-check Sources/Readings.swift "${cloud[@]}" "${lg[@]}" Tests/CredentialFixtures.swift Tests/LGMobile.swift
+run_swift_check webos-remote-check "${cloud[@]}" Sources/LG/WebOSTVRemote.swift Sources/LG/WebOSTVTransport.swift Sources/LG/WebOSTVPairingStore.swift Sources/LG/WebOSTVCommand.swift Sources/LG/WebOSTVDiscovery.swift \
+  Tests/CredentialFixtures.swift Tests/WebOSTVRemoteCheck.swift
+run_swift_check energy-store-check Sources/Readings.swift Sources/Shared/ReadingAge.swift "${cloud[@]}" \
+  "${deye[@]}" Sources/Deye/DeyeStore.swift "${tuya[@]}" Sources/Tuya/TuyaStore.swift \
+  Tests/CredentialFixtures.swift Tests/EnergyStoreLifecycle.swift
+run_swift_check deye-session-check Sources/Readings.swift "${cloud[@]}" "${deye[@]}" Tests/CredentialFixtures.swift Tests/DeyeSession.swift
+run_swift_check tuya-native-check Sources/Readings.swift Sources/Shared/ReadingAge.swift "${cloud[@]}" "${tuya[@]}" Sources/Tuya/TuyaStore.swift \
+  Sources/Deye/DeyeReading.swift Sources/Deye/EnergyBalance.swift Tests/CredentialFixtures.swift Tests/TuyaNative.swift
+
+desktop=(-target "$(uname -m)-apple-macosx15.0" -import-objc-header Sources/Bluetti/Bluetooth/BluettiPOSIX.h)
+while IFS= read -r -d '' file; do
+  desktop+=("$file")
+done < <(find Sources -type f -name '*.swift' ! -name main.swift -print0)
+run_swift_check memory-lifecycle-check "${desktop[@]}" iOS/App/PhoneLG.swift iOS/App/WidgetClimateMetrics.swift \
+  iOS/Shared/WidgetSnapshot.swift Tests/MemoryLifecycle.swift
+run_swift_check status-stability "${desktop[@]}" Tests/StatusStability.swift

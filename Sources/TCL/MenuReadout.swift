@@ -8,7 +8,7 @@ struct MenuReadout: View {
     let visible: Set<ReadoutField>
     let energyText: String?
     var cacheKey: [String] {
-        var values = [String(Double(size)), textColor?.description ?? "", String(ac?.power == false), String(ac?.code("ECO") ?? -1)]
+        var values = [String(Double(size)), textColor?.description ?? "", String(ac?.power == false), String(ac?.ecoEnabled == true)]
         if ac?.power == false { return values + [tempText(ac?.indoor)] + visible.map(\.rawValue).sorted() }
         for field in ReadoutField.allCases where visible.contains(field) {
             values.append(field.rawValue)
@@ -18,7 +18,7 @@ struct MenuReadout: View {
             case .indoor: values.append(tempText(ac.indoor))
             case .power: values.append(ac.status)
             case .fan: values.append(Self.speed(ac))
-            case .eco: values.append(String(ac.code("ECO") ?? -1))
+            case .eco: values.append(String(ac.ecoEnabled))
             case .vertical, .horizontal:
                 let prefix = field == .vertical ? "vertical" : "horizontal"
                 values.append(String(ac.code(prefix + "Direction") ?? -1))
@@ -39,7 +39,7 @@ struct MenuReadout: View {
                 }
             } else if let ac {
                 if visible.contains(.target) {
-                    if ac.code("ECO") == 1 { Image(systemName: "leaf.fill").font(.system(size: max(7, size - 2))).foregroundStyle(.green) }
+                    if ac.ecoEnabled { ClimateEcoIcon().font(.system(size: max(7, size - 2))) }
                     TemperatureText(value:ac.acTemperature, menuBar:true).fontWeight(ac.acTemperature == "OFF" ? .bold : .semibold)
                 }
                 if visible.contains(.target) && visible.contains(.indoor) { Text("/").foregroundStyle(.white) }
@@ -127,7 +127,7 @@ enum ReadoutField: String, CaseIterable {
         case .fan: return "fanblades"
         case .vertical: return "arrow.up.and.down"
         case .horizontal: return "arrow.left.and.right"
-        case .eco: return "leaf.fill"
+        case .eco: return ClimateEcoIcon.symbol
         case .energy: return "bolt.fill"
         }
     }

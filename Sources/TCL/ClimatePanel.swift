@@ -6,6 +6,7 @@ struct ClimatePanel: View {
     @ObservedObject var history: EnergyHistory
     @ObservedObject var preferences: ReadoutPreferences
     @ObservedObject var selection: BarSelection
+    @ObservedObject private var age = ReadingAge.shared
     @State private var email = ""
     @State private var password = ""
     @State private var signingIn = false
@@ -40,7 +41,7 @@ struct ClimatePanel: View {
                 }
             } else if !store.devices.isEmpty {
                 if selection.expanded == .tcl && !selection.detailsCollapsed, let device = store.selected {
-                    deviceCard(device, active: true)
+                    deviceCard(device)
                 }
             } else {
                 VStack(spacing:8) {
@@ -57,56 +58,16 @@ struct ClimatePanel: View {
     @ViewBuilder var charts: some View {
         if let ac = store.selected {
             Text(DeviceDisplayName.clean(ac.name)).font(.caption).foregroundStyle(.secondary)
-            EnergyChartView(history: history, device: ac.name)
+            EnergyChartView(history: history, device: ac.id)
         }
     }
-    private func deviceCard(_ ac: Aircon, active: Bool) -> some View {
+    private func deviceCard(_ ac: Aircon) -> some View {
         let pins = preferences.ordered(ac.id)
-        let energy = history.cardEnergy[ac.name]
-        let choices: [(ReadoutField, String, String)] = [
-            (.target, "AC", tempText(ac.target)), (.indoor, "Room", tempText(ac.indoor)),
-            (.fan, "Fan", ac.fan), (.energy, "Energy", energy ?? "—"),
-            (.eco, "Eco", ac.code("ECO") == 1 ? "ON" : "OFF")
-        ]
         let displayed = selection.current == .tcl && preferences.device(in: store)?.id == ac.id
-        return ClimateDeviceCard(brand: .tcl, name: ac.name, selected: active, status: store.offline ? "Offline" : ac.status,
-            metrics: choices.map { field, label, value in
-                let visible = pins.contains(field)
-                return DeviceMetric(id: field.rawValue, label: label, symbol: field.symbol, value: value,
-                    visible: displayed && visible) {
-                    preferences.set(field, for: ac.id, visible: !displayed || !visible)
-                }
-            }, reading: store.refreshing, readAt: store.statusDate, refresh: store.manualRefresh, select: { store.select(ac); selection.activate(.tcl) }, powerOn: store.offline || ac.online != true || ac.failed ? nil : ac.power,
-            temperatureOptions:ac.setpoints.filter { (16...26).contains($0) },
-            changeTemperature:{ store.setTemperature(ac,$0) },
-            turnOff:ac.power == nil ? nil : { store.set(ac,"powerSwitch",0,"Power") },
-            message: store.problem ?? store.command,
-            presets: AnyView(controls(ac).disabled(store.offline || ac.online != true || ac.failed)),
-            directions: AnyView(HStack(spacing: 8) {
-                vane(ac, true)
-                vane(ac, false)
-            }.disabled(store.offline || ac.online != true || ac.failed))) {
-                CardMenus(eco: ac.ecoChanges != nil ? ac.code("ECO") == 1 : nil, toggleEco: { store.toggleEco(ac) },
-                          fan: "", fanControl: ac.has(ac.fanField) ? AnyView(
-                            PanelFanSpeedPicker(options: ac.fanSpeedOptions, selected: ac.selectedFanOption,
-                                currentSymbol: ac.currentFanSymbol, currentName: ac.fan) { level in
-                                if level == 0 { store.autoFan(ac, enabled: true) }
-                                else { store.setFan(ac, level: level) }
-                            }) : nil) { EmptyView() }
-                    .disabled(store.offline || ac.online != true || ac.failed)
+        return TCLDeviceDetails(store: store, ac: ac,
+            pinnedFields: displayed ? Set(pins.map(\.rawValue)) : []) { id in
+                guard let field = ReadoutField(rawValue: id) else { return }
+                preferences.set(field, for: ac.id, visible: !(displayed && pins.contains(field)))
             }
-    }
-    @ViewBuilder private func controls(_ ac: Aircon) -> some View {
-        CoolingPresetRow<TCLCoolingPreset>(label: { "\($0.degrees)°" }, enabled: { $0.fields(for: ac) != nil }, selected: { $0.isSelected(on: ac) },
-                         apply: { store.preset(ac, $0) }, icon: { $0.fanSymbol }, accessibilityName: { $0.label })
-    }
-
-    @ViewBuilder private func vane(_ ac: Aircon, _ vertical: Bool) -> some View {
-        let axis = vertical ? "vertical" : "horizontal"
-        if ac.power != false, ac.has(axis + "Direction") || ac.has(axis + "Switch") {
-            TCLAirflowPicker(ac: ac, vertical: vertical) { field, value in
-                store.set(ac, field, value, "Air direction")
-            }
-        }
     }
 }

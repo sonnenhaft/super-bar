@@ -134,11 +134,11 @@ final class TCLCloud {
 
     deinit { if ownsSession { session.invalidateAndCancel() } }
 
-    private func send(_ req: URLRequest, service: String) throws -> Data {
+    private func send(_ req: URLRequest, service: String, history: Bool = false) throws -> Data {
         let reply = CloudReply()
         let task = Task { [session] in
             do {
-                let (data, response) = try await CloudResponse.data(for: req, using: session)
+                let (data, response) = try await CloudResponse.data(for: req, using: session, history: history, provider: .tcl)
                 reply.data = data; reply.response = response
             } catch { reply.error = error }
             reply.ready.signal()
@@ -161,7 +161,7 @@ final class TCLCloud {
     }
 
     private func json(_ url: URL, service: String = "TCL Home", body: CloudObject? = nil,
-                      headers: [String:String] = [:], timeout: Double = 15) throws -> CloudObject {
+                      headers: [String:String] = [:], timeout: Double = 15, history: Bool = false) throws -> CloudObject {
         var req = URLRequest(url: url, timeoutInterval: timeout)
         req.httpMethod = body == nil ? "GET" : "POST"
         req.setValue("application/json", forHTTPHeaderField: "Accept")
@@ -170,7 +170,7 @@ final class TCLCloud {
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         }
         for (key,value) in headers { req.setValue(value, forHTTPHeaderField: key) }
-        return try cloudJSON(send(req, service: service), service: service)
+        return try cloudJSON(send(req, service: service, history: history), service: service)
     }
 
     private func writeAccount(_ account: Account) throws {
@@ -352,6 +352,6 @@ final class TCLCloud {
                            "appPackageName":"com.tcl.tclhome", "countryCode":"PH", "timeZone":"Asia/Manila",
                            "ssoToken":sso, "productKey":product, "deviceId":id]
         }
-        return try json(url, headers:saasHeaders(client), timeout:8)
+        return try json(url, headers:saasHeaders(client), timeout:8, history:true)
     }
 }

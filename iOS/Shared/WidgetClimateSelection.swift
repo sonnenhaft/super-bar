@@ -25,8 +25,8 @@ struct WidgetClimateSelection: Codable, Equatable {
     func selected(in snapshot: WidgetSnapshot) -> WidgetMetric? {
         if let brand, let deviceID,
            let selected = snapshot.climate.first(where: { $0.brand == brand && $0.id == deviceID }) {
-            return selected
+            return selected.online == false ? nil : selected
         }
-        return snapshot.climate.first { $0.control != nil }
+        return snapshot.climate.first { $0.control != nil && $0.online != false }
     }
 }

@@ -87,6 +87,57 @@ private final class ConcurrentVault: CredentialVault, @unchecked Sendable {
         let prefs = UserDefaults(suiteName: suite)!
         defer { prefs.removePersistentDomain(forName: suite) }
         let formVault = TestVault()
+        for provider in AccountConnection.providers {
+            AccountConnection.setConnected(false, provider: provider, preferences: prefs)
+            formVault.values[provider + "-session"] = Data(#"{"email":"saved@example.test","password":"synthetic"}"#.utf8)
+        }
+        try AccountConnection.resumeSaved(vault: formVault, preferences: prefs)
+        precondition(AccountConnection.providers.allSatisfy { AccountConnection.connected($0, preferences: prefs) }, "Explicit Allow must resume all four saved connections")
+        precondition(formVault.reads == 4 && formVault.writes == 0, "Resume reads each account once without replacing credentials")
+        formVault.values.removeAll(); formVault.reads = 0
+        let appBacking = TestVault()
+        let appVault = AppCredentialVault(backing: appBacking, preferences: prefs)
+        for key in ["deye-session", "tuya-session", "tcl-session", "lg-session"] {
+            do { _ = try appVault.read(key); preconditionFailure("Keychain read before explicit consent") } catch {}
+        }
+        precondition(appBacking.reads == 0, "Startup must not contact Keychain before Allow Keychain")
+        _ = try appVault.readWithUserAuthorization("lg-session")
+        _ = try appVault.readWithUserAuthorization("deye-session")
+        precondition(appBacking.authorizationReads == 1 && appBacking.reads == 1, "All providers share one authorization and one verification read")
+        for _ in 0..<3 {
+            let emptyRestart = AppCredentialVault(backing: appBacking, preferences: prefs)
+            let missing = try emptyRestart.read("tuya-session")
+            precondition(missing == nil, "An absent provider is not a permission failure after restart")
+        }
+        precondition(appBacking.authorizationReads == 1, "Empty approved Keychain must not ask again")
+        let rejectedPrefs = UserDefaults(suiteName: suite + "-rejected")!
+        defer { rejectedPrefs.removePersistentDomain(forName: suite + "-rejected") }
+        let readOnlyBacking = TestVault()
+        readOnlyBacking.writeFailure = true
+        let readOnlyVault = AppCredentialVault(backing: readOnlyBacking, preferences: rejectedPrefs)
+        expectFailure({ _ = try readOnlyVault.readWithUserAuthorization("lg-session") }, "Allow must reject read-only access before showing login")
+        precondition(!rejectedPrefs.bool(forKey: "keychain.applicationConsent"), "Failed write verification must not persist consent")
+        expectFailure({ _ = try readOnlyVault.read("lg-session") }, "Failed authorization must not leave an unlocked cache")
+        try appVault.write(Data("synthetic-lg".utf8), key: "lg-session")
+        try appVault.write(Data("synthetic-deye".utf8), key: "deye-session")
+        precondition(Set(appBacking.values.keys) == ["accounts-v1"], "Store all providers in a single Keychain record")
+        let reopenedVault = AppCredentialVault(backing: appBacking, preferences: prefs)
+        let reopened = try reopenedVault.read("lg-session")
+        precondition(reopened == Data("synthetic-lg".utf8), "Approved restart reads the same saved credentials")
+        precondition(appBacking.authorizationReads == 1, "Restart must not request interactive authorization again")
+        let sessionVault = SessionCredentialVault(backing: reopenedVault)
+        _ = try sessionVault.read("lg-session")
+        let savedRecords = appBacking.values
+        let previousReads = appBacking.reads
+        sessionVault.disallowAccess()
+        sessionVault.retryAccess()
+        expectFailure({ _ = try sessionVault.read("lg-session") }, "Disallow must invalidate cached secrets")
+        let lockedRestart = AppCredentialVault(backing: appBacking, preferences: prefs)
+        expectFailure({ _ = try lockedRestart.read("lg-session") }, "Disallow must persist across restarts")
+        precondition(appBacking.reads == previousReads && appBacking.values == savedRecords, "Disallow must neither read nor delete Keychain records")
+        _ = try sessionVault.authorizeAccess(keys: ["lg-session", "deye-session"])
+        let restored = try sessionVault.read("lg-session")
+        precondition(restored == Data("synthetic-lg".utf8) && appBacking.authorizationReads == 2, "Allow after Disallow must restore credentials with one authorization")
         formVault.values["deye-session"] = Data(#"{"email":"saved@example.test","password":"  synthetic password  ","base":"https://eu1.deyecloud.com"}"#.utf8)
         let draft = LoginDraft(provider: "deye", preferences: prefs, vault: formVault)
         precondition(formVault.reads == 0, "Creating a form must not access Keychain")
@@ -443,59 +494,6 @@ private final class ConcurrentVault: CredentialVault, @unchecked Sendable {
             let saved = try JSONDecoder().decode(SavedSession.self, from: vault.values[key]!)
             precondition(saved == current)
         }
-        // LG's raw UTF-8 token format stays compatible with existing iPhone items.
-        func tokenFixture(_ data: Data, at file: URL) throws {
-            try data.write(to: file)
-            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
-        }
-        do {
-            let source = file("lg-migration"), vault = TestVault()
-            try tokenFixture(Data("  synthetic-lg-token\n".utf8), at: source)
-            let store = TokenCredentialStore(key: key, legacyFile: source, vault: vault)
-            let restored = try store.read()
-            precondition(restored == "synthetic-lg-token" && !exists(source))
-            precondition(vault.values[key] == Data("synthetic-lg-token".utf8), "LG Keychain format must remain raw UTF-8")
-            try store.save(" synthetic-new-lg-token ")
-            precondition(!exists(source))
-            let reloaded = try store.read()
-            precondition(reloaded == "synthetic-new-lg-token")
-        }
-        for failure in ["read", "write", "verify-read", "verify-value"] {
-            let source = file("lg-failure-" + failure), vault = TestVault()
-            let legacy = Data("synthetic-lg-token".utf8)
-            try tokenFixture(legacy, at: source)
-            vault.readFailure = failure == "read"
-            vault.writeFailure = failure == "write"
-            vault.failAfterWrite = failure == "verify-read"
-            vault.corruptAfterWrite = failure == "verify-value"
-            let store = TokenCredentialStore(key: key, legacyFile: source, vault: vault)
-            expectFailure({ _ = try store.read() }, "Failed LG migration must propagate")
-            let retained = try Data(contentsOf: source)
-            precondition(retained == legacy, "Failed LG migration must preserve legacy bytes")
-        }
-        for invalid in [Data([0xff]), Data("  \n".utf8)] {
-            let source = file("lg-invalid-" + UUID().uuidString), vault = TestVault()
-            try tokenFixture(Data("synthetic-lg-token".utf8), at: source)
-            vault.values[key] = invalid
-            let store = TokenCredentialStore(key: key, legacyFile: source, vault: vault)
-            expectFailure({ _ = try store.read() }, "Invalid secure token must not fall back to legacy")
-            precondition(exists(source) && vault.writes == 0)
-        }
-        do {
-            let source = file("lg-external"), destination = file("lg-owned"), vault = TestVault()
-            try tokenFixture(Data("synthetic-lg-token".utf8), at: source)
-            let store = TokenCredentialStore(key: key, legacyFile: destination, vault: vault)
-            let restored = try store.read(importFile: source)
-            precondition(restored == "synthetic-lg-token" && exists(source) && !exists(destination))
-        }
-        do {
-            let source = file("lg-authoritative"), vault = TestVault()
-            try tokenFixture(Data("synthetic-old-lg-token".utf8), at: source)
-            vault.values[key] = Data("synthetic-new-lg-token".utf8)
-            let store = TokenCredentialStore(key: key, legacyFile: source, vault: vault)
-            let restored = try store.read()
-            precondition(restored == "synthetic-new-lg-token" && !exists(source) && vault.writes == 0)
-        }
-        print("Credential storage: session cache, concurrent access, explicit retry, verified writes, JSON/token migration, failure preservation, secure precedence, no plaintext fallback, import ownership and isolated file fixtures passed.")
+        print("Credential storage: session cache, concurrent access, explicit retry, verified writes, JSON migration, failure preservation, secure precedence, no plaintext fallback, import ownership and isolated file fixtures passed.")
     }
 }

@@ -7,14 +7,21 @@ struct PhoneLGDevice: Identifiable {
     var profile: [String: Any] = [:]
     var checked: Date?
     var problem: String?
+    var desired: [String: [String: Any]] = [:]
     private var sample: LGSample { LGSample(state) }
     func value(_ group: String, _ key: String) -> Any? {
-        LGDeviceValues.value(group, key, in: state)
+        desired[group]?[key] ?? LGDeviceValues.value(group, key, in: state)
     }
-    var target: Double? { sample.target }
-    var room: Double? { sample.room }
+    var target: Double? { lgNumber(value("temperature", "targetTemperature")) }
+    var roomReading: String { sample.roomReading }
     var windKey: String { LGDeviceValues.windKey(in: profile) }
-    var power: Bool? { sample.powerOn }
+    var power: Bool? {
+        switch value("operation", "airConOperationMode") as? String {
+        case "POWER_ON": return true
+        case "POWER_OFF": return false
+        default: return nil
+        }
+    }
     var online: Bool? { sample.online }
     private func capability(_ group: String, _ key: String) -> LGCapability {
         LGCapability(profile: profile, group: group, key: key)
@@ -33,126 +40,271 @@ struct PhoneLGDevice: Identifiable {
 
 @MainActor final class PhoneLG: ObservableObject {
     @Published var devices: [PhoneLGDevice] = []
+    @Published private(set) var televisions: [LGAccountTelevision] = []
+    // A cold start may use the widget's last list; a different account may not.
+    private(set) var mayRestoreWidgetList = true
     @Published var problem: String?
     @Published var busy = false
-    @Published var history: [String: [EnergyDayPoint]] = [:]
-    @Published var historyProblem: [String: String] = [:]
-    private var historyAttempt: [String: Date] = [:]
     var changed: (() -> Void)?
-    private var api: API
+    private(set) var api: API
     private let makeAPI: () -> API
-    private let saveToken: (String) throws -> Void
-    private let validateCredentials: (String, String, String) async throws -> Void
     private let preferences: UserDefaults
     private var accountGeneration = 0
+    private let finishedReads = CurrentValueSubject<Int, Never>(0)
+    private var reading = false
+    @Published private var readingDeviceID: String?
+    @Published private(set) var commandErrors: [String: String] = [:]
 
-    init(makeAPI: @escaping () -> API = { API() },
-         saveToken: @escaping (String) throws -> Void = TokenFile.save,
-         preferences: UserDefaults = defaults,
-         validateCredentials: @escaping (String, String, String) async throws -> Void = { try await API.validateCredentials(token: $0, country: $1, region: $2) }) {
-        self.makeAPI = makeAPI; self.saveToken = saveToken; self.preferences = preferences
-        self.validateCredentials = validateCredentials
+    private struct Edit {
+        let id: String
+        let group: String
+        let key: String
+        var value: Any
+        let preserveCurrent: Bool
+    }
+    @Published private var pending: [Edit] = []
+    @Published private var active: [Edit] = []
+    private var commandTask: Task<Void, Never>?
+    private let confirmationDelay: UInt64
+
+    func displayDevice(_ device: PhoneLGDevice) -> PhoneLGDevice {
+        var shown = device
+        for edit in active + pending where edit.id == device.id {
+            shown.desired[edit.group, default: [:]][edit.key] = edit.value
+        }
+        return shown
+    }
+    func isPending(_ id: String) -> Bool { (active + pending).contains { $0.id == id } }
+    func isUpdating(_ id: String) -> Bool { readingDeviceID == id || isPending(id) }
+    var hasPendingCommands: Bool { commandTask != nil || !pending.isEmpty || !active.isEmpty }
+    func ecoChoice(_ device: PhoneLGDevice) -> EcoChoice {
+        let flag = LGCapability(profile: device.profile, group: "powerSave", key: "powerSaveEnabled")
+        return EcoChoice(flag: device.value("powerSave", "powerSaveEnabled"), flagWrites: flag.details["writeValues"] as? [Any],
+            writableFlag: flag.writable, mode: device.value("airConJobMode", "currentJobMode") as? String,
+            modes: device.options("airConJobMode", "currentJobMode"), returnMode: "COOL")
+    }
+    func toggleEco(_ device: PhoneLGDevice) {
+        guard let current = devices.first(where: { $0.id == device.id }) else { return }
+        let device = displayDevice(current)
+        let choice = ecoChoice(device)
+        guard let change = choice.change else { return }
+        var changes = [change]
+        if let target = device.target, device.allowed("temperature", "targetTemperature", target) {
+            changes.append(("temperature", "targetTemperature", target))
+        }
+        if let speed = device.value("airFlow", device.windKey), device.allowed("airFlow", device.windKey, speed) {
+            changes.append(("airFlow", device.windKey, speed))
+        }
+        enqueue(device, changes: changes, preserveFollowingValues: true)
+    }
+    func presetChanges(_ device: PhoneLGDevice, _ preset: LGCoolingPreset) -> [ControlChange] {
+        preset.changes(windKey: device.windKey)
+    }
+    func presetAllowed(_ device: PhoneLGDevice, _ preset: LGCoolingPreset) -> Bool {
+        device.bounds.contains(Double(preset.degrees)) && presetChanges(device, preset).allSatisfy { device.allowed($0.0, $0.1, $0.2) }
+    }
+    func preset(_ device: PhoneLGDevice, _ preset: LGCoolingPreset) {
+        guard presetAllowed(device, preset) else { return }
+        enqueue(device, changes: presetChanges(device, preset))
+    }
+
+    private let connect: (String, String, String) async throws -> Void
+    init(makeAPI: @escaping () -> API = { API() }, preferences: UserDefaults = defaults, confirmationDelay: UInt64 = 800_000_000,
+         connect: @escaping (String, String, String) async throws -> Void = {
+             try await LGMobileClient.connect(email: $0, password: $1, country: $2)
+         }) {
+        self.makeAPI = makeAPI; self.preferences = preferences; self.connect = connect
+        self.confirmationDelay = confirmationDelay
         api = makeAPI()
     }
 
     func configureMobile(email: String, password: String, country: String) async throws {
         guard !busy else { throw ACError("Wait for LG to finish.") }
         busy = true
-        do { try await LGMobileClient.connect(email: email, password: password, country: country) }
+        do { try await connect(email, password, country) }
         catch { busy = false; throw error }
         AccountConnection.setConnected(true, provider: "lg", preferences: preferences)
         preferences.set(country.uppercased(), forKey: "country")
         accountGeneration &+= 1
-        api = makeAPI(); devices = []; history = [:]; historyAttempt = [:]; historyProblem = [:]
+        pending = []; active = []; commandErrors.removeAll()
+        api = makeAPI(); devices = []; televisions = []; mayRestoreWidgetList = false
         busy = false
         await refresh()
     }
 
-    func configure(token: String, country: String, region: String) async throws {
-        let token = token.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !busy else { throw ACError("Wait for LG to finish.") }
-        guard ["kic", "eic", "aic"].contains(region),
-              country.range(of: "^[A-Za-z]{2}$", options: .regularExpression) != nil, !token.isEmpty else {
-            throw ACError("Enter a token, two-letter country and a valid region.")
+    func refreshAndWait() async {
+        guard !Task.isCancelled, !AccountConnection.signedOut("lg", preferences: preferences) else { return }
+        let generation = accountGeneration
+        let expected = finishedReads.value + (reading && !pending.isEmpty ? 2 : 1)
+        // Join an active read, or read once after queued commands release the client.
+        for await _ in $busy.combineLatest(finishedReads).values {
+            guard !Task.isCancelled, generation == accountGeneration, finishedReads.value < expected else { return }
+            if !busy { await refresh(); return }
         }
-        busy = true
-        do {
-            try await validateCredentials(token, country, region)
-            try saveToken(token)
-        } catch { busy = false; throw error }
-        AccountConnection.setConnected(true, provider: "lg", preferences: preferences)
-        preferences.set(country.uppercased(), forKey: "country")
-        preferences.set(region, forKey: "region")
-        accountGeneration &+= 1
-        api = makeAPI(); devices = []; history = [:]; historyAttempt = [:]; historyProblem = [:]
-        busy = false
-        await refresh()
     }
+
     func refresh() async {
         guard !AccountConnection.signedOut("lg", preferences: preferences) else { return }
         guard !busy else { return }
         let generation = accountGeneration
+        reading = true
         busy = true
-        defer { busy = false; changed?() }
+        defer {
+            reading = false
+            readingDeviceID = nil
+            finishedReads.send(finishedReads.value + 1)
+            busy = false
+            changed?()
+            startCommands()
+        }
         do {
-            if devices.isEmpty {
-                let response = try await api.request("devices")
-                guard generation == accountGeneration else { return }
-                let list = response as? [[String: Any]] ?? find("devices", in: response) as? [[String: Any]] ?? []
-                devices = list.compactMap { item in
-                    let info = object(item["deviceInfo"] ?? item)
-                    guard info["deviceType"] as? String == "DEVICE_AIR_CONDITIONER",
-                          let id = item["deviceId"] as? String ?? info["deviceId"] as? String else { return nil }
-                    return PhoneLGDevice(id: id, name: info["alias"] as? String ?? "LG")
+            let directory = try await api.accountDirectoryIfNeeded(hasDevices: !devices.isEmpty || !televisions.isEmpty)
+            try Task.checkCancellation()
+            guard generation == accountGeneration else { return }
+            if let directory {
+                mayRestoreWidgetList = false
+                if televisions != directory.televisions { televisions = directory.televisions }
+                if devices.isEmpty {
+                    devices = directory.airConditioners.map { PhoneLGDevice(id: $0.id, name: $0.name) }
                 }
-                if devices.isEmpty { throw ACError("No air conditioners in this LG account.") }
             }
+            if devices.isEmpty && televisions.isEmpty { throw ACError("No air conditioners in this LG account.") }
             for index in devices.indices {
                 try Task.checkCancellation()
+                readingDeviceID = devices[index].id
                 do {
                     if devices[index].profile.isEmpty {
                         let profile = object(try await api.request("devices/\(try API.deviceComponent(devices[index].id))/profile"))
                         guard generation == accountGeneration else { return }
                         devices[index].profile = profile
                     }
-                    let state = object(try await api.request("devices/\(try API.deviceComponent(devices[index].id))/state"))
+                    try await readState(index: index, generation: generation)
                     guard generation == accountGeneration else { return }
-                    devices[index].state = state
-                    devices[index].checked = Date(); devices[index].problem = nil
+                    commandErrors.removeValue(forKey: devices[index].id)
                 } catch {
                     guard generation == accountGeneration else { return }
                     devices[index].problem = error.localizedDescription
                 }
+                changed?() // Publish this device without waiting for the rest of the account.
             }
             problem = nil
         } catch { if !Task.isCancelled && generation == accountGeneration { problem = error.localizedDescription } }
     }
-    func send(_ device: PhoneLGDevice, group: String, key: String, value: Any) async {
-        guard !AccountConnection.signedOut("lg", preferences: preferences) else { return }
-        guard !busy, let index = devices.firstIndex(where: { $0.id == device.id }) else { return }
-        let generation = accountGeneration
-        guard device.allowed(group, key, value) else { problem = "This setting is not supported."; return }
-        if group == "temperature", let n = lgNumber(value), !device.bounds.contains(n) { return }
+    func send(_ device: PhoneLGDevice, group: String, key: String, value: Any) {
+        enqueue(device, changes: [(group, key, value)])
+    }
+    private func readState(index: Int, generation: Int) async throws {
+        guard generation == accountGeneration else { throw CancellationError() }
+        let id = devices[index].id
+        let state = object(try await api.request("devices/\(try API.deviceComponent(id))/state"))
+        guard generation == accountGeneration else { throw CancellationError() }
+        guard !state.isEmpty else { throw ACError("LG returned no current readings.") }
+        devices[index].state = state
+        devices[index].checked = Date()
+        devices[index].problem = nil
+        DevicePowerHistory.lg.record(liveWatts(state), for: id)
+    }
+    private func enqueue(_ device: PhoneLGDevice, changes: [ControlChange], preserveFollowingValues: Bool = false) {
+        guard !AccountConnection.signedOut("lg", preferences: preferences),
+              let current = devices.first(where: { $0.id == device.id }), current.online != false,
+              current.checked != nil else { return }
+        guard changes.allSatisfy({ group, key, value in
+            current.allowed(group, key, value)
+                && (group != "temperature" || lgNumber(value).map(current.bounds.contains) == true)
+        }) else {
+            problem = "This setting is not supported."; return
+        }
+        for (offset, change) in changes.enumerated() {
+            let (group, key, value) = change
+            pending.removeAll { $0.id == device.id && $0.group == group && $0.key == key }
+            pending.append(Edit(id: device.id, group: group, key: key, value: value,
+                                preserveCurrent: preserveFollowingValues && offset > 0))
+        }
+        problem = nil
+        commandErrors.removeValue(forKey: device.id)
+        startCommands()
+    }
+    private func startCommands() {
+        guard !busy, commandTask == nil, !pending.isEmpty else { return }
         busy = true
-        defer { busy = false; changed?() }
-        do {
-            var payload = [key: value]
-            if group == "temperature" { payload["unit"] = "C" }
-            _ = try await api.request("devices/\(try API.deviceComponent(device.id))/control", payload: [group: payload])
-            guard generation == accountGeneration else { return }
-            var confirmed = false
-            for _ in 0..<5 {
-                try await Task.sleep(nanoseconds: 800_000_000)
+        commandTask = Task { await drainCommands() }
+    }
+    private func drainCommands() async {
+        let generation = accountGeneration
+        busy = true
+        defer { active = []; busy = false; commandTask = nil; changed?(); startCommands() }
+        while let first = pending.first, generation == accountGeneration {
+            var batch = pending.filter { $0.id == first.id }
+            active = batch
+            pending.removeAll { $0.id == first.id }
+            guard let index = devices.firstIndex(where: { $0.id == first.id }) else { active = []; continue }
+            var writeInFlight = false
+            do {
+                let path = "devices/" + (try API.deviceComponent(first.id))
+                guard devices[index].online != false else { throw ACError("LG is offline.") }
+                if devices[index].checked.map({ !(0...300).contains(Date().timeIntervalSince($0)) }) ?? true {
+                    try await readState(index: index, generation: generation)
+                    guard generation == accountGeneration else { return }
+                    let latest = devices[index]
+                    guard latest.online != false else { throw ACError("LG is offline.") }
+                    // Eco preserves the current temperature and fan. Re-read those
+                    // values so another controller's recent changes aren't undone.
+                    batch = batch.compactMap { edit in
+                        guard edit.preserveCurrent else { return edit }
+                        guard let value = latest.value(edit.group, edit.key),
+                              latest.allowed(edit.group, edit.key, value) else { return nil }
+                        var updated = edit
+                        updated.value = value
+                        return updated
+                    }
+                    guard batch.allSatisfy({ edit in
+                        latest.allowed(edit.group, edit.key, edit.value) &&
+                            (edit.group != "temperature" || lgNumber(edit.value).map(latest.bounds.contains) == true)
+                    }) else { throw ACError("This setting is not supported.") }
+                    active = batch
+                    changed?()
+                }
+                for edit in batch {
+                    var payload = [edit.key: edit.value]
+                    if edit.group == "temperature" { payload["unit"] = "C" }
+                    writeInFlight = true
+                    _ = try await api.request(path + "/control", payload: [edit.group: payload])
+                    guard generation == accountGeneration else { return }
+                    writeInFlight = false
+                }
+                var confirmed = false
+                for _ in 0..<5 {
+                    try await Task.sleep(nanoseconds: confirmationDelay)
+                    guard generation == accountGeneration else { return }
+                    try await readState(index: index, generation: generation)
+                    guard generation == accountGeneration else { return }
+                    changed?() // Reported state only; never publish the desired-value overlay.
+                    guard devices[index].online != false else { throw ACError("LG is offline.") }
+                    confirmed = batch.allSatisfy { edit in
+                        let superseded = pending.contains { $0.id == edit.id && $0.group == edit.group && $0.key == edit.key }
+                        return superseded || (devices[index].value(edit.group, edit.key).map { equal($0, edit.value) } ?? false)
+                    }
+                    if confirmed { break }
+                }
+                commandErrors[first.id] = confirmed ? nil : "LG has not confirmed this change."
+            } catch {
                 guard generation == accountGeneration else { return }
-                let state = object(try await api.request("devices/\(try API.deviceComponent(device.id))/state"))
-                guard generation == accountGeneration else { return }
-                devices[index].state = state
-                devices[index].checked = Date()
-                if let actual = devices[index].value(group, key), equal(actual, value) { confirmed = true; break }
+                var applied = false
+                if writeInFlight {
+                    // A lost write response doesn't tell us what reached the unit.
+                    if (try? await readState(index: index, generation: generation)) != nil {
+                        guard generation == accountGeneration else { return }
+                        applied = devices[index].online != false && batch.allSatisfy { edit in
+                            devices[index].value(edit.group, edit.key).map { equal($0, edit.value) } ?? false
+                        }
+                    }
+                    guard generation == accountGeneration else { return }
+                }
+                commandErrors[first.id] = applied ? nil : error.localizedDescription
             }
-            devices[index].problem = confirmed ? nil : "LG has not confirmed this change."
-            problem = nil
-        } catch { if generation == accountGeneration { devices[index].problem = error.localizedDescription } }
+            active = []
+            changed?()
+        }
     }
     var widgetMetrics: [WidgetMetric] {
         devices.map(\.widgetMetric)
@@ -161,50 +313,10 @@ struct PhoneLGDevice: Identifiable {
         AccountConnection.setConnected(false, provider: "lg", preferences: preferences)
         accountGeneration &+= 1
         problem = "Logged out"
-        devices = []; history = [:]; changed?()
+        mayRestoreWidgetList = false
+        pending = []; active = []; commandErrors.removeAll()
+        devices = []; televisions = []; changed?()
+        finishedReads.send(finishedReads.value + 1)
     }
 
-    func loadHistory(_ device: PhoneLGDevice) async {
-        guard !AccountConnection.signedOut("lg", preferences: preferences) else { return }
-        let now = Date()
-        if let previous = historyAttempt[device.id], now.timeIntervalSince(previous) < 3600,
-           Calendar.current.isDate(previous, inSameDayAs: now) { return }
-        historyAttempt[device.id] = now
-        let generation = accountGeneration
-        let api = api
-        defer {
-            if Task.isCancelled, generation == accountGeneration, historyAttempt[device.id] == now {
-                historyAttempt[device.id] = nil
-            }
-        }
-        do {
-            let component = try API.deviceComponent(device.id)
-            let profile = try await api.request("devices/energy/\(component)/profile")
-            guard generation == accountGeneration, !Task.isCancelled else { return }
-            guard (find("property", in: profile) as? [String])?.contains("energyUsage") == true else {
-                historyProblem[device.id] = "LG does not expose energy history for this device."; return
-            }
-            let calendar = Calendar.current
-            let formatter = DateFormatter()
-            formatter.calendar = calendar; formatter.timeZone = calendar.timeZone
-            formatter.locale = Locale(identifier: "en_US_POSIX"); formatter.dateFormat = "yyyyMMdd"
-            let today = calendar.startOfDay(for: now)
-            let dates = (-30 ... -1).compactMap { calendar.date(byAdding: .day, value: $0, to: today) }
-            let keys = dates.map(formatter.string)
-            let response = try await api.request("devices/energy/\(component)/usage?property=energyUsage&period=DAILY&startDate=\(keys.first!)&endDate=\(keys.last!)")
-            guard generation == accountGeneration, !Task.isCancelled else { return }
-            var totals: [String: Double] = [:]
-            for row in find("dataList", in: response) as? [[String: Any]] ?? [] {
-                guard let wh = lgNumber(row["energyUsage"]), wh.isFinite, wh >= 0,
-                      let raw = ["date", "usageDate", "usedDate", "useDate", "periodDate", "startDate", "dateTime"].compactMap({ row[$0] }).first else { continue }
-                let key = String(String(describing: raw).filter(\.isNumber).prefix(8))
-                guard keys.contains(key) else { continue }
-                totals[key, default: 0] += wh
-            }
-            history[device.id] = keys.map { EnergyDayPoint(key: $0, label: String($0.suffix(2)), wattHours: totals[$0]) }
-            historyProblem[device.id] = nil
-        } catch {
-            if generation == accountGeneration, !Task.isCancelled { historyProblem[device.id] = error.localizedDescription }
-        }
-    }
 }

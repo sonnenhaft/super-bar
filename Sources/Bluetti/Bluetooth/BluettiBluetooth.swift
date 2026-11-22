@@ -41,18 +41,36 @@ final class BluettiBluetooth {
         return try driver.scan(duration: min(6, timeout))
     }
 
-    static func readSamples(device: String?, timeout: TimeInterval, interval: PollInterval?,
-                            discovered: ([BluettiNativeDevice]) throws -> Void,
+    static func readSamples(device: String?, timeout: TimeInterval, interval: PollInterval?, menuRead: Bool,
+                            directory: URL, stationPreview: Bool,
+                            discovered: @escaping ([BluettiNativeDevice]) throws -> Void,
+                            connectionChanged: (BluettiNativeDevice?) throws -> Void,
                             willRead: () throws -> Void, receive: ([String: Any]) throws -> Void) throws {
         try validateInvocation(timeout)
         let driver = BluettiCentral(timeout: timeout, reserveCleanup: true)
         active = driver
         defer { driver.close(); active = nil }
-        let found = try driver.scan(duration: min(4, max(0.2, timeout - 3)))
+        // A previously discovered station may be reachable without a new
+        // advertisement during this short read. Connection still requires GATT.
+        let found: [BluettiNativeDevice]
+        if stationPreview, let device, let id = UUID(uuidString: device),
+           let known = try driver.retrieveStation(id) {
+            found = [known]
+        } else {
+            found = try driver.scan(duration: min(4, max(0.2, timeout - 3)))
+        }
         try discovered(found)
-        let selected = try bluettiChooseDevice(found, selector: device)
-        try driver.connect(selected)
+        // Auto can start a panel read even when two stations advertise. The
+        // public CLI still requires an explicit choice on ambiguity.
+        let selected = try bluettiChooseDevice(found, selector: device ?? (menuRead ? found.first?.id : nil))
+        // A one-shot read of another station may run alongside this session.
+        // The CoreBluetooth UUID comes from discovery and scopes the GATT lock.
+        let deviceLock = try BluettiBluetoothLock(directory: directory, filename: "bluetooth-" + selected.id + ".lock")
+        defer { deviceLock.release() }
+        defer { try? connectionChanged(nil) }
+        try driver.connect(selected) { try connectionChanged(selected) }
         try driver.handshake()
+        if menuRead && interval != nil { driver.observeNewStations(discovered) }
         while true {
             let started = ProcessInfo.processInfo.systemUptime
             try willRead()
@@ -85,11 +103,11 @@ final class BluettiBluetooth {
 final class BluettiBluetoothLock {
     private(set) var descriptor: Int32 = -1
 
-    init(directory: URL) throws {
+    init(directory: URL, filename: String = "bluetooth.lock") throws {
         do { try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
                                                        attributes: [.posixPermissions: 0o700]) }
         catch { throw BluettiCommandError("filesystem", "Cannot create cache directory: \(error.localizedDescription)") }
-        descriptor = directory.appendingPathComponent("bluetooth.lock").path.withCString {
+        descriptor = directory.appendingPathComponent(filename).path.withCString {
             open($0, O_RDWR | O_CREAT | O_CLOEXEC, mode_t(0o600))
         }
         guard descriptor >= 0 else { throw BluettiCommandError("filesystem", "Cannot open Bluetooth lock: \(BluettiFiles.systemError())") }
@@ -102,7 +120,7 @@ final class BluettiBluetoothLock {
             let number = errno
             release()
             if number == EWOULDBLOCK || number == EAGAIN {
-                throw BluettiCommandError("busy", "Another BluettiBar Bluetooth read is already running. Use bluetti cached or wait for it to finish.")
+                throw BluettiCommandError("busy", "Another Super Bar Bluetooth read is already running. Use bluetti cached or wait for it to finish.")
             }
             throw BluettiCommandError("filesystem", "Cannot lock Bluetooth reader: \(BluettiFiles.systemError(number))")
         }

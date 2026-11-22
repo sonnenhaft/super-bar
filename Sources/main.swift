@@ -12,6 +12,8 @@ import Combine
     let tuya = TuyaStore()
     private var solarWatch: AnyCancellable?
     private var powerTimer: Timer?
+    private var powerSchedule = AutomaticPollSchedule()
+    private var refreshSettingsWatch: AnyCancellable?
     private var item: NSStatusItem!
     private let panel = MenuPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
     private var watch: AnyCancellable?
@@ -30,6 +32,7 @@ import Combine
     private var appearanceObservation: NSKeyValueObservation?
 
     func applicationDidFinishLaunching(_ n: Notification) {
+        _ = CloudTraffic.shared // Start the observation hour even if the network is idle.
         EditingCommands.install(in: NSApp)
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         item.autosaveName = "Super Bar"
@@ -56,7 +59,7 @@ import Combine
                 self.lg.pinnedDeviceID = self.lg.selected
                 self.lg.updateStatus()
             case .bluetti:
-                if let key = self.blue.selectedKnownStation?.key { self.blue.pinnedStationKey = key }
+                if let key = self.blue.displayedStationKey { self.blue.pinnedStationKey = key }
                 self.blue.render()
             case .deye: self.deye.pinned = true
             case .tuya:
@@ -80,21 +83,36 @@ import Combine
         panel.appearance = NSAppearance(named: .darkAqua)
     }
     private func startServices(_ n: Notification) {
+        blueStarted = true
+        blue.panelChanged = { [weak self] in self?.scheduleContent(.bluetti) }
+        blue.didRender = { [weak self] in self?.schedule(.bluetti) }
+        blue.applicationDidFinishLaunching(n)
         lg.panelChanged = { [weak self] in self?.scheduleContent(.lg) }
         lg.didRender = { [weak self] in self?.schedule(.lg) }
         watch = tcl.objectWillChange.merge(with: fields.objectWillChange, tcl.history.objectWillChange).sink { [weak self] _ in self?.schedule(.tcl) }
         lg.start()
         tcl.start()
-        solarWatch = deye.objectWillChange.merge(with: tuya.objectWillChange).sink { [weak self] _ in
+        solarWatch = deye.objectWillChange.merge(with: tuya.objectWillChange, EnergyPricing.shared.objectWillChange).sink { [weak self] _ in
             guard let self else { return }
             self.schedule(self.state.current)
         }
         deye.start()
         tuya.start()
-        let timer = Timer(timeInterval: Double(PowerPolling.interval), repeats: true) { [weak self] _ in
+        let now = ProcessInfo.processInfo.systemUptime
+        powerSchedule.mark(.deye, at: now); powerSchedule.mark(.tuya, at: now)
+        refreshSettingsWatch = RefreshPreferences.shared.changes.sink { [weak self] provider in
+            guard let self else { return }
+            switch provider {
+            case .tcl: self.tcl.refreshScheduleChanged()
+            case .lg: self.lg.startTimer()
+            case .bluetti: self.blue.refreshScheduleChanged()
+            case .deye, .tuya: break // The existing power clock reads each interval independently.
+            }
+        }
+        let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refreshPower() }
         }
-        timer.tolerance = 1
+        timer.tolerance = 0.25
         powerTimer = timer
         RunLoop.main.add(timer, forMode: .common)
         render()
@@ -108,9 +126,22 @@ import Combine
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self.publishLaunchReceipt() }
     }
     private func publishLaunchReceipt() {
-        guard let path = ProcessInfo.processInfo.environment["SUPER_BAR_LAUNCH_RECEIPT"], !path.isEmpty,
-              let executable = Bundle.main.executableURL else { return }
+        guard let executable = Bundle.main.executableURL else { return }
+        var destinations: [URL] = []
+        if let path = ProcessInfo.processInfo.environment["SUPER_BAR_LAUNCH_RECEIPT"], !path.isEmpty {
+            destinations.append(URL(fileURLWithPath: path))
+        }
+        // Finder launches do not inherit the installer's receipt environment.
+        // Keep a private local receipt as well, containing only launch metadata.
+        if let cache = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first {
+            let directory = cache.appendingPathComponent("local.SuperBar", isDirectory: true)
+            if (try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
+                                                         attributes: [.posixPermissions: 0o700])) != nil {
+                destinations.append(directory.appendingPathComponent("last-launch.json"))
+            }
+        }
         let receipt: [String: Any] = [
+            "launchedAt": Date().timeIntervalSince1970,
             "statusItem": statusItemPlacement(item),
             "pid": ProcessInfo.processInfo.processIdentifier,
             "bundlePath": Bundle.main.bundleURL.standardizedFileURL.path,
@@ -119,11 +150,12 @@ import Combine
             "build": Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? ""
         ]
         guard let data = try? JSONSerialization.data(withJSONObject: receipt) else { return }
-        let url = URL(fileURLWithPath: path)
-        do {
-            try data.write(to: url, options: .atomic)
-            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
-        } catch { NSLog("Could not write Super Bar launch receipt: %@", error.localizedDescription) }
+        for url in destinations {
+            do {
+                try data.write(to: url, options: .atomic)
+                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+            } catch { NSLog("Could not write Super Bar launch receipt: %@", error.localizedDescription) }
+        }
     }
     private func schedule(_ brand: Brand) {
         if state.current == brand { needsReadout = true }
@@ -153,7 +185,7 @@ import Combine
         case .tcl, .deye:
             let ac = fields.device(in: tcl)
             let visible = Set(ac.map { fields.ordered($0.id) } ?? (tcl.devices.isEmpty ? [.icon] : []))
-            let energy = visible.contains(.energy) ? ac.flatMap { tcl.history.cardEnergy[$0.name] } : nil
+            let energy = visible.contains(.energy) ? ac.flatMap { tcl.history.power(for: $0, online: !tcl.offline)?.menuText } : nil
             let dark = button.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
             let readout = MenuReadout(size: CGFloat(state.size), ac: ac,
                                      visible: visible, energyText: energy)
@@ -168,49 +200,28 @@ import Combine
             button.image = cachedTCLImage?.image
             button.imagePosition = .imageOnly
         }
-        if button.image == nil && button.title.isEmpty && deye.readout == nil {
+        if button.image == nil && button.title.isEmpty && deye.readout == nil && !deye.ratePinned {
             button.imagePosition = .noImage
             button.title = "···"
         }
-        if deye.pinned {
+        if deye.pinned || deye.ratePinned {
             let balance = EnergyBalance(production: deye.reading, consumption: tuya.reading)
-            SolarReadout.prepend(balance.text, to: button, size: CGFloat(state.size), color: balance.color)
+            if deye.ratePinned {
+                SolarReadout.prepend(EnergyPricing.shared.tariff.hourlyReadout(netWatts: balance.watts), to: button, size: CGFloat(state.size), color: balance.color)
+            }
+            if deye.pinned { SolarReadout.prepend(balance.text, to: button, size: CGFloat(state.size), color: balance.color) }
         }
         button.toolTip = "Super Bar · " + state.current.rawValue + (deye.pinned ? " · Net power: " + deye.status : "")
     }
-    private func refreshPower() { deye.refresh(); tuya.refresh() }
+    private func refreshPower() {
+        let now = ProcessInfo.processInfo.systemUptime
+        let solarDue = powerSchedule.due(.deye, at: now), meterDue = powerSchedule.due(.tuya, at: now)
+        if solarDue { deye.refresh() }
+        if meterDue { tuya.refresh() }
+        if (solarDue || meterDue) && state.current == .tcl { schedule(.tcl) }
+    }
     private func footer() -> SuperFooter {
-        SuperFooter(refresh:{ [weak self] in
-            guard let self else { return }
-            switch self.state.chartBrand {
-            case .deye: self.refreshPower()
-            case .tuya: self.refreshPower()
-            case .tcl: self.tcl.manualRefresh()
-            case .lg: self.lg.manualRefresh()
-            case .bluetti: self.blue.refreshClicked()
-            }
-        }, settings:{ [weak self] _ in self?.lg.openSettings() }, interval:{ [weak self] in
-            guard let self else { return ([60],60) }
-            switch self.state.chartBrand {
-            case .deye: return ([PowerPolling.interval],PowerPolling.interval)
-            case .tuya: return ([PowerPolling.interval],PowerPolling.interval)
-            case .tcl: return ([1,5,30,60,300,600],Int(self.tcl.refreshInterval))
-            case .lg: return (intervals.map(Int.init),Int(defaults.double(forKey:"interval")))
-            case .bluetti: return (PollInterval.allCases.map(\.rawValue),self.blue.selectedInterval.rawValue)
-            }
-        }, setInterval:{ [weak self] seconds in
-            guard let self else { return }
-            switch self.state.chartBrand {
-            case .deye: break
-            case .tuya: break
-            case .tcl: self.tcl.setRefreshInterval(seconds)
-            case .lg: defaults.set(Double(seconds),forKey:"interval"); self.lg.startTimer()
-            case .bluetti:
-                let slider = NSSlider()
-                slider.doubleValue = Double(PollInterval.allCases.firstIndex(where:{$0.rawValue == seconds}) ?? 4)
-                self.blue.changeRefreshInterval(slider)
-            }
-        }, changed: { [weak self] in
+        SuperFooter(settings:{ [weak self] _ in self?.state.openSettings() }, changed: { [weak self] in
             guard let self else { return }
             self.lg.updateStatus()
             if self.blueStarted { self.blue.render() }
@@ -252,12 +263,6 @@ import Combine
     private func beginPanel() {
         panelActive = true
         lg.panelOpened()
-        if !blueStarted {
-            blueStarted = true
-            blue.panelChanged = { [weak self] in self?.scheduleContent(.bluetti) }
-            blue.didRender = { [weak self] in self?.schedule(.bluetti) }
-            blue.applicationDidFinishLaunching(Notification(name: NSApplication.didFinishLaunchingNotification))
-        }
         blue.mainMenuWillOpen()
         batteries.refresh()
         ReadingAge.start { [weak self] in

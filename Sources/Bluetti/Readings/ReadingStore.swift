@@ -44,7 +44,7 @@ final class BlueBarReadingStore {
     /// metadata. `automatic` records which actual station Auto last resolved to.
     /// The original measured timestamps are never replaced by the save time.
     @discardableResult
-    func save(_ snapshot: [String: Any], automatic: Bool = false) -> Bool {
+    func save(_ snapshot: [String: Any], automatic: Bool = false, rememberSelection: Bool = true) -> Bool {
         guard var valid = Self.validated(snapshot, now: Date()), let key = Self.key(for: valid) else { return false }
         if let existing = readings[key],
            let validExisting = Self.validated(existing, now: Date()),
@@ -57,7 +57,7 @@ final class BlueBarReadingStore {
             }
             readings[key] = valid
         }
-        lastStationKey = key
+        if rememberSelection { lastStationKey = key }
         if automatic { lastAutomaticStationKey = key }
         persist()
         return true

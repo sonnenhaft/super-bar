@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 
 extension BlueBarDelegate {
     func makeMenu() {
@@ -142,6 +143,11 @@ extension BlueBarDelegate {
         let seconds = PollInterval.allCases[index].rawValue
         guard seconds != Int(refreshInterval) else { updateRefreshControl(); return }
         defaults.set(seconds, forKey: "refreshIntervalSeconds")
+        refreshScheduleChanged()
+        refresh()
+    }
+
+    func refreshScheduleChanged() {
         updateRefreshControl()
         if consecutiveReadFailures > 0 {
             nextReadRetryAt = Date().addingTimeInterval(pollDelay)
@@ -149,7 +155,6 @@ extension BlueBarDelegate {
         if streaming { stopPollingSession() }
         restartAgeTimer()
         restartPollTimer()
-        refresh()
     }
 }
 
@@ -194,14 +199,9 @@ final class PanelSlider: NSSlider {
 final class RefreshRowButton: NSButton {
     enum Style { case statusAndIcon, iconOnly, textOnly }
     private let style: Style
-
-    private let spinner = NSProgressIndicator()
+    private static let iconSize: CGFloat = 12
+    private let glyph: NSHostingView<RefreshGlyph>?
     private let statusLabel = NSTextField(labelWithString: "")
-    private let arrow = NSImageView()
-    var iconTint: NSColor? {
-        get { arrow.contentTintColor }
-        set { arrow.contentTintColor = newValue }
-    }
     private var loading = false
     private var hovered = false { didSet { needsDisplay = true } }
     private var rowCursor: NSCursor {
@@ -215,6 +215,7 @@ final class RefreshRowButton: NSButton {
 
     init(frame: NSRect, style: Style) {
         self.style = style
+        glyph = style == .textOnly ? nil : NSHostingView(rootView: RefreshGlyph(isRefreshing: false, size: Self.iconSize))
         super.init(frame: frame)
         title = ""
         isBordered = false
@@ -223,16 +224,12 @@ final class RefreshRowButton: NSButton {
         statusLabel.isHidden = style == .iconOnly
         statusLabel.textColor = .secondaryLabelColor
         statusLabel.lineBreakMode = .byTruncatingTail
-        arrow.image = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: nil)
-        arrow.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 10, weight: .regular)
-        arrow.imageScaling = .scaleNone
-        arrow.isHidden = style == .textOnly
-        spinner.style = .spinning
-        spinner.controlSize = .mini
-        spinner.isDisplayedWhenStopped = false
-        for view in [statusLabel, arrow, spinner] as [NSView] {
-            addSubview(view)
-            view.setAccessibilityElement(false)
+        addSubview(statusLabel)
+        statusLabel.setAccessibilityElement(false)
+        if let glyph {
+            glyph.sizingOptions = []
+            addSubview(glyph)
+            glyph.setAccessibilityElement(false)
         }
         addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
                                        owner: self, userInfo: nil))
@@ -244,9 +241,10 @@ final class RefreshRowButton: NSButton {
 
     override func layout() {
         super.layout()
-        let icon = NSRect(x: style == .iconOnly ? bounds.midX - 8 : bounds.maxX - 23, y: bounds.midY - 8, width: 16, height: 16)
-        spinner.frame = icon.insetBy(dx: 2, dy: 2)
-        arrow.frame = icon
+        let size = Self.iconSize
+        let centerX = style == .iconOnly ? bounds.midX : bounds.maxX - 15
+        let icon = NSRect(x: centerX - size / 2, y: bounds.midY - size / 2, width: size, height: size)
+        glyph?.frame = icon
         let labelEnd = style == .textOnly ? bounds.maxX : icon.minX
         statusLabel.frame = NSRect(x: 8, y: bounds.midY - 8, width: max(0, labelEnd - 16), height: 16)
     }
@@ -260,8 +258,7 @@ final class RefreshRowButton: NSButton {
         if isEnabled != enabled { isEnabled = enabled }
         if self.loading != loading {
             self.loading = loading
-            arrow.isHidden = loading || style == .textOnly
-            if loading && style != .textOnly { spinner.startAnimation(nil) } else { spinner.stopAnimation(nil) }
+            glyph?.rootView = RefreshGlyph(isRefreshing: loading, size: Self.iconSize)
         }
         if cursorChanged, let window = window {
             window.invalidateCursorRects(for: self)

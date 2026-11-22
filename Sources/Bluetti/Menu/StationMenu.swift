@@ -1,6 +1,9 @@
 import AppKit
 
 extension BlueBarDelegate {
+    var displayedStationKey: String? {
+        BarSelection.shared.batteryStationKey ?? selectedKnownStation?.key ?? stationRows.first?.key
+    }
     var pinnedStationKey: String {
         get { defaults.string(forKey: "bluetti.pinnedStation") ?? selectedKnownStation?.key ?? identifier }
         set { defaults.set(newValue, forKey: "bluetti.pinnedStation") }
@@ -40,7 +43,7 @@ extension BlueBarDelegate {
         return selectedKnownStation?.displayName ?? (identifier.isEmpty ? "Automatic" : identifier)
     }
 
-    func switchStation(to value: String) {
+    func switchStation(to value: String, manualRefresh: Bool = false) {
         guard !demo, !quitting, value != identifier else { return }
         if defaults.string(forKey: "bluetti.pinnedStation") == nil { pinnedStationKey = selectedKnownStation?.key ?? identifier }
         cancelStationRename()
@@ -49,6 +52,7 @@ extension BlueBarDelegate {
         freezeRuntime()
         saveReadingState()
         defaults.set(value, forKey: "stationIdentifier")
+        connectedStationKey = nil
         generation += 1
         resetReadRetryBudget()
         awaitingFirstRead = true
@@ -56,6 +60,8 @@ extension BlueBarDelegate {
         restoreSelectedReading()
         loadHistory.clear()
         pendingRefresh = true
+        manualRead = manualRefresh ? .queued : nil
+        lastManualRefreshError = nil
         lastError = "Waiting for a reading from the selected station."
         hasConnectionFailure = false
         writeFailure(lastError!)
@@ -159,18 +165,16 @@ extension BlueBarDelegate {
             guard let station = available[entry.key] else { continue }
             let selected = station.key == active
             let current = lastGood.flatMap { $0.matchesStation(id: station.deviceID, name: station.bluetoothName) ? $0 : nil }
-            let connected = selected && !demo && !sleeping && !awaitingFirstRead && !hasConnectionFailure
-                && (refreshState == .refreshed || refreshState == .connected)
-                && current.map { now.timeIntervalSince($0.measuredAt) < maximumAge } == true
+            let connected = !stationIsOffline(entry.key)
             let watts = current?.outputWatts ?? readingStore.lastOutputWatts(for: station, knownStations: stations)
             let title = StationRowTitle(name: station.displayName, watts: watts, connectedPercent: connected ? current?.percent : nil)
             let card = entry.details.card
-            card.expanded = selected && BarSelection.shared.expanded == .bluetti && !BarSelection.shared.detailsCollapsed
-            card.updateHeader(title: title, checked: card.expanded, enabled: !demo && !quitting, canRename: !quitting)
+            card.expanded = entry.key == displayedStationKey && BarSelection.shared.openBrand == .bluetti
+            card.updateHeader(title: title, checked: card.expanded, enabled: !sleeping && !demo && !quitting, canRename: !quitting)
             card.selectButton.toolTip = station.deviceID ?? station.bluetoothName
             card.renameButton.setAccessibilityLabel("Rename " + station.displayName)
             card.refreshButton.setAccessibilityLabel("Refresh " + station.displayName)
-            card.refreshButton.update(status: selected ? refreshState.rawValue : "", loading: selected && isLoadingReading,
+            card.refreshButton.update(status: selected && isManuallyRefreshing ? "Refreshing…" : "", loading: selected && isManuallyRefreshing,
                                       enabled: !sleeping && !quitting)
             card.setFields(BarSelection.shared.current == .bluetti && pinnedStationKey == entry.key ? fields : [], brand: brandBadge)
             updateDetails(entry.details, for: station, active: selected, now: now)
@@ -182,19 +186,18 @@ extension BlueBarDelegate {
     }
 
     @objc private func selectStationRow(_ sender: NSButton) {
-        guard let key = sender.identifier?.rawValue,
-              let station = stationDirectory.stations.first(where: { $0.key == key }) else { return }
-        let sameDevice = selectedKnownStation?.key == key
-        if selectedKnownStation?.key != key { switchStation(to: station.selector) }
-        else { render() }
+        guard !quitting, let key = sender.identifier?.rawValue else { return }
+        let sameDevice = displayedStationKey == key
+        BarSelection.shared.batteryStationKey = key
         BarSelection.shared.select(.bluetti, sameDevice: sameDevice)
+        render()
     }
 
     @objc private func refreshStationRow(_ sender: NSButton) {
         guard !sleeping, !quitting, let key = sender.identifier?.rawValue,
               let station = stationDirectory.stations.first(where: { $0.key == key }) else { return }
         if selectedKnownStation?.key == key { refreshClicked() }
-        else { switchStation(to: station.selector) }
+        else { switchStation(to: station.selector, manualRefresh: true) }
     }
 
     @objc private func renameStationRow(_ sender: NSButton) {
@@ -230,8 +233,6 @@ final class StationDetails {
     init() {
         card.autoresizingMask = [.width]
         cardItem.view = card
-        statusButton.autoresizingMask = [.width]
-        card.addSubview(statusButton)
     }
 
     func update(reading: Reading?, asOf: Date, power: MenuPowerRow, status: String,
@@ -241,13 +242,18 @@ final class StationDetails {
         measuredAt = reading?.measuredAt
         self.loading = loading
         card.update(readingPercent: reading?.percent, power: power, chargeTime: chargeTime, batteryTime: batteryTime)
-        statusButton.update(status: loading ? "Refreshing…" : reading.map { ReadingAge.label($0.measuredAt) } ?? status, loading: loading, enabled: enabled)
-        statusButton.toolTip = reading.map { shortDate($0.measuredAt) }
+        let label = loading ? "Refreshing…" : reading.map { ReadingAge.label($0.measuredAt) } ?? status
+        let help = reading.map { shortDate($0.measuredAt) }
+        statusButton.update(status: label, loading: loading, enabled: enabled)
+        statusButton.toolTip = help
+        card.updateStatus(label, loading: loading, enabled: enabled, help: help, measuredAt: measuredAt)
     }
 
     func updateAge(now: Date) {
         if !loading, let measuredAt {
-            statusButton.update(status:ReadingAge.label(measuredAt,now:now),loading:false,enabled:statusButton.isEnabled)
+            let label = ReadingAge.label(measuredAt, now: now)
+            statusButton.update(status: label, loading: false, enabled: statusButton.isEnabled)
+            card.updateStatus(label, loading: false, enabled: statusButton.isEnabled, help: statusButton.toolTip, measuredAt: measuredAt)
         }
     }
 
@@ -271,11 +277,11 @@ extension BlueBarDelegate {
         }
         let asOf = frozenAt ?? reading.map { min(now, $0.measuredAt.addingTimeInterval(maximumAge)) } ?? now
         let power = MenuPresentation.power(for: reading, shortDate: shortDate)
-        let loading = active && isLoadingReading
+        let loading = active && isManuallyRefreshing
         var status = "Not connected"
         if active {
             let stale = reading.map { now.timeIntervalSince($0.measuredAt) >= maximumAge } ?? true
-            if loading || refreshState == .connectFailed || refreshState == .readFailed {
+            if isLoadingReading || refreshState == .connectFailed || refreshState == .readFailed {
                 status = refreshState.rawValue
             } else if !sleeping && !hasConnectionFailure && !awaitingFirstRead && !stale {
                 status = refreshState == .idle ? "Refresh" : refreshState.rawValue

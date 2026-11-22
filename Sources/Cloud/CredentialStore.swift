@@ -8,11 +8,15 @@ protocol CredentialVault {
     func write(_ data: Data, key: String) throws
     var removesLegacyFiles: Bool { get }
     func readWithUserAuthorization(_ key: String) throws -> Data?
+    func writeWithUserAuthorization(_ data: Data, key: String) throws
+    func disallowAccess()
 }
 
 extension CredentialVault {
     var removesLegacyFiles: Bool { true }
     func readWithUserAuthorization(_ key: String) throws -> Data? { try read(key) }
+    func writeWithUserAuthorization(_ data: Data, key: String) throws { try write(data, key: key) }
+    func disallowAccess() {}
 }
 
 // One vault per app process: concurrent providers share both granted reads and
@@ -63,6 +67,13 @@ final class SessionCredentialVault: CredentialVault, @unchecked Sendable {
         accessFailure = nil
     }
 
+    func disallowAccess() {
+        lock.lock(); defer { lock.unlock() }
+        backing.disallowAccess()
+        entries.removeAll()
+        accessFailure = CredentialStorageError.authorizationRequired
+    }
+
     // Interactive reads are confined to this explicit action, never background
     // refresh. Call off the main thread: the system dialog may wait for the user.
     @discardableResult func authorizeAccess(keys: [String]) throws -> Int {
@@ -93,7 +104,6 @@ final class CredentialAccessStatus: ObservableObject {
     @Published var needsAuthorization = false
     @Published var authorizing = false
     @Published var result: String?
-    @Published var authorizedProviders: Set<String> = []
     @Published var accountRevision = 0
     static func requireAuthorization() {
         DispatchQueue.main.async { shared.needsAuthorization = true }
@@ -102,6 +112,16 @@ final class CredentialAccessStatus: ObservableObject {
 
 // Logout suspends the connection; saved passwords remain available for sign-in.
 enum AccountConnection {
+    static let providers = ["deye", "tuya", "tcl", "lg"]
+    // Explicit Allow resumes saved sessions once. Regular polling never signs
+    // accounts back in after Logout or changes this preference.
+    static func resumeSaved(vault: any CredentialVault, preferences: UserDefaults = .standard) throws {
+        for provider in providers {
+            guard let data = try vault.read(provider + "-session"),
+                  (try? JSONSerialization.jsonObject(with: data)) is [String: Any] else { continue }
+            setConnected(true, provider: provider, preferences: preferences)
+        }
+    }
     static func signedOut(_ provider: String, preferences: UserDefaults = .standard) -> Bool {
         preferences.bool(forKey: provider + ".signedOut")
     }
@@ -121,48 +141,129 @@ enum CredentialAccess {
     static let shared = SessionCredentialVault(backing: DevelopmentCredentialVault())
 #else
     static let usesKeychain = true
-    static let shared = SessionCredentialVault(backing: KeychainCredentialVault())
+    static let shared = SessionCredentialVault(backing: AppCredentialVault())
 #endif
     static func retry() { shared.retryAccess() }
-    @MainActor static func authorize(provider: String? = nil) async {
-        guard usesKeychain else { return }
+    @MainActor static func disallow() {
+        guard usesKeychain, !CredentialAccessStatus.shared.authorizing else { return }
+        shared.disallowAccess()
         let status = CredentialAccessStatus.shared
-        guard !status.authorizing else { return }
+        status.needsAuthorization = true
+        status.result = nil
+        status.accountRevision &+= 1
+    }
+    @MainActor static func authorize() async -> Bool {
+        guard usesKeychain else { return true }
+        let status = CredentialAccessStatus.shared
+        guard !status.authorizing else { return false }
         status.authorizing = true
         status.result = nil
         defer { status.authorizing = false }
-        let count: Int? = await Task.detached {
+        let outcome: Result<Int, Error> = await Task.detached {
             do {
-                let keys = provider.map { [$0 + "-session"] } ?? ["deye-session", "tuya-session", "tcl-session", "lg-session", "lg-token"]
+                let keys = ["deye-session", "tuya-session", "tcl-session", "lg-session"]
                 var count = try shared.authorizeAccess(keys: keys)
                 // Explicit one-time import from the previous local dev build, only
                 // after Allow Keychain. Existing Keychain accounts take precedence.
-                if let provider, count == 0,
-                   let resource = Bundle.main.url(forResource: "credential-import-path", withExtension: "txt"),
-                   let path = try? String(contentsOf: resource, encoding: .utf8), path.hasPrefix("/"),
-                   let data = try PrivateJSONFile.snapshotIfPresent(from: URL(fileURLWithPath: path).appendingPathComponent(provider + "-session.json"))?.data,
-                   (try? JSONSerialization.jsonObject(with: data)) is [String: Any] {
-                    try shared.write(data, key: provider + "-session")
-                    count = 1
+                for key in keys where try shared.read(key) == nil {
+                    var data: Data?
+                    if let resource = Bundle.main.url(forResource: "credential-import-path", withExtension: "txt"),
+                       let path = try? String(contentsOf: resource, encoding: .utf8), path.hasPrefix("/") {
+                        data = try PrivateJSONFile.snapshotIfPresent(from: URL(fileURLWithPath: path).appendingPathComponent(key + ".json"))?.data
+                    }
+                    // Legacy items are probed with all interaction disabled; never
+                    // show a separate dialog for each old provider record.
+                    if data == nil { data = try? KeychainCredentialVault().read(key) }
+                    if let data, (try? JSONSerialization.jsonObject(with: data)) is [String: Any] {
+                        try shared.write(data, key: key)
+                        count += 1
+                    }
                 }
-                return count
-            } catch { return nil }
+                try AccountConnection.resumeSaved(vault: shared)
+                return .success(count)
+            } catch {
+                return .failure(error)
+            }
         }.value
-        status.needsAuthorization = count == nil
-        if let count {
-            if let provider { status.authorizedProviders.insert(provider) }
+        switch outcome {
+        case .success(let count):
+            status.needsAuthorization = false
+            // The vault is also available when a new device has no saved accounts.
+            status.accountRevision &+= 1
             status.result = count == 0
                 ? "Сохранённых аккаунтов на этом устройстве нет. Войдите в нужный сервис ниже."
                 : "Доступ открыт. Сохранённые аккаунты загружены."
-        } else {
-            status.result = "Не удалось открыть сохранённые аккаунты. Разблокируйте устройство и повторите проверку."
+            return true
+        case .failure(let error):
+            status.needsAuthorization = true
+            status.result = error.localizedDescription
+            return false
         }
     }
 }
 
 enum CredentialStorageError: LocalizedError {
-    case invalidData, verificationFailed, authorizationInProgress
+    case invalidData, verificationFailed, authorizationInProgress, authorizationRequired
     var errorDescription: String? { "Could not read or securely save the account. Please try again." }
+}
+
+// One Keychain item per app, not one access-control prompt per provider.
+// The first access is explicitly allowed in Settings; later launches try only
+// noninteractive reads and show Allow Keychain if macOS denies them.
+final class AppCredentialVault: CredentialVault, @unchecked Sendable {
+    private let backing: any CredentialVault
+    private let preferences: UserDefaults
+    private let lock = NSLock()
+    private var loaded = false
+    private var values: [String: Data] = [:]
+    init(backing: any CredentialVault = KeychainCredentialVault(), preferences: UserDefaults = .standard) {
+        self.backing = backing; self.preferences = preferences
+    }
+    func disallowAccess() {
+        lock.lock(); defer { lock.unlock() }
+        preferences.set(false, forKey: "keychain.applicationConsent")
+        values.removeAll()
+        loaded = false
+    }
+    private func load(interactive: Bool) throws {
+        guard !loaded else { return }
+        guard interactive || preferences.bool(forKey: "keychain.applicationConsent") else {
+            CredentialAccessStatus.requireAuthorization()
+            throw CredentialStorageError.authorizationRequired
+        }
+        let data = try interactive ? backing.readWithUserAuthorization("accounts-v1") : backing.read("accounts-v1")
+        let decoded = try data.map { try JSONDecoder().decode([String: Data].self, from: $0) } ?? [:]
+        if interactive {
+            // Allow grants usable storage, not just a temporary read. Verify the
+            // same noninteractive access that login and the next launch will use.
+            let encoded = try data ?? JSONEncoder().encode(decoded)
+            try backing.writeWithUserAuthorization(encoded, key: "accounts-v1")
+            guard try backing.read("accounts-v1") == encoded else { throw CredentialStorageError.verificationFailed }
+        }
+        values = decoded
+        loaded = true
+        if interactive { preferences.set(true, forKey: "keychain.applicationConsent") }
+    }
+    func read(_ key: String) throws -> Data? {
+        lock.lock(); defer { lock.unlock() }
+        try load(interactive: false)
+        return values[key]
+    }
+    func readWithUserAuthorization(_ key: String) throws -> Data? {
+        lock.lock(); defer { lock.unlock() }
+        try load(interactive: true)
+        return values[key]
+    }
+    func write(_ data: Data, key: String) throws {
+        lock.lock(); defer { lock.unlock() }
+        try load(interactive: false)
+        var next = values; next[key] = data
+        let encoded = try JSONEncoder().encode(next)
+        guard encoded.count <= PrivateJSONFile.maximumCredentialBytes else { throw CredentialStorageError.invalidData }
+        try backing.write(encoded, key: "accounts-v1")
+        guard try backing.read("accounts-v1") == encoded else { throw CredentialStorageError.verificationFailed }
+        values = next
+    }
 }
 
 // Form lifetime is independent of its SwiftUI view. Email/server are preferences;
@@ -215,6 +316,7 @@ enum CredentialStorageError: LocalizedError {
 // No iCloud synchronization. iOS uses device-only after-first-unlock protection.
 // macOS uses the login Keychain and its code-signing access controls.
 struct KeychainCredentialVault: CredentialVault {
+    private static let interactionLock = NSLock()
     func query(_ key: String, interactive: Bool = false) -> [String: Any] {
         let context = LAContext()
         context.interactionNotAllowed = !interactive
@@ -234,6 +336,11 @@ struct KeychainCredentialVault: CredentialVault {
         try read(key, interactive: true)
     }
     private func read(_ key: String, interactive: Bool) throws -> Data? {
+        Self.interactionLock.lock(); defer { Self.interactionLock.unlock() }
+        #if os(macOS)
+        SecKeychainSetUserInteractionAllowed(interactive)
+        defer { SecKeychainSetUserInteractionAllowed(false) }
+        #endif
         var query = query(key, interactive: interactive)
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
@@ -245,19 +352,36 @@ struct KeychainCredentialVault: CredentialVault {
         return data
     }
     func write(_ data: Data, key: String) throws {
+        try write(data, key: key, interactive: false)
+    }
+    func writeWithUserAuthorization(_ data: Data, key: String) throws {
+        try write(data, key: key, interactive: true)
+    }
+    private func write(_ data: Data, key: String, interactive: Bool) throws {
+        Self.interactionLock.lock(); defer { Self.interactionLock.unlock() }
+        #if os(macOS)
+        SecKeychainSetUserInteractionAllowed(interactive)
+        defer { SecKeychainSetUserInteractionAllowed(false) }
+        #endif
         var attributes: [String: Any] = [kSecValueData as String: data]
 #if os(iOS)
         attributes[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
 #endif
-        let status = SecItemUpdate(query(key) as CFDictionary, attributes as CFDictionary)
+        let status = SecItemUpdate(query(key, interactive: interactive) as CFDictionary, attributes as CFDictionary)
         if status == errSecItemNotFound {
-            let added = SecItemAdd(query(key).merging(attributes) { _, new in new } as CFDictionary, nil)
+            let added = SecItemAdd(query(key, interactive: interactive).merging(attributes) { _, new in new } as CFDictionary, nil)
             guard added == errSecSuccess else { throw failure(added) }
         } else if status != errSecSuccess { throw failure(status) }
     }
     private func failure(_ status: OSStatus) -> NSError {
-        CredentialAccessStatus.requireAuthorization()
-        return NSError(domain: NSOSStatusErrorDomain, code: Int(status), userInfo: [NSLocalizedDescriptionKey: "Click Allow Keychain in Settings. Saved readings remain available."])
+        // Numeric diagnostics only; never persist account names or secret data.
+        UserDefaults.standard.set(Int(status), forKey: "keychain.lastFailureStatus")
+        let denied = [errSecInteractionNotAllowed, errSecAuthFailed, errSecUserCanceled].contains(status)
+        if denied { CredentialAccessStatus.requireAuthorization() }
+        let message = denied
+            ? "Keychain access was not granted for this app. Open Settings → Allow Keychain; choose Always Allow in the macOS dialog to remember access."
+            : "Could not save or read Keychain data (macOS error \(status)). Your previous credentials are preserved."
+        return NSError(domain: NSOSStatusErrorDomain, code: Int(status), userInfo: [NSLocalizedDescriptionKey: message])
     }
 }
 
@@ -305,46 +429,5 @@ struct CloudCredentialStore {
         guard data.count <= PrivateJSONFile.maximumCredentialBytes else { throw CredentialStorageError.invalidData }
         do { return try JSONDecoder().decode(type, from: data) }
         catch { throw CredentialStorageError.invalidData }
-    }
-}
-
-// LG keeps its existing UTF-8 Keychain value format on both platforms.
-struct TokenCredentialStore {
-    let key: String
-    var legacyFile: URL? = nil
-    var vault: any CredentialVault = CredentialAccess.shared
-
-    func read(importFile: URL? = nil) throws -> String? {
-        if let data = try vault.read(key) {
-            let token = try decode(data)
-            if vault.removesLegacyFiles, let legacyFile {
-                try PrivateJSONFile.removeLegacy(at: legacyFile, matching: PrivateJSONFile.identityIfPresent(at: legacyFile))
-            }
-            return token
-        }
-        let owned = try legacyFile.flatMap { try PrivateJSONFile.snapshotIfPresent(from: $0) }
-        let source = try owned ?? importFile.flatMap { try PrivateJSONFile.snapshotIfPresent(from: $0) }
-        guard let source else { return nil }
-        let token = try decode(source.data)
-        try write(token)
-        if vault.removesLegacyFiles, let legacyFile { try PrivateJSONFile.removeLegacy(at: legacyFile, matching: owned?.identity) }
-        return token
-    }
-    func save(_ token: String) throws {
-        let legacy = vault.removesLegacyFiles ? try legacyFile.flatMap { try PrivateJSONFile.identityIfPresent(at: $0) } : nil
-        try write(token)
-        if vault.removesLegacyFiles, let legacyFile { try PrivateJSONFile.removeLegacy(at: legacyFile, matching: legacy) }
-    }
-    private func write(_ token: String) throws {
-        let data = Data(try decode(Data(token.utf8)).utf8)
-        try vault.write(data, key: key)
-        guard try vault.read(key) == data else { throw CredentialStorageError.verificationFailed }
-    }
-    private func decode(_ data: Data) throws -> String {
-        guard data.count <= PrivateJSONFile.maximumCredentialBytes,
-              let value = String(data: data, encoding: .utf8) else { throw CredentialStorageError.invalidData }
-        let token = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !token.isEmpty else { throw CredentialStorageError.invalidData }
-        return token
     }
 }

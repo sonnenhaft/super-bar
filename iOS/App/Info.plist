@@ -39,6 +39,13 @@
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Super Bar finds LG TVs and connects to the TV you select to show its volume and use the remote.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_airplay._tcp</string>
+		<string>_hap._tcp</string>
+	</array>
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>Super Bar automatically finds nearby BLUETTI AC50P stations and reads their battery level and power while the app is open.</string>
 	<key>UIBackgroundModes</key>

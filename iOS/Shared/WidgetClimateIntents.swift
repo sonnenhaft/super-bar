@@ -21,7 +21,7 @@ private enum WidgetClimateIntentError: LocalizedError {
 
 private func widgetClimateMetric(brand: String, deviceID: String) throws -> WidgetMetric {
     guard let metric = WidgetCache.read().climate.first(where: {
-        $0.brand == brand && $0.id == deviceID
+        $0.brand == brand && $0.id == deviceID && $0.online != false
     }) else { throw WidgetClimateIntentError.unavailableDevice }
     return metric
 }

@@ -50,3 +50,69 @@ let cobalt = SuperBarPanelStyle.cyan
 let ice = SuperBarPanelStyle.cyan
 let sunlight = SuperBarPanelStyle.yellow
 let leafGreen = SuperBarPanelStyle.green
+
+// The symbol is sized independently of the surrounding button's hit area.
+struct RefreshGlyph: View {
+    let isRefreshing: Bool
+    let size: CGFloat
+
+    var body: some View {
+        Group {
+            if isRefreshing {
+                if #available(iOS 18, macOS 15, *) {
+                    Image(systemName: "progress.indicator")
+                        .resizable().scaledToFit()
+                        .symbolEffect(.variableColor.iterative, isActive: true)
+                } else {
+                    ProgressView().progressViewStyle(.circular).controlSize(.small)
+                        .scaleEffect(size / 16)
+                }
+            } else {
+                Image(systemName: "arrow.clockwise").resizable().scaledToFit()
+            }
+        }
+        .frame(width: size, height: size)
+        .accessibilityHidden(true)
+    }
+}
+
+extension View {
+    func panelHistorySurface() -> some View {
+        self.frame(maxWidth: .infinity, alignment: .leading)
+            .padding(10).background(.white.opacity(0.018), in: RoundedRectangle(cornerRadius: 9))
+            .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(.white.opacity(0.12), lineWidth: 0.5))
+    }
+
+    @ViewBuilder func panelButtonStyle() -> some View {
+        #if os(macOS)
+        buttonStyle(PanelPointerButtonStyle())
+        #else
+        buttonStyle(.plain)
+        #endif
+    }
+
+    @ViewBuilder func panelPointer() -> some View {
+        #if os(macOS)
+        modifier(PanelPointer())
+        #else
+        self
+        #endif
+    }
+}
+
+#if os(macOS)
+private struct PanelPointer: ViewModifier {
+    @Environment(\.isEnabled) private var enabled
+    func body(content: Content) -> some View {
+        if #available(macOS 15, *) {
+            content.pointerStyle(enabled ? .link : .default)
+        } else { content }
+    }
+}
+
+private struct PanelPointerButtonStyle: PrimitiveButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        Button(configuration).buttonStyle(.plain).panelPointer()
+    }
+}
+#endif

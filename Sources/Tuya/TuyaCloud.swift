@@ -20,13 +20,19 @@ actor TuyaCloud {
         var password: String?
         var meter_id: String?
     }
-    static let allowed: Set<String> = ["thing.m.user.username.token.get", "thing.m.user.email.password.login", "tuya.m.location.list", "tuya.m.my.group.device.list", "tuya.m.device.ref.info.my.list", "tuya.m.dp.rang.stat.day.list", "tuya.m.dp.rang.stat.hour.list"]
+    static let powerLogAction = "tuya.m.smart.operate.all.log"
+    static let allowed: Set<String> = ["thing.m.user.username.token.get", "thing.m.user.email.password.login", "tuya.m.location.list", "tuya.m.my.group.device.list", "tuya.m.device.ref.info.my.list", "tuya.m.dp.rang.stat.day.list", "tuya.m.dp.rang.stat.hour.list", powerLogAction]
+    #if HISTORY_PROBE_SUITE
+    // Official Tuya panel SDK read APIs, enabled only for the diagnostic build.
+    static let probeHistoryActions: Set<String> = ["m.smart.operate.log", "tuya.m.device.query.device.log"]
+    #endif
     private let credentials: CloudCredentialStore
     private let source: URL?
     private let network: URLSession
     private let ownsSession: Bool
     private var account: Session?
     private var failedLogin = false
+    private var renewal: Task<Void, Error>?
     private var homes: [String] = []
     private var schemas: [String: [String: Any]] = [:]
     private var discoveryAt: Date?
@@ -60,7 +66,11 @@ actor TuyaCloud {
         }.joined(separator: "&").utf8)
     }
     func request(_ action: String, data: [String: Any]? = nil, version: String = "2.0", gid: String? = nil, authenticated: Bool = true) async throws -> Any {
+        #if HISTORY_PROBE_SUITE
+        guard Self.allowed.contains(action) || Self.probeHistoryActions.contains(action) else { throw TuyaError.message("Tuya only permits authentication and reading.") }
+        #else
         guard Self.allowed.contains(action) else { throw TuyaError.message("Tuya only permits authentication and reading.") }
+        #endif
         guard let account else { throw TuyaError.signIn }
         var fields = ["a": action, "v": version, "deviceId": account.device_id, "os": "Android", "lang": "en", "clientId": "ekmnwp9f5pnh3trdtpgy", "time": String(Int(Date().timeIntervalSince1970)), "et": "0.0.1", "ttid": "smart_life", "appVersion": "3.8.5", "appRnVersion": "5.11", "platform": "Android", "requestId": UUID().uuidString.lowercased()]
         if let data { fields["postData"] = String(data: try JSONSerialization.data(withJSONObject: data, options: [.sortedKeys, .withoutEscapingSlashes]), encoding: .utf8)! }
@@ -71,7 +81,7 @@ actor TuyaCloud {
         request.httpMethod = "POST"; request.httpBody = Self.form(fields)
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         let bytes: Data, response: URLResponse
-        do { (bytes, response) = try await CloudResponse.data(for: request, using: network) }
+        do { (bytes, response) = try await CloudResponse.data(for: request, using: network, history: action.hasPrefix("tuya.m.dp.rang.stat.") || action == Self.powerLogAction, provider: .tuya) }
         catch { if Task.isCancelled { throw CancellationError() }; throw TuyaError.message("Could not connect to Tuya.") }
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
               let json = try? JSONSerialization.jsonObject(with: bytes) as? [String: Any] else { throw TuyaError.message("Invalid Tuya response.") }
@@ -96,13 +106,24 @@ actor TuyaCloud {
         account?.sid = sid; failedLogin = false
         try save()
     }
+    private func renewSession() async throws {
+        if let renewal { return try await renewal.value }
+        let task = Task { try await login() }
+        renewal = task
+        defer { renewal = nil }
+        try await task.value
+    }
     private func read(_ action: String, data: [String: Any]? = nil, version: String = "2.0", gid: String? = nil) async throws -> Any {
         try load()
         guard !failedLogin else { throw TuyaError.signIn }
-        if account?.sid.isEmpty == true { try await login() }
+        if account?.sid.isEmpty == true { try await renewSession() }
+        let sid = account?.sid
         do { return try await request(action, data: data, version: version, gid: gid) }
         catch TuyaError.expired {
-            do { try await login(); return try await request(action, data: data, version: version, gid: gid) }
+            do {
+                if account?.sid == sid { try await renewSession() }
+                return try await request(action, data: data, version: version, gid: gid)
+            }
             catch { failedLogin = true; throw error }
         }
     }
@@ -145,14 +166,118 @@ actor TuyaCloud {
     }
     func selectMeter(_ id: String) throws { try load(); account?.meter_id = id; try save() }
     func history(for device: TuyaDevice, previous: TuyaHistory?, now: Date = Date()) async throws -> TuyaHistory {
-        guard let dp = device.historyDP else { throw TuyaError.message("Tuya history is unavailable for this meter.") }
+        guard device.powerDP != nil || device.historyDP != nil else { throw TuyaError.message("Tuya history is unavailable for this meter.") }
+        let saved = previous.flatMap { $0.meterID == device.id ? $0 : nil }
+        var result = TuyaHistory(meterID: device.id, timeZoneID: device.timeZoneID ?? "", days: [], hours: [], fetchedAt: now)
+        if let dp = device.historyDP {
+            do {
+                result = try await statistics(for: device, dp: dp, previous: saved, now: now)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                // UTC power reports remain usable when the meter's local calendar is unknown.
+                guard device.powerDP != nil else { throw error }
+                result.problem = (error as? TuyaError)?.errorDescription ?? "Tuya statistics unavailable"
+            }
+        } else if let saved, saved.timeZoneID == device.timeZoneID {
+            // Keep the statistics timestamp used to derive the partial-hour interval.
+            result = saved
+            result.problem = nil
+        }
+        let cutoff = now.addingTimeInterval(-86400)
+        var points = (saved?.power ?? []).filter { $0.time >= cutoff && $0.time <= now }
+        result.logsFetchedAt = saved?.logsFetchedAt
+        result.logsCoveredFrom = saved?.logsCoveredFrom
+        guard let dp = device.powerDP else {
+            if saved?.power != nil { result.power = points }
+            return result
+        }
+        do {
+            let since = max(cutoff, min(saved?.logsFetchedAt?.addingTimeInterval(-60) ?? cutoff, now))
+            // Small batches avoid the account's frequency limit. Older gaps are
+            // resumed on the next refresh; the hourly archive is already usable.
+            var remainingPages = 12
+            let recent = try await powerLogs(device.id, dp: dp, from: since, to: now, pages: &remainingPages)
+            points += recent.points
+            var incomplete = recent.incomplete
+            var coveredFrom = recent.start
+            if recent.start <= since, let earlier = saved?.logsCoveredFrom, earlier <= since {
+                coveredFrom = max(cutoff, earlier)
+                if coveredFrom > cutoff, remainingPages > 0 {
+                    let earlierLogs = try await powerLogs(device.id, dp: dp, from: cutoff, to: coveredFrom, pages: &remainingPages)
+                    points += earlierLogs.points
+                    coveredFrom = earlierLogs.start
+                    incomplete = incomplete || earlierLogs.incomplete
+                }
+            }
+            result.logsCoveredFrom = coveredFrom
+            result.logsFetchedAt = now
+            if incomplete {
+                result.problem = [result.problem, "Detailed history is partial; hourly totals are shown in gaps"].compactMap { $0 }.joined(separator: " · ")
+            }
+        } catch is CancellationError { throw CancellationError() }
+        catch {
+            result.problem = [result.problem, "Tuya power log unavailable"].compactMap { $0 }.joined(separator: " · ")
+        }
+        result.power = Array(Dictionary(points.map { ($0.time, $0) }, uniquingKeysWith: { _, new in new })
+            .values.sorted { $0.time < $1.time }.suffix(86_400))
+        return result
+    }
+
+    private func powerLogs(_ id: String, dp: TuyaPowerDP, from start: Date, to end: Date, pages: inout Int) async throws -> (points: [PowerPoint], start: Date, incomplete: Bool) {
+        let lower = Int64(floor(start.timeIntervalSince1970)) * 1000
+        let upper = Int64((end.timeIntervalSince1970 * 1000).rounded(.down))
+        var points: [PowerPoint] = []
+        var pending = [(lower, upper)]
+        var coveredFrom = end
+        while pages > 0, let (from, through) = pending.popLast() {
+            try Task.checkCancellation()
+            let body: [String: Any] = ["devId": id, "dpIds": String(dp.id), "offset": 0, "limit": 100,
+                                       "startTime": String(from), "endTime": String(through), "sortType": "DESC"]
+            let page: [String: Any]
+            do {
+                // Preserve all successful pages if a later request fails.
+                page = CloudValue.object(try await read(Self.powerLogAction, data: body, version: "1.0"))
+            } catch is CancellationError { throw CancellationError() }
+            catch { return (points, coveredFrom, true) }
+            pages -= 1
+            guard let rows = page["dps"] as? [[String: Any]], rows.count <= 100 else { return (points, coveredFrom, true) }
+            var invalid = false
+            for row in rows {
+                guard let time = CloudValue.date(row["timeStamp"]),
+                      let ms = Int64(exactly: (time.timeIntervalSince1970 * 1000).rounded()) else { continue }
+                guard ms >= from && ms <= through else { invalid = true; continue }
+                guard time >= start && time <= end else { continue }
+                if CloudValue.number(row["dpId"]) == Double(dp.id), let watts = dp.watts(row["value"]) {
+                    points.append(PowerPoint(time: time, watts: watts))
+                }
+            }
+            guard !invalid else { return (points, coveredFrom, true) }
+            let more = page["hasNext"] as? Bool == true || (CloudValue.number(page["total"]).map { $0 > Double(rows.count) } ?? (page["hasNext"] == nil && rows.count == 100))
+            if more {
+                // Real accounts ignore offset and sometimes ignore sort order.
+                // Disjoint second-aligned windows cannot skip tied timestamps.
+                guard !rows.isEmpty, from / 1000 < through / 1000 else { return (points, coveredFrom, true) }
+                let middle = (from / 1000 + (through / 1000 - from / 1000 + 1) / 2) * 1000
+                pending.append((from, middle - 1))
+                pending.append((middle, through))
+            } else {
+                coveredFrom = max(start, Date(timeIntervalSince1970: Double(from) / 1000))
+            }
+            if pages > 0 && !pending.isEmpty { try await Task.sleep(nanoseconds: 300_000_000) }
+        }
+        return (points, coveredFrom, !pending.isEmpty)
+    }
+
+    private func statistics(for device: TuyaDevice, dp: Int, previous: TuyaHistory?, now: Date) async throws -> TuyaHistory {
         guard let zoneID = device.timeZoneID, let zone = TimeZone(identifier: zoneID) else {
             throw TuyaError.message("Tuya meter timezone is unavailable.")
         }
         let keys = TuyaHistory.keys(now: now)
+        let dayFormatter = ChartHistory.formatter("yyyyMMdd")
         guard keys.allSatisfy({ key in
-            let date = TuyaHistory.formatter("yyyyMMdd").date(from: key)!
-            return zone.secondsFromGMT(for: date) == TuyaHistory.calendar.timeZone.secondsFromGMT(for: date)
+            let date = dayFormatter.date(from: key)!
+            return zone.secondsFromGMT(for: date) == ChartHistory.calendar.timeZone.secondsFromGMT(for: date)
         }) else { throw TuyaError.message("Tuya and Deye use different timezones.") }
         let saved = previous.flatMap { $0.meterID == device.id && $0.timeZoneID == zoneID ? $0 : nil }
         var days = saved?.days.filter { keys.contains($0.key) } ?? []
@@ -160,7 +285,7 @@ actor TuyaCloud {
         var firstMissing = keys.dropLast().first { key in !days.contains { $0.key == key && $0.wattHours != nil } } ?? keys.last!
         // A cached "today" total was partial. Fetch it once more after midnight.
         if let saved {
-            let lastFetchedDay = TuyaHistory.formatter("yyyyMMdd").string(from: saved.fetchedAt)
+            let lastFetchedDay = dayFormatter.string(from: saved.fetchedAt)
             if keys.contains(lastFetchedDay) { firstMissing = min(firstMissing, lastFetchedDay) }
         }
         let base: [String: Any] = ["devId": device.id, "dpId": dp, "type": "minux", "auto": 2]
@@ -174,12 +299,13 @@ actor TuyaCloud {
             days += fetched
         } catch is CancellationError { throw CancellationError() }
         catch { errors.append("Tuya daily history unavailable") }
+        let meterDayFormatter = ChartHistory.formatter("yyyyMMdd", zone: zone)
         for key in keys.suffix(2) {
           do {
             let data = base.merging(["date": key]) { _, new in new }
             let raw = try await read("tuya.m.dp.rang.stat.hour.list", data: data, version: "1.0")
             let fetched = TuyaHistory.hourly(raw, zone: zone, now: now).filter {
-                TuyaHistory.formatter("yyyyMMdd", zone: zone).string(from: $0.start) == key
+                meterDayFormatter.string(from: $0.start) == key
             }
             let incoming = Set(fetched.map(\.start))
             hours.removeAll { incoming.contains($0.start) }

@@ -19,98 +19,135 @@ struct UnifiedPanel: View {
     var availableHeight: CGFloat = 720
     var contentHeight: (CGFloat) -> Void
     let settings: NSView
+    @AppStorage(DeviceVisibility.showOfflineKey) private var showOffline = false
     @State private var measuredHeight: CGFloat = 0
-    @State private var showSettings = false
+    @State private var refreshRequestedByUser = false
+    @State private var waitingForCloudReadings = false
     private var climate: ClimatePanel { ClimatePanel(store: tcl, history: history, preferences: fields, selection: selection) }
     private var thinQ: LGPanel { LGPanel(model: lg, selection: selection) }
-    private var solar: DeyeCard { DeyeCard(model: deye, tuya: tuya, selection: selection) }
-    private var meter: TuyaPanel { TuyaPanel(model: tuya, selection: selection) }
     private var blue: BlueBarDelegate { batteries.model }
+    private var energyExpanded: Bool { selection.openBrand == .deye || selection.openBrand == .tuya }
     var body: some View {
         ScrollView(.vertical) {
-            VStack(alignment: .leading, spacing: SuperBarPanelStyle.gap) {
-                climateTitle
+            PanelScreen(deye: deye, tuya: tuya, climateExpanded: activeClimate != nil,
+                        televisionExpanded: selection.showTelevision,
+                        batteryExpanded: selection.openBrand == .bluetti, energyExpanded: energyExpanded,
+                        settingsExpanded: selection.showSettings,
+                        canExpandClimate: climateDevices.contains { $0.online != false }, batterySummary: batterySummary,
+                        refreshing: manualRefreshActive, toggleSection: toggleSection,
+                        openEnergy: selection.showEnergy, refresh: refreshAllReadings, quit: { NSApp.terminate(nil) }) {
+                EmptyView()
+            } climate: {
                 ClimateDeviceList(devices: climateDevices, selected: activeClimate, select: selectClimate) { id in
                     switch id {
-                    case .tcl:
-                        climate
-                        charts
-                    case .lg:
-                        thinQ
-                        charts
+                    case .tcl: climate; charts
+                    case .lg: thinQ; charts
                     }
                 }
                 if tcl.needsSignIn && activeClimate == nil { climate }
-                if climateDevices.isEmpty && !tcl.needsSignIn { thinQ }
-                Divider().padding(.vertical, 3)
-                sectionTitle("Battery", summary: batterySummary, brand: .bluetti)
+                if lg.devices.isEmpty && lg.televisions.isEmpty && !lg.polling { thinQ }
+            } television: {
+                LGTelevisionPanel(accounts: lg.televisions, expanded: selection.showTelevision,
+                                  open: selection.openTelevision)
+            } battery: {
                 batteryControls
-                if selection.openBrand == .bluetti { charts }
-                if tuya.needsSignIn { meter }
-                Divider().padding(.vertical, 3)
-                sectionTitle("Energy", summary: "", brand: .deye)
-                solar
-                if selection.openBrand == .deye || selection.openBrand == .tuya { charts }
-                Divider().padding(.top, 6)
-                HStack {
-                    Button { showSettings.toggle() } label: {
-                        Label("Settings…", systemImage: "gearshape").font(.system(size: 15, weight: .semibold))
-                    }.buttonStyle(.plain)
-                    Spacer()
-                    if !showSettings {
-                        Button { NSApp.terminate(nil) } label: { Image(systemName: "rectangle.portrait.and.arrow.right").font(.system(size: 19)) }
-                            .buttonStyle(.plain).help("Quit Super Bar").accessibilityLabel("Quit Super Bar")
-                    }
-                }.padding(.vertical, 4)
-                if showSettings {
-                    AccountConnections(deye: deye, tuya: tuya, tcl: tcl,
-                                       connectLG: lg.configureMobileAccount, disconnectLG: lg.logout, refresh: refreshAccounts)
-                    Divider()
-                    EnergyTariffSettings()
-                    Divider()
-                    PanelControl(control: settings).id(selection.chartBrand).frame(height: selection.chartBrand == .lg ? SuperFooter.height : SuperFooter.height - 36)
+                if selection.openBrand == .bluetti && selectedStation != nil { charts }
+            } energy: {
+                PanelEnergySection(deye: deye, tuya: tuya, expanded: energyExpanded, menuBarPinned: deye.pinned) { _ in
+                    deye.pinned.toggle()
+                    selection.showEnergy()
                 }
-            }.padding(SuperBarPanelStyle.appInset).fixedSize(horizontal: false, vertical: true)
-                .reportContentHeight { height in
-                    measuredHeight = height
-                    contentHeight(min(height, availableHeight))
+            } settings: {
+                PanelSettings(deye: deye, tuya: tuya, tcl: tcl,
+                              connectLG: lg.configureMobileAccount, disconnectLG: lg.logout, refresh: refreshAccounts) {
+                    PanelControl(control: settings).id(selection.chartBrand)
+                        .frame(height: selection.chartBrand == .lg ? SuperFooter.height : SuperFooter.height - 36)
                 }
+            } accessory: {
+                PanelTrafficReadout()
+            }
+            .reportContentHeight { height in
+                measuredHeight = height
+                contentHeight(min(height, availableHeight))
+            }
         }
         .scrollDisabled(measuredHeight <= availableHeight)
         .scrollIndicators(measuredHeight > availableHeight ? .automatic : .hidden)
         .frame(width: PanelLayout.width)
-        .tint(cobalt).environment(\.locale, Locale(identifier: "en_US"))
         .transaction { $0.animation = nil }
+        .onChange(of: refreshRequestedByUser && !manualRefreshActive) { _, finished in
+            if finished { refreshRequestedByUser = false }
+        }
         .onChange(of: selection.expanded) { _, _ in updateBatteries() }
         .onChange(of: selection.detailsCollapsed) { _, _ in updateBatteries() }
-        .onChange(of: selection.openBrand, initial: true) { _, brand in
-            deye.showHistory(brand == .deye)
-            tuya.showHistory(brand == .deye)
+        .onAppear {
+            deye.showHistory(true)
+            tuya.showHistory(true)
+        }
+    }
+    private func toggleSection(_ section: PanelSection) {
+        switch section {
+        case .climate: toggleClimate()
+        case .television:
+            if selection.showTelevision { selection.collapseSections() } else { selection.openTelevision() }
+        case .battery: selection.select(.bluetti, sameDevice: true)
+        case .energy:
+            selection.toggleEnergy()
+            if selection.openBrand == .deye { deye.pinned = true }
+        case .settings:
+            if selection.showSettings { selection.collapseSections() }
+            else { selection.openSettings() }
+        case .home: selection.collapseSections()
         }
     }
     private func refreshAccounts() {
         tcl.manualRefresh(); lg.manualRefresh(); deye.refresh(); tuya.refresh()
     }
+    private var manualRefreshActive: Bool {
+        refreshRequestedByUser && (waitingForCloudReadings
+            || lg.polling || lg.sending || lg.summaryTask != nil || blue.isManuallyRefreshing)
+    }
+    private func refreshAllReadings() {
+        guard !manualRefreshActive else { return }
+        refreshRequestedByUser = true
+        waitingForCloudReadings = true
+        lg.manualRefresh(allDevices: true)
+        if blue.bluetoothActivated { blue.refreshClicked() }
+        Task {
+            async let climate: Void = tcl.refreshAndWait()
+            async let solar: Void = deye.manualRefreshAndWait()
+            async let meter: Void = tuya.manualRefreshAndWait()
+            _ = await (climate, solar, meter)
+            waitingForCloudReadings = false
+            if !manualRefreshActive { refreshRequestedByUser = false }
+        }
+    }
     private var activeClimate: ClimateDeviceID? {
-        guard let selectedClimate = selection.climateDevice else { return nil }
+        guard let selectedClimate = selection.climateDevice,
+              climateDevices.contains(where: { $0.id == selectedClimate && $0.online != false }) else { return nil }
         switch selectedClimate {
         case .tcl(let id): return selection.openBrand == .tcl && tcl.selected?.id == id ? selectedClimate : nil
         case .lg(let id): return selection.openBrand == .lg && lg.selected == id ? selectedClimate : nil
         }
     }
     private var climateDevices: [ClimateDeviceItem] {
-        tcl.devices.map { ac in
+        let pinnedTCL = selection.current == .tcl ? fields.device(in: tcl)?.id : nil
+        return tcl.devices.map { ac in
             ClimateDeviceItem(id: .tcl(ac.id), name: ac.name, room: tempText(ac.indoor),
                 target: ac.power == true ? tempText(ac.target) : "",
-                power: ac.online == true && !ac.failed && !tcl.offline ? ac.power : nil, online: ac.online)
+                power: ac.online == true && !ac.failed && !tcl.offline ? ac.power : nil,
+                online: ac.online, indicators: tcl.reportedIndicators(for: ac.id),
+                pinnedInMenuBar: pinnedTCL == ac.id)
         } + lg.devices.map { device in
             let sample = lg.sample(for: device.id)
-            return ClimateDeviceItem(id: .lg(device.id), name: device.name, room: degree(sample?.room),
+            return ClimateDeviceItem(id: .lg(device.id), name: device.name, room: sample?.roomReading ?? "—",
                 target: sample?.power == "POWER_ON" ? degree(sample?.target) : "",
-                power: sample?.powerOn, online: sample?.online)
+                power: sample?.powerOn, online: sample?.online, indicators: sample?.indicators ?? ClimateIndicators(),
+                pinnedInMenuBar: selection.current == .lg && lg.pinnedDeviceID == device.id)
         }
     }
     private func selectClimate(_ id: ClimateDeviceID) {
+        guard climateDevices.contains(where: { $0.id == id && $0.online != false }) else { return }
         if activeClimate == id {
             selection.climateDevice = nil
             selection.detailsCollapsed = true
@@ -127,67 +164,49 @@ struct UnifiedPanel: View {
             selection.activate(.lg)
         }
     }
-    private var climateTitle: some View {
-        Button {
-            guard let selectedClimate = selection.climateDevice else { return }
-            if activeClimate != nil { selection.detailsCollapsed = true }
-            else { selectClimate(selectedClimate) }
-        } label: {
-            PanelSectionHeading(title: "Climate", expanded: activeClimate != nil)
-                .frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
-        }.buttonStyle(.plain).padding(.bottom, 2)
+    private func toggleClimate() {
+        if activeClimate != nil {
+            selection.detailsCollapsed = true
+        } else {
+            let available = climateDevices.filter { $0.online != false }
+            let previous = available.first { $0.id == selection.climateDevice }
+            if let device = previous ?? available.first { selectClimate(device.id) }
+        }
+    }
+    private var visibleStations: [StationMenuEntry] {
+        blue.stationRows.filter {
+            DeviceVisibility.includesBattery(hasReading: $0.details.card.hasReading,
+                                             online: blue.stationReachability($0.key), showOffline: showOffline)
+        }
+    }
+    private var selectedStation: StationMenuEntry? {
+        visibleStations.first { $0.key == blue.displayedStationKey }
     }
     private var batterySummary: String {
-        guard let card = blue.stationRows.first(where: { $0.key == blue.selectedKnownStation?.key })?.details.card else { return "" }
+        guard let card = selectedStation?.details.card else { return "" }
         return card.summaryName + " · " + card.summaryPercent
     }
-    private func sectionTitle(_ title: String, summary: String, brand: Brand) -> some View {
-        Button {
-            if brand == .deye { selection.toggleEnergy(); if selection.openBrand == .deye { deye.pinned = true } }
-            else { selection.select(brand, sameDevice: true) }
-        } label: {
-            HStack(spacing: 6) {
-                PanelSectionHeading(title: title, expanded: selection.openBrand == brand)
-            Spacer(minLength: 4)
-            if brand == .deye {
-                HStack(spacing: 4) {
-                    Text(DeyeReading.power(deye.reading?.power_w)).foregroundStyle(sunlight)
-                    Text("/")
-                    Text(tuya.reading?.consumption().map(DisplayUnits.power) ?? "—").foregroundStyle(ice)
-                }.font(.system(size: 13, weight: .semibold)).monospacedDigit()
-            } else { Text(summary).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1).minimumScaleFactor(0.85) }
-            }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 2).contentShape(Rectangle())
-        }.buttonStyle(.plain).padding(.bottom, 2)
-    }
     private func updateBatteries() { blue.rebuildStationMenu(); batteries.refresh() }
-    @ViewBuilder private var batteryControls: some View {
-        DeviceSelector(brand: .bluetti) {
-            if !blue.bluetoothActivated {
-                DeviceChoice(action: { blue.activateBluetooth(); batteries.refresh() }) {
-                    Text("Allow Bluetooth").font(.system(size: 12))
-                }
-            } else if blue.stationRows.isEmpty {
-                DeviceChoice(action: { blue.refreshClicked() }) { Text("Find BLUETTI devices").font(.system(size: 12)) }
-            } else {
-                ForEach(blue.stationRows, id: \.key) { entry in
-                    let card = entry.details.card
-                    DeviceChoice(selected: selection.expanded == .bluetti && blue.selectedKnownStation?.key == entry.key, compact: true, action: card.selectSummary) {
-                        HStack(spacing: 6) {
-                            Image(systemName: card.summaryBatterySymbol).foregroundStyle(leafGreen).font(.system(size: 20))
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text(card.summaryName).font(.system(size: 13, weight: .semibold)).lineLimit(1)
-                                Text(card.summaryPercent).font(.system(size: 15, weight: .semibold)).monospacedDigit()
-                            }
-                            Spacer(minLength: 0)
-                        }.frame(minHeight: 28)
-                    }
-                }
+    private var batteryControls: some View {
+        let stations = visibleStations
+        return BatteryDeviceList(stations: stations.map { entry in
+            BatteryStationItem(id: entry.key, name: entry.details.card.summaryName,
+                               percent: entry.details.card.summaryReadingPercent,
+                               selected: selection.openBrand == .bluetti && entry.key == blue.displayedStationKey)
+        }, needsPermission: blue.needsBluetoothPermission,
+           emptyMessage: blue.bluetoothMessage ?? "Searching for BLUETTI stations…",
+           error: blue.lastManualRefreshError,
+           requestPermission: { blue.activateBluetooth(); batteries.refresh() },
+           select: { key in stations.first { $0.key == key }?.details.card.selectSummary() }) {
+            if selection.openBrand == .bluetti, let entry = selectedStation {
+                let station = blue.stationDirectory.stations.first { $0.key == entry.key }
+                entry.details.card.detailView(alias: station?.alias ?? "", saveName: { alias in
+                    guard let station, !blue.quitting else { return }
+                    blue.stationDirectory.setAlias(alias, deviceID: station.deviceID,
+                                                   bluetoothName: station.bluetoothName, model: station.model)
+                    blue.render()
+                }).deviceSurface(selected: true)
             }
-        }
-        if blue.bluetoothActivated && selection.expanded == .bluetti && !selection.detailsCollapsed,
-           let entry = blue.stationRows.first(where: { $0.key == blue.selectedKnownStation?.key }) {
-            PanelControl(control: entry.details.card).frame(height: max(144, entry.details.card.contentHeight))
-                .deviceSurface(selected: true).padding(.leading, PanelLayout.logoColumn)
         }
     }
     private var charts: some View {
@@ -195,18 +214,13 @@ struct UnifiedPanel: View {
             switch selection.chartBrand {
             case .tcl: climate.charts
             case .lg: thinQ.charts
-            case .deye:
-                solar.charts
-            case .tuya: meter.charts
+            case .deye, .tuya: EmptyView()
             case .bluetti:
-                if blue.lastGood != nil {
-                    Text("Output power · 30 minutes").font(.caption).foregroundStyle(.secondary)
-                    PanelControl(control: blue.loadGraph).frame(height: 106)
+                if let key = blue.displayedStationKey {
+                    StationOutputCharts(history: blue.outputHistory, station: key)
                 }
             }
-        }.frame(maxWidth: .infinity, alignment: .leading)
-            .padding(10).background(.white.opacity(0.018), in: RoundedRectangle(cornerRadius: 9))
-            .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(.white.opacity(0.12), lineWidth: 0.5))
+        }.panelHistorySurface()
     }
 }
 

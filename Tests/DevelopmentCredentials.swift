@@ -75,12 +75,6 @@ private struct DevelopmentSession: Codable, Equatable {
         check(try externalStore.load(DevelopmentSession.self, importFile: external) == first)
         check(try Data(contentsOf: external) == firstData)
 
-        let lgFile = directory.appendingPathComponent("lg-token.txt")
-        let lg = TokenCredentialStore(key: "lg-token", legacyFile: lgFile, vault: SessionCredentialVault(backing: vault))
-        try lg.save("synthetic-lg")
-        check(try lg.read() == "synthetic-lg" && manager.fileExists(atPath: lgFile.path))
-        check(try DevelopmentCredentialVault(directory: directory).read("lg-token") == Data("synthetic-lg".utf8))
-
         for key in ["../escape", "/absolute", "", "line\nbreak", String(repeating: "a", count: 129)] {
             fails({ _ = try vault.read(key) }, "Unsafe account names must be rejected")
             fails({ try vault.write(firstData, key: key) }, "Unsafe account names must be rejected")

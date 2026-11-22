@@ -25,6 +25,20 @@ import Foundation
         reloaded.importAliases(["AC50P999999": "Living room", "": "Invalid"])
         precondition(reloaded.displayName(deviceID: "known-phone-id", bluetoothName: "AC50P999999") == "Living room")
         precondition(reloaded.stations.count == 3)
+        let first = "00000000-0000-0000-0000-00000000000a"
+        let second = "00000000-0000-0000-0000-00000000000b"
+        let third = "00000000-0000-0000-0000-00000000000c"
+        var retry = BluettiDiscoveryRetry()
+        let known = [first.uppercased(), first, second, third, "not-a-peripheral-id"]
+        precondition(retry.candidates(knownIDs: known, found: [], now: 100) == [first, second],
+                     "Known stations missing advertisements get at most two direct attempts, with canonical unique IDs")
+        precondition(retry.candidates(knownIDs: known, found: [], now: 115) == [third],
+                     "Unavailable stations must not delay every polling pass or starve another saved station")
+        precondition(retry.candidates(knownIDs: known, found: [], now: 159).isEmpty)
+        precondition(retry.candidates(knownIDs: known, found: [first], now: 160) == [second],
+                     "Keep the open/advertised link; only retry missing stations after the interval")
+        precondition(retry.candidates(knownIDs: known, found: [], now: 10) == [first, third],
+                     "A restarted uptime cannot suppress retries forever")
         print("Station names: transfer across hosts, rename persistence, reset and ambiguous names verified.")
     }
 }

@@ -94,56 +94,58 @@ private final class MockDeye: URLProtocol {
         let retainedLogin = await login.savedLogin()
         precondition(beforeFailure == afterFailure && retainedLogin.email == "test@example.com" && retainedLogin.server == "https://eu1.deyecloud.com")
         MockDeye.mode = "valid"
-        _ = try await login.snapshot(previous: previous, includeHistory: false)
+        _ = try await login.current(previous: previous)
         let (valid, _) = try fixture("valid")
-        let reading = try await valid.snapshot(previous:nil,includeHistory:false)
+        let reading = try await valid.current(previous: nil)
         precondition(reading.id == 61011710 && reading.power_w == 3314 && reading.today_kwh == 2.7)
         precondition(reading.measured_at == 1794443261 && MockDeye.paths.count == 2 && MockDeye.grants.isEmpty)
         let (renew, renewedVault) = try fixture("valid",expired:true)
-        _ = try await renew.snapshot(previous:previous,includeHistory:false)
+        _ = try await renew.current(previous: previous)
         precondition(MockDeye.grants == ["refresh_token"])
         let saved = try renewedVault.saved(DeyeCloud.Session.self, key: "deye-session")
         precondition(saved.token == "new-token" && saved.refresh_token == "rotated" && saved.password_sha256 == "fake-hash")
         let (retry, _) = try fixture("401")
-        _ = try await retry.snapshot(previous:previous,includeHistory:false)
+        _ = try await retry.current(previous: previous)
         precondition(MockDeye.reads == 2 && MockDeye.grants == ["refresh_token"])
         let (fallback, _) = try fixture("fallback",expired:true)
-        _ = try await fallback.snapshot(previous:previous,includeHistory:false)
+        _ = try await fallback.current(previous: previous)
         precondition(MockDeye.grants == ["refresh_token", "password"])
         for mode in ["badLogin", "double401"] {
             let (failed, _) = try fixture(mode,expired: mode == "badLogin")
             for _ in 0..<2 {
-                do { _ = try await failed.snapshot(previous:previous,includeHistory:false); fatalError("Rejected login accepted") }
+                do { _ = try await failed.current(previous: previous); fatalError("Rejected login accepted") }
                 catch DeyeError.unauthorized {}
             }
             precondition(MockDeye.grants.count == (mode == "badLogin" ? 2 : 1), "Infinite auth retries")
         }
         let (offline, _) = try fixture("network",expired:true)
-        do { _ = try await offline.snapshot(previous:previous,includeHistory:false); fatalError("Offline request succeeded") }
+        do { _ = try await offline.current(previous: previous); fatalError("Offline request succeeded") }
         catch DeyeError.message(let text) { precondition(!text.contains("old-refresh") && !text.contains("fake-hash")) }
         precondition(MockDeye.grants.isEmpty, "Network failure triggered password login")
         let (partial, _) = try fixture("valid")
-        let history = try await partial.snapshot(previous:previous,includeHistory:true)
-        precondition(history.days.count == 30 && history.days[1].kwh == nil && history.power_w == 3314)
-        precondition(Set(history.days.map(\.day)).count == 30)
-        precondition(MockDeye.paths.filter { $0.contains("/stats/daily") }.count == 30)
-        precondition(history.curve?.last?.watts == 1500 && history.days.last?.kwh == 2.7)
+        let current = try await partial.current(previous: previous)
+        let history = current.withHistory(from: try await partial.history(for: current))
+        let count = ChartHistory.accountingDayCount()
+        precondition(history.days.count == count && history.days[1].kwh == nil && history.power_w == 3314)
+        precondition(Set(history.days.map(\.day)).count == count)
+        precondition(MockDeye.paths.filter { $0.contains("/stats/daily") }.count == count)
+        precondition(history.curve?.last?.watts == 1500 && history.days.last?.kwh == 29.7)
         precondition(history.curve?.count == 2, "Retain yesterday's curve for a rolling 24-hour window")
-        _ = try await partial.snapshot(previous: history, includeHistory: true)
-        precondition(MockDeye.paths.filter { $0.contains("/stats/daily") }.count == 33, "Reuse older totals; refresh both curve days and retry the missing day")
+        _ = try await partial.history(for: history)
+        precondition(MockDeye.paths.filter { $0.contains("/stats/daily") }.count == count + 2, "Reuse completed days and yesterday’s finalized curve; fetch today and retry the missing day")
         MockDeye.mode = "valid"
         let source = root.appendingPathComponent("import.json")
         try PrivateJSONFile.write(DeyeCloud.Session(base: "https://eu1.deyecloud.com", token: "import-token"), to: source)
         let destination = root.appendingPathComponent("native/session.json")
         let importedVault = MemoryCredentialVault()
         let imported = DeyeCloud(file:destination,importFile:source,network:network,vault:importedVault)
-        _ = try await imported.snapshot(previous:previous,includeHistory:false)
+        _ = try await imported.current(previous: previous)
         precondition(!FileManager.default.fileExists(atPath:destination.path), "Import must save only to the credential vault")
         let importedSession = try importedVault.saved(DeyeCloud.Session.self, key: "deye-session")
         precondition(importedSession.token == "import-token")
         try FileManager.default.removeItem(at:source)
         let independent = DeyeCloud(file:destination,network:network,vault:importedVault)
-        _ = try await independent.snapshot(previous:previous,includeHistory:false)
+        _ = try await independent.current(previous: previous)
         precondition(DeyeCloud.number(true) == nil && DeyeCloud.number(-1) == nil && DeyeCloud.number(Double.nan) == nil && DeyeCloud.number(0) == 0)
         for invalid in ["http://eu1.deyecloud.com", "https://attacker.example", "https://user:password@eu1.deyecloud.com"] {
             do { _ = try DeyeCloud.checkedBase(invalid); fatalError("Unsafe Deye origin accepted") } catch {}

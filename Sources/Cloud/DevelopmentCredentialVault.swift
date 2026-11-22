@@ -49,7 +49,7 @@ struct DevelopmentCredentialVault: CredentialVault {
         guard key.range(of: "^[A-Za-z0-9_-]{1,128}$", options: .regularExpression) != nil else {
             throw CredentialStorageError.invalidData
         }
-        return key + (key == "lg-token" ? ".txt" : ".json")
+        return key + ".json"
     }
 
     private func openDirectory(create: Bool) throws -> Int32? {

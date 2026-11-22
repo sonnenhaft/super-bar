@@ -12,6 +12,26 @@ enum AC50PAutonomy {
         let usableWh = 504.0 * 0.90 * 0.85 * Double(percent) / 100
         return Int((3600 * usableWh / (Double(ac) + Double(dc) + 10)).rounded())
     }
+
+    static func runtimeLabel(percent: Int, reported: Int?, externalInput: Bool?, acWatts: Int?, dcWatts: Int?) -> String {
+        let duration: Int
+        let backup: Bool
+        if externalInput != true, let reported, (1...(998 * 360)).contains(reported) || (reported == 0 && percent == 0) {
+            duration = reported
+            backup = false
+        } else if let estimate = seconds(percent: percent, acWatts: acWatts, dcWatts: dcWatts) {
+            duration = estimate
+            backup = externalInput != false
+        } else {
+            return acWatts == 0 && dcWatts == 0 ? "No output load" : "Runtime unavailable"
+        }
+        let minutes = duration / 60
+        let time: String
+        if minutes >= 60 { time = "\(minutes / 60)h \(minutes % 60)m" }
+        else if duration > 0 && minutes == 0 { time = "<1m" }
+        else { time = "\(minutes)m" }
+        return backup ? "Backup ≈ " + time : "≈ " + time + " left"
+    }
 }
 
 // Register 104 is a charge ETA only while power is going into the battery.

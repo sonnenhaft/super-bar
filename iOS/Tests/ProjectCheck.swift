@@ -33,5 +33,17 @@ for (name, folders) in [("SuperBar", ["App", "Shared"]), ("SuperBarWidgets", ["W
             precondition(included.contains(path), "\(path) is missing from \(name)")
         }
     }
+    for path in ["../Sources/Shared/PanelSections.swift", "../Sources/Shared/PanelComponents.swift", "../Sources/Shared/ClimateIndicators.swift"] {
+        precondition(included.contains(path), "The app and widget must compile the same screen/card presentation: \(path)")
+    }
 }
+let app = objects.values.first { $0["isa"] as? String == "PBXNativeTarget" && $0["name"] as? String == "SuperBar" }!
+let widget = objects.values.first { $0["isa"] as? String == "PBXNativeTarget" && $0["name"] as? String == "SuperBarWidgets" }!
+let widgetProduct = widget["productReference"] as! String
+let embedsWidget = (app["buildPhases"] as! [String]).contains { phaseID in
+    guard let phase = objects[phaseID], phase["isa"] as? String == "PBXCopyFilesBuildPhase",
+          String(describing: phase["dstSubfolderSpec"] ?? "") == "13" else { return false }
+    return (phase["files"] as? [String] ?? []).contains { objects[$0]?["fileRef"] as? String == widgetProduct }
+}
+precondition(embedsWidget, "The large widget extension must be embedded in the iPhone app")
 print("iOS project: files and app/widget membership verified; no external packages or build scripts.")

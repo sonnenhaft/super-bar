@@ -4,13 +4,245 @@ import Darwin
 
 // Shared by native cloud clients. Authenticated redirects never carry credentials away.
 final class CloudRedirects: NSObject, URLSessionTaskDelegate {
+    private let isHistory: Bool
+    private let provider: CloudTraffic.Provider
+    init(provider: CloudTraffic.Provider = .other, isHistory: Bool = false) {
+        self.provider = provider; self.isHistory = isHistory
+    }
+
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
                     newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) { completionHandler(nil) }
+    func urlSession(_ session: URLSession, task: URLSessionTask, didFinishCollecting metrics: URLSessionTaskMetrics) {
+        var incoming: Int64 = 0
+        var outgoing: Int64 = 0
+        for transfer in metrics.transactionMetrics where transfer.resourceFetchType != .localCache {
+            incoming += transfer.countOfResponseHeaderBytesReceived + transfer.countOfResponseBodyBytesReceived
+            outgoing += transfer.countOfRequestHeaderBytesSent + transfer.countOfRequestBodyBytesSent
+        }
+        CloudTraffic.shared.record(incoming: incoming, outgoing: outgoing, at: metrics.taskInterval.end,
+                                   history: isHistory, provider: provider)
+    }
     static func session() -> URLSession {
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 25
         config.timeoutIntervalForResource = 35
         return URLSession(configuration: config, delegate: CloudRedirects(), delegateQueue: nil)
+    }
+}
+
+// Count bytes in memory. Publish and save one summary per completed minute.
+// Average/minute and the hour total always describe exactly the same window.
+final class CloudTraffic: @unchecked Sendable {
+    enum Provider: String, Codable, CaseIterable { case tcl, lg, deye, tuya, other }
+    static let shared: CloudTraffic = {
+        let bundle = Bundle.main
+        // Standalone probes and native checks must not touch the app's ledger.
+        let command = ProcessInfo.processInfo.arguments.dropFirst().first
+        let appProcess = bundle.bundleURL.pathExtension == "app" && command != "--cli" && command != "--bluetti-helper"
+        var directory: URL?
+        if appProcess, let identifier = bundle.bundleIdentifier {
+            directory = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
+                .appendingPathComponent(identifier, isDirectory: true)
+        }
+        return CloudTraffic(storageURL: directory?.appendingPathComponent("traffic-minutes.json"),
+                            automaticallyUpdates: directory != nil)
+    }()
+    struct Volume: Codable, Equatable {
+        var incoming: Int64 = 0
+        var outgoing: Int64 = 0
+        var chartIn: Int64 = 0
+        var chartOut: Int64 = 0
+        mutating func add(_ other: Volume) {
+            incoming += other.incoming
+            outgoing += other.outgoing
+            chartIn += other.chartIn
+            chartOut += other.chartOut
+        }
+        fileprivate var valid: Bool {
+            [incoming, outgoing, chartIn, chartOut].allSatisfy { $0 >= 0 && $0 <= Int64.max / 128 }
+                && chartIn <= incoming && chartOut <= outgoing
+        }
+    }
+    struct Snapshot: Codable, Equatable {
+        let through: Date
+        let coveredSeconds: TimeInterval
+        let total: Volume
+        let averageIncomingBytesPerMinute: Double
+        let averageOutgoingBytesPerMinute: Double
+        var providers: [String: Volume]? = nil
+
+        init(through: Date, coveredSeconds: TimeInterval, total: Volume) {
+            self.through = through; self.coveredSeconds = coveredSeconds; self.total = total
+            let minutes = coveredSeconds / 60
+            averageIncomingBytesPerMinute = minutes > 0 ? Double(total.incoming) / minutes : 0
+            averageOutgoingBytesPerMinute = minutes > 0 ? Double(total.outgoing) / minutes : 0
+        }
+        var minuteLabel: String {
+            guard coveredSeconds > 0 else { return "Traffic · collecting first minute…" }
+            return "Rate  IN \(averageIncomingLabel)  OUT \(averageOutgoingLabel)"
+        }
+        var totalLabel: String {
+            guard coveredSeconds > 0 else { return "Updates once per minute" }
+            return "\(windowLabel)  IN \(incomingTotalLabel)  OUT \(outgoingTotalLabel)"
+        }
+        var averageIncomingLabel: String { CloudTraffic.dataSize(averageIncomingBytesPerMinute * 60) + "/ч" }
+        var averageOutgoingLabel: String { CloudTraffic.dataSize(averageOutgoingBytesPerMinute * 60) + "/ч" }
+        var incomingTotalLabel: String { CloudTraffic.dataSize(Double(total.incoming)) }
+        var outgoingTotalLabel: String { CloudTraffic.dataSize(Double(total.outgoing)) }
+        func forProvider(_ provider: Provider) -> Snapshot {
+            Snapshot(through: through, coveredSeconds: coveredSeconds, total: providers?[provider.rawValue] ?? Volume())
+        }
+        var windowLabel: String {
+            if coveredSeconds >= 3600 { return "Last hour" }
+            let seconds = Int(coveredSeconds)
+            if seconds < 60 { return "Last \(seconds)s" }
+            return "Last \(seconds / 60)m" + (seconds % 60 == 0 ? "" : " \(seconds % 60)s")
+        }
+        var detail: String {
+            guard coveredSeconds > 0 else { return "Counting HTTP headers and bodies locally. The first summary appears after this minute ends. No extra API requests." }
+            let minutes = (coveredSeconds / 60).formatted(.number.precision(.fractionLength(0...1)))
+            return "HTTP headers and bodies through \(through.formatted(date: .omitted, time: .shortened)). Hourly rates and totals use the same \(minutes)-minute window, including idle minutes. kB = 1,000 bytes. displayed values are rounded. Charts are already included: In \(CloudTraffic.dataSize(Double(total.chartIn))) · Out \(CloudTraffic.dataSize(Double(total.chartOut))). The current unfinished minute is not included. Saved locally once per minute; no extra API requests."
+        }
+    }
+    private struct MinuteSample: Codable {
+        let minute: Int
+        var volume: Volume
+        var providers: [String: Volume]? = nil
+        var valid: Bool {
+            guard volume.valid else { return false }
+            guard let providers else { return true } // Older totals remain unattributed.
+            guard providers.count <= Provider.allCases.count,
+                  providers.allSatisfy({ Provider(rawValue: $0.key) != nil && $0.value.valid }) else { return false }
+            var sum = Volume()
+            for value in providers.values { sum.add(value) }
+            return sum == volume
+        }
+    }
+    private struct Archive: Codable {
+        var version = 1
+        let observedSince: Date
+        let minutes: [MinuteSample]
+        let summary: Snapshot
+    }
+    private let lock = NSLock()
+    private let storageURL: URL?
+    private var buckets: [Int: Volume] = [:]
+    private var providerBuckets: [Int: [String: Volume]] = [:]
+    private var observedSince: Date
+    private var newest: Date
+    private var cached: Snapshot
+    private var timer: DispatchSourceTimer?
+
+    init(startedAt: Date = .now, storageURL: URL? = nil, automaticallyUpdates: Bool = false) {
+        let start = Date(timeIntervalSince1970: floor(startedAt.timeIntervalSince1970))
+        self.storageURL = storageURL; observedSince = start; newest = start
+        let through = Self.boundary(start)
+        cached = Snapshot(through: through, coveredSeconds: 0, total: Volume())
+        if let url = storageURL,
+           let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+           let size = attributes[.size] as? NSNumber,
+           size.intValue <= 64 * 1024,
+           let data = try? Data(contentsOf: url),
+           let saved = try? JSONDecoder().decode(Archive.self, from: data), saved.version == 1,
+           saved.summary.through <= through, through.timeIntervalSince(saved.summary.through) <= 3600,
+           saved.summary.through == Self.boundary(saved.summary.through),
+           saved.observedSince >= Date(timeIntervalSince1970: 0),
+           saved.observedSince <= saved.summary.through, saved.minutes.count <= 60,
+           Set(saved.minutes.map(\.minute)).count == saved.minutes.count,
+           saved.minutes.allSatisfy({ $0.valid && $0.minute < Self.minute(saved.summary.through)
+               && $0.minute >= Self.minute(saved.summary.through) - 60 }) {
+            observedSince = saved.observedSince
+            buckets = Dictionary(uniqueKeysWithValues: saved.minutes.filter { $0.minute >= Self.minute(through) - 60 }
+                .map { ($0.minute, $0.volume) })
+            providerBuckets = Dictionary(uniqueKeysWithValues: saved.minutes.filter { $0.minute >= Self.minute(through) - 60 }
+                .map { ($0.minute, $0.providers ?? [Provider.other.rawValue: $0.volume]) })
+            // Recompute restored averages from the saved counts, never from rounded labels.
+            cached = makeSnapshot(through: through)
+        }
+        if automaticallyUpdates {
+            let timer = DispatchSource.makeTimerSource(queue: DispatchQueue(label: "SuperBar.traffic", qos: .utility))
+            let delay = max(0.1, Self.boundary(.now).addingTimeInterval(60).timeIntervalSinceNow)
+            timer.schedule(wallDeadline: .now() + delay, repeating: 60, leeway: .milliseconds(250))
+            timer.setEventHandler { [weak self] in _ = self?.snapshot(at: .now) }
+            self.timer = timer
+            timer.resume()
+        }
+    }
+    deinit { timer?.cancel() }
+
+    private static func minute(_ date: Date) -> Int { Int(floor(date.timeIntervalSince1970 / 60)) }
+    static func boundary(_ date: Date) -> Date { Date(timeIntervalSince1970: Double(minute(date)) * 60) }
+
+    func record(incoming: Int64, outgoing: Int64, at date: Date, history: Bool = false, provider: Provider = .other) {
+        guard incoming > 0 || outgoing > 0 else { return }
+        let incoming = max(0, incoming), outgoing = max(0, outgoing)
+        let volume = Volume(incoming: incoming, outgoing: outgoing,
+                            chartIn: history ? incoming : 0, chartOut: history ? outgoing : 0)
+        lock.lock()
+        defer { lock.unlock() }
+        newest = max(newest, date)
+        let cutoff = Self.minute(newest) - 60
+        let minute = Self.minute(date)
+        guard minute >= cutoff else { return }
+        observedSince = min(observedSince, Date(timeIntervalSince1970: floor(date.timeIntervalSince1970)))
+        buckets = buckets.filter { $0.key >= cutoff }
+        providerBuckets = providerBuckets.filter { $0.key >= cutoff }
+        buckets[minute, default: Volume()].add(volume)
+        providerBuckets[minute, default: [:]][provider.rawValue, default: Volume()].add(volume)
+        // Late metrics can correct an earlier bucket, but never republish or
+        // write per request. They join the next minute's consistent summary.
+    }
+
+    func snapshot(at now: Date) -> Snapshot {
+        lock.lock()
+        defer { lock.unlock() }
+        let through = Self.boundary(now)
+        guard through != cached.through else { return cached }
+        if through < cached.through { // A wall-clock correction must not show a future summary.
+            buckets = buckets.filter { $0.key < Self.minute(through) }
+            providerBuckets = providerBuckets.filter { $0.key < Self.minute(through) }
+            observedSince = min(observedSince, through)
+        }
+        newest = now
+        buckets = buckets.filter { $0.key >= Self.minute(through) - 60 }
+        providerBuckets = providerBuckets.filter { $0.key >= Self.minute(through) - 60 }
+        cached = makeSnapshot(through: through)
+        save()
+        return cached
+    }
+    private func makeSnapshot(through: Date) -> Snapshot {
+        let start = max(observedSince, through.addingTimeInterval(-3600))
+        var total = Volume()
+        var providers: [String: Volume] = [:]
+        for (minute, volume) in buckets where minute >= Self.minute(start) && minute < Self.minute(through) {
+            total.add(volume)
+            for (provider, value) in providerBuckets[minute] ?? [Provider.other.rawValue: volume] {
+                providers[provider, default: Volume()].add(value)
+            }
+        }
+        var snapshot = Snapshot(through: through, coveredSeconds: max(0, through.timeIntervalSince(start)), total: total)
+        snapshot.providers = providers
+        return snapshot
+    }
+    private func save() {
+        guard let url = storageURL else { return }
+        let first = max(Self.minute(observedSince), Self.minute(cached.through) - 60)
+        let end = Self.minute(cached.through)
+        let samples = first < end ? (first..<end).map {
+            MinuteSample(minute: $0, volume: buckets[$0] ?? Volume(), providers: providerBuckets[$0] ?? [:])
+        } : []
+        let archive = Archive(observedSince: observedSince, minutes: samples, summary: cached)
+        do {
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true,
+                                                    attributes: [.posixPermissions: 0o700])
+            try JSONEncoder().encode(archive).write(to: url, options: .atomic)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        } catch { NSLog("Could not save traffic summary: %@", error.localizedDescription) }
+    }
+    private static func dataSize(_ bytes: Double) -> String {
+        let mega = bytes >= 1_000_000
+        let value = bytes / (mega ? 1_000_000 : 1_000)
+        return value.formatted(.number.locale(Locale(identifier: "ru_RU")).precision(.fractionLength(1))) + (mega ? " mB" : " kB")
     }
 }
 
@@ -23,10 +255,13 @@ enum CloudResponse {
     }
     static let maximumBytes = 8 * 1024 * 1024
     static func data(for request: URLRequest, using session: URLSession,
-                     maximumBytes: Int = maximumBytes) async throws -> (Data, URLResponse) {
+                     maximumBytes: Int = maximumBytes, history: Bool = false,
+                     provider: CloudTraffic.Provider = .other) async throws -> (Data, URLResponse) {
         guard maximumBytes > 0 else { throw Failure.tooLarge }
         try Task.checkCancellation()
-        let (bytes, response) = try await session.bytes(for: request)
+        // Task-level attribution also covers injected sessions and authentication
+        // retries. It overrides the session delegate rather than counting twice.
+        let (bytes, response) = try await session.bytes(for: request, delegate: CloudRedirects(provider: provider, isHistory: history))
         defer { bytes.task.cancel() }
         return try await withTaskCancellationHandler {
             try Task.checkCancellation()

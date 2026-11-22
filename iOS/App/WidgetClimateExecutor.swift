@@ -69,7 +69,7 @@ actor WidgetClimateExecutor {
     }
 
     private static func validate(_ metric: WidgetMetric, command: Command) throws {
-        guard let control = metric.control, control.enabled(at: Date()) else {
+        guard metric.online != false, let control = metric.control, control.enabled(at: Date()) else {
             throw ACError("Open Super Bar to refresh this conditioner's status.")
         }
         switch command {
@@ -115,21 +115,21 @@ actor WidgetClimateExecutor {
         throw ACError("LG has not confirmed this change. Refresh to check the conditioner.")
     }
 
-    // Main-actor read/modify/write also serializes with PhoneModel.saveWidgets.
+    // Merge the confirmed reading with the latest shared snapshot.
     @MainActor private static func saveConfirmed(_ metric: WidgetMetric) throws {
-        var snapshot = WidgetCache.read()
-        guard let index = snapshot.climate.firstIndex(where: { $0.brand == metric.brand && $0.id == metric.id }) else {
-            throw ACError("The change was confirmed. Open Super Bar to refresh the widget.")
+        try WidgetCache.update { snapshot in
+            guard let index = snapshot.climate.firstIndex(where: { $0.brand == metric.brand && $0.id == metric.id }) else {
+                throw ACError("The change was confirmed. Open Super Bar to refresh the widget.")
+            }
+            snapshot.climate[index] = metric.retainingReading(from: snapshot.climate[index])
         }
-        snapshot.climate[index] = metric
-        try WidgetCache.write(snapshot)
         defer {
             WidgetCenter.shared.reloadAllTimelines()
             NotificationCenter.default.post(name: .init("SuperBarWidgetClimateChanged"), object: nil,
                                             userInfo: ["brand": metric.brand ?? "", "deviceID": metric.id])
         }
         var selection = WidgetClimateSelection.read()
-        if let selected = selection.selected(in: snapshot), selected.brand == metric.brand, selected.id == metric.id {
+        if let selected = selection.selected(in: WidgetCache.read()), selected.brand == metric.brand, selected.id == metric.id {
             selection.pickingTemperature = false
             selection.message = nil
             try WidgetClimateSelection.write(selection)

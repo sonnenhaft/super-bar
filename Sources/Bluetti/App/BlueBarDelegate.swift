@@ -1,9 +1,13 @@
 import AppKit
 import CoreFoundation
+import CoreBluetooth
 
-final class BlueBarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
+final class BlueBarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, CBCentralManagerDelegate {
     let defaults = UserDefaults.standard
     var bluetoothActivated = false
+    private var permissionManager: CBCentralManager?
+    var needsBluetoothPermission: Bool { !demo && CBManager.authorization != .allowedAlways }
+    private(set) var bluetoothMessage: String?
     var streaming = false
     let demo = CommandLine.arguments.contains("--demo")
     let readout = NSButton()
@@ -20,8 +24,19 @@ final class BlueBarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var pollTimer: Timer?
     var ageTimer: Timer?
     var job: CLIJob?
+    var stationPreview: (key: String, job: CLIJob)?
+    var previewAfter: [String: Date] = [:]
+    var previewDevices: [String: BluettiNativeDevice] = [:]
+    var primaryDiscoveryKey: String?
+    enum StationContact { case sample(Date), failed }
+    var stationContacts: [String: StationContact] = [:]
+    var previewInterval: TimeInterval { max(30, refreshInterval) }
     var generation = 0
     var pendingRefresh = false
+    enum ManualRead { case queued, reading }
+    var manualRead: ManualRead?
+    var isManuallyRefreshing: Bool { manualRead != nil }
+    var lastManualRefreshError: String?
     let maximumReadRetries = 3
     var consecutiveReadFailures = 0
     var nextReadRetryAt: Date?
@@ -32,6 +47,23 @@ final class BlueBarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                                                        fallbackStatusURL: self.demo ? nil : self.cacheURL)
     let aliasField = BlueBarAliasEditor(frame: .zero)
     var stationRows: [StationMenuEntry] = []
+    var connectedStationKey: String?
+    func stationReachability(_ key: String, now: Date = Date()) -> Bool? {
+        if sleeping || quitting || bluetoothMessage != nil { return false }
+        let maxAge = selectedKnownStation?.key == key ? maximumAge : 3 * previewInterval
+        switch stationContacts[key] {
+        case .sample(let date):
+            return (-5..<maxAge).contains(now.timeIntervalSince(date))
+        case .failed:
+            return false
+        case nil:
+            if let station = stationDirectory.stations.first(where: { $0.key == key }),
+               let sample = readingStore.savedSnapshot(for: station, knownStations: stationDirectory.stations),
+               let observed = sample["observed_at"] as? Double, now.timeIntervalSince1970 - observed >= maxAge { return false }
+            return nil
+        }
+    }
+    func stationIsOffline(_ key: String) -> Bool { stationReachability(key) != true }
     var sleeping = false
     var quitting = false
     var awaitingFirstRead = true
@@ -41,6 +73,8 @@ final class BlueBarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var hasConnectionFailure = false
     var runtimeFrozenAt: Date?
     var loadHistory = LoadChartHistory()
+    @MainActor lazy var outputHistory = DevicePowerHistory(provider: "bluetti", preferences: demo ? nil : defaults,
+                                                          maximumGap: 360)
     let loadGraph = LoadGraphView()
 
     let menu = NSMenu()
@@ -107,7 +141,7 @@ final class BlueBarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     var helperURL: URL {
         return Bundle.main.executableURL
-            ?? Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/BluettiBar")
+            ?? Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/SuperBar")
     }
 
     private func buildMenu() {
@@ -127,24 +161,73 @@ final class BlueBarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         workspace.addObserver(self, selector: #selector(willSleep), name: NSWorkspace.willSleepNotification, object: nil)
         workspace.addObserver(self, selector: #selector(didWake), name: NSWorkspace.didWakeNotification, object: nil)
         restartAgeTimer()
-
+        // OS permission survives app launches independently of cloud credentials.
+        // Checking this property cannot open a Bluetooth permission dialog.
+        if demo { activateBluetooth() }
+        else if CBManager.authorization != .notDetermined { observeBluetoothPermission() }
     }
 
-    // Opening BLUETTI is the first user action that needs a station connection.
-    // Startup, wake and timers must not request Bluetooth permission before it.
+    private func observeBluetoothPermission() {
+        if permissionManager == nil {
+            // Create the manager in Super Bar so the system prompt belongs to the app.
+            permissionManager = CBCentralManager(delegate: self, queue: .main,
+                options: [CBCentralManagerOptionShowPowerAlertKey: false])
+        }
+    }
+
     func activateBluetooth() {
-        guard !bluetoothActivated else { return }
-        bluetoothActivated = true
-        restartPollTimer()
-        refresh()
+        if demo { bluetoothActivated = true; refresh(); return }
+        observeBluetoothPermission()
+        if CBManager.authorization == .denied {
+            if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Bluetooth") {
+                NSWorkspace.shared.open(url)
+            }
+        }
+    }
+
+    func centralManagerDidUpdateState(_ central: CBCentralManager) {
+        if central.state == .poweredOn, CBManager.authorization == .allowedAlways {
+            bluetoothMessage = nil
+            if !bluetoothActivated {
+                bluetoothActivated = true
+                resetReadRetryBudget()
+                pendingRefresh = true
+                runQueuedWork()
+            }
+        } else {
+            switch central.state {
+            case .poweredOff: bluetoothMessage = "Turn on Bluetooth in System Settings."
+            case .unsupported: bluetoothMessage = "Bluetooth is unavailable on this Mac."
+            case .unauthorized: bluetoothMessage = "Allow Bluetooth for Super Bar in System Settings."
+            default: bluetoothMessage = nil
+            }
+            bluetoothActivated = false
+            generation += 1
+            pendingRefresh = false
+            manualRead = nil
+            connectedStationKey = nil
+            stationContacts.removeAll()
+            previewDevices.removeAll()
+            previewAfter.removeAll()
+            restartPollTimer()
+            job?.cancel()
+            stationPreview?.job.cancel()
+        }
+        render()
     }
 
     @objc private func willSleep(_ notification: Notification) {
         closeMenu()
         sleeping = true
+        manualRead = nil
+        connectedStationKey = nil
+        stationContacts.removeAll()
+        previewDevices.removeAll()
+        previewAfter.removeAll()
         generation += 1
         pendingRefresh = false
         job?.cancel(reason: "Mac is sleeping.")
+        stationPreview?.job.cancel()
         fail("Mac is sleeping; Bluetooth reading paused.")
         rebuildStationMenu()
     }
@@ -165,10 +248,12 @@ final class BlueBarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         quitting = true
+        stationPreview?.job.cancel()
+        manualRead = nil
         pollTimer?.invalidate()
         ageTimer?.invalidate()
         guard let running = job else { return .terminateNow }
-        running.cancel(reason: "BluettiBar is quitting.")
+        running.cancel(reason: "Super Bar is quitting.")
         DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak self] in
             guard let self = self, self.quitting, self.job != nil else { return }
             self.job?.forceStop()
@@ -179,10 +264,11 @@ final class BlueBarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         closeMenu()
+        stationPreview?.job.forceStop()
         job?.forceStop()
         freezeRuntime()
         saveReadingState()
-        writeFailure("BluettiBar is not running.")
+        writeFailure("Super Bar is not running.")
         NSWorkspace.shared.notificationCenter.removeObserver(self)
     }
 
@@ -214,13 +300,16 @@ extension BlueBarDelegate {
         }
         lastGood = reading
         lastGoodSnapshot = snapshot
-        stationDirectory.ingestStatus(snapshot)
+        let station = stationDirectory.ingestStatus(snapshot)
+        if demo && !restoring { connectedStationKey = station?.key }
         if restoring {
             loadHistory.markGap()
             lastError = "Waiting for a fresh Bluetooth reading."
             hasConnectionFailure = false
             return true
         }
+        finishManualRead(error: nil)
+        if let station { stationContacts[station.key] = .sample(reading.measuredAt) }
         // Older versions allowed a partial CLI selector. Once a real reading
         // identifies it, persist the exact target so restart can restore it.
         if !demo && !identifier.isEmpty {
@@ -234,6 +323,11 @@ extension BlueBarDelegate {
         refreshState = awaitingFirstRead || lastError != nil ? .connected : .refreshed
         awaitingFirstRead = false
         loadHistory.append(timestamp: reading.measuredAt, watts: reading.outputWatts, maximumGap: maximumAge)
+        if let station {
+            MainActor.assumeIsolated {
+                outputHistory.record(reading.outputWatts, for: station.key, at: reading.measuredAt)
+            }
+        }
         lastError = nil
         restartAgeTimer()
         hasConnectionFailure = false
@@ -348,7 +442,7 @@ extension BlueBarDelegate {
             try data.write(to: cacheURL, options: .atomic)
             try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: cacheURL.path)
         } catch {
-            NSLog("BluettiBar: cannot write status cache: %@", error.localizedDescription)
+            NSLog("Super Bar: cannot write status cache: %@", error.localizedDescription)
         }
     }
 }

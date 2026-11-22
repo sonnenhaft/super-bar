@@ -16,9 +16,10 @@ struct DailyEnergyReport: Codable, Equatable {
     let attempted: TimeInterval?
     let updated: TimeInterval
     let days: [EnergyDay]
-    var meters: [MeterObservation]? = nil
     var hours: [MeterHour]? = nil
     var lastHourlyRequest: TimeInterval? = nil
+    var counter: TCLCounterWindow? = nil
+    var counterHistory: [TCLCounterWindow]? = nil
 }
 
 struct EnergyCache: Codable, Equatable {
@@ -29,8 +30,8 @@ struct EnergyCache: Codable, Equatable {
         return Self(devices: cache.devices.prefix(64).map { report in
             DailyEnergyReport(id: report.id, name: report.name, state: report.state,
                 attempted: report.attempted, updated: report.updated, days: Array(report.days.suffix(95)),
-                meters: report.meters.map { Array($0.suffix(400)) },
-                hours: report.hours.map { Array($0.suffix(72)) }, lastHourlyRequest: report.lastHourlyRequest)
+                hours: report.hours.map { Array($0.suffix(72)) }, lastHourlyRequest: report.lastHourlyRequest, counter: report.counter,
+                counterHistory: report.counterHistory.map { Array($0.suffix(200)) })
         })
     }
 
@@ -62,19 +63,6 @@ final class EnergyHistory: ObservableObject {
     private let files = DispatchQueue(label: "superbar.tcl.energy-files", qos: .utility)
     @Published private var cloud: [DailyEnergyReport] = []
     @Published private var samples: [String: [WattSample]] = [:]
-    private var ids: [String: String] = [:]
-
-    @Published private(set) var cardEnergy: [String: String] = [:]
-
-    private func updateCardEnergy() {
-        let names = Set(ids.keys).union(cloud.map(\.name)).union(samples.keys)
-        let now = Date()
-        let values = names.reduce(into: [String: String]()) { result, name in
-            result[name] = barEnergy(for: name, now: now)?.text
-        }
-        if values != cardEnergy { cardEnergy = values }
-    }
-
     private var restoring = true
     private var pendingIngest: ([[String: Any]], Date)?
     private var cloudReadQueued = false
@@ -123,7 +111,6 @@ final class EnergyHistory: ObservableObject {
                 self.restoring = false
                 if let (devices, now) = self.pendingIngest { self.ingest(devices, now: now) }
                 self.pendingIngest = nil
-                self.updateCardEnergy()
             }
         }
         loadCloud()
@@ -144,30 +131,28 @@ final class EnergyHistory: ObservableObject {
                 self.cloudRevision = revision
                 guard self.cloud != cache.devices else { return }
                 self.cloud = cache.devices
-                self.updateCardEnergy()
             }
         }
     }
 
-    func report(for device: String) -> DailyEnergyReport? {
-        if let id = ids[device] { return cloud.first { $0.id == id } }
-        return cloud.first { $0.name == device }
-    }
+    func report(for id: String) -> DailyEnergyReport? { cloud.first { $0.id == id } }
 
-    func watts(for device: String, now: Date = Date()) -> [WattSample] {
-        let key = ids[device] ?? report(for: device)?.id ?? device
+    func watts(for id: String, now: Date = Date()) -> [WattSample] {
         let cutoff = now.timeIntervalSince1970 - 86400
-        return (samples[key] ?? []).filter { $0.timestamp >= cutoff && $0.timestamp <= now.timeIntervalSince1970 }
+        return (samples[id] ?? []).filter { $0.timestamp >= cutoff && $0.timestamp <= now.timeIntervalSince1970 }
     }
 
-    func barEnergy(for device: String, now: Date = Date()) -> (text: String, detail: String)? {
-        let key = ids[device] ?? report(for: device)?.id ?? device
-        if let latest = samples[key]?.last(where: { $0.timestamp <= now.timeIntervalSince1970 }), now.timeIntervalSince1970 - latest.timestamp <= 300 {
-            let time = EnergyPeriod.formatter("HH:mm").string(from: Date(timeIntervalSince1970: latest.timestamp))
-            return (DisplayUnits.power(latest.watts), "Power measured at " + time + ".")
+    func power(for ac: Aircon, online: Bool, now: Date = Date()) -> (label: String, text: String, menuText: String)? {
+        guard online, ac.online == true, !ac.failed else { return nil }
+        if let watts = ac.measuredWatts(at: now) {
+            let text = DisplayUnits.power(watts)
+            return ("Power", text, text)
         }
-        guard let report = report(for: device), let result = EnergyPeriod.reading(report, now: now) else { return nil }
-        return (result.text, result.detail)
+        guard ac.power == true, let counter = report(for: ac.id)?.counter,
+              counter.first.at >= (ac.powerChangedAt ?? 0),
+              let average = counter.average(at: now) else { return nil }
+        let text = "≈ " + DisplayUnits.power(average.watts)
+        return ("Avg \(average.minutes)m", text, text + " · \(average.minutes)m")
     }
 
     // Keep a point only at the device's own measurement time. An unchanged
@@ -177,14 +162,12 @@ final class EnergyHistory: ObservableObject {
         let cutoff = now.timeIntervalSince1970 - 86400
         var retained = samples.mapValues { $0.filter { $0.timestamp >= cutoff && $0.timestamp <= now.timeIntervalSince1970 } }
                               .filter { !$0.value.isEmpty }
-        ids.removeAll(keepingCapacity: true)
+        var currentKeys = Set<String>()
         var changed = retained.values.reduce(0) { $0 + $1.count } != samples.values.reduce(0) { $0 + $1.count }
         for device in devices {
-            guard let name = device["name"] as? String else { continue }
-            if let id = device["id"] as? String { ids[name] = id }
-            let key = ids[name] ?? report(for: name)?.id ?? name
-            guard let reported = device["reported"] as? [String: Any],
-                  let watts = Self.watts(in: reported),
+            guard let key = device["id"] as? String ?? device["name"] as? String else { continue }
+            currentKeys.insert(key)
+            guard let watts = Self.reportedWatts(device),
                   let timestamp = Self.number(device["watts_reported_at"]),
                   timestamp >= cutoff, timestamp <= now.timeIntervalSince1970 else { continue }
             var points = retained[key] ?? []
@@ -204,7 +187,6 @@ final class EnergyHistory: ObservableObject {
         }
         if changed {
             if retained.count > Self.maximumCachedDevices {
-                let currentKeys = Set(ids.values).union(ids.keys)
                 let keys = retained.keys.sorted {
                     if currentKeys.contains($0) != currentKeys.contains($1) { return currentKeys.contains($0) }
                     return $0 < $1
@@ -218,8 +200,16 @@ final class EnergyHistory: ObservableObject {
                 try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: wattFile.path)
             }
         }
-        updateCardEnergy()
         loadCloud()
+    }
+
+    static func reportedWatts(_ row: [String: Any]) -> Double? {
+        guard let report = row["reported"] as? [String: Any] else { return nil }
+        if let field = row["watts_field"] as? String {
+            guard wattFields.contains(field) else { return nil }
+            return watts(in: [field: report[field] ?? NSNull()])
+        }
+        return watts(in: report)
     }
 
     static let wattFields = ["electricPowerW", "activePowerW", "instantaneousPowerW", "powerW"]
@@ -242,38 +232,29 @@ final class EnergyHistory: ObservableObject {
     }
 }
 
-#if os(macOS)
 struct EnergyChartView: View {
     @ObservedObject var history: EnergyHistory
     let device: String
     var body: some View {
         let now = Date()
         let report = history.report(for: device)
-        let period = report.flatMap { EnergyPeriod.reading($0, now: now) }
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Label { Text("Since 9am").foregroundStyle(.secondary) } icon: { Image(systemName:"bolt.fill").foregroundStyle(Color(nsColor:BarTheme.energy)) }
-                Spacer()
-                Text(period?.text ?? "—").fontWeight(.semibold).monospacedDigit()
-            }.font(.callout).help(period?.detail ?? "Waiting for meter readings")
-            EnergyCharts(days: days(report, now: now),
-                         power: history.watts(for:device,now:now).map { PowerPoint(time:Date(timeIntervalSince1970:$0.timestamp),watts:$0.watts) },
-                         currentDay: true, powerIntervals: report.map { EnergyPeriod.powerIntervals($0, now: now) } ?? [])
-        }
-    }
-    private func days(_ report: DailyEnergyReport?, now: Date) -> [EnergyDayPoint] {
-        var calendar = Calendar(identifier:.gregorian)
-        calendar.timeZone = TimeZone(identifier:"Asia/Manila")!
-        let formatter = DateFormatter()
-        formatter.calendar = calendar; formatter.timeZone = calendar.timeZone
-        formatter.locale = Locale(identifier:"en_US_POSIX"); formatter.dateFormat = "yyyy-MM-dd"
-        let values = Dictionary((report?.days ?? []).map { ($0.day,$0.kwh) },uniquingKeysWith:{ _,last in last })
-        return (-(ChartHistory.dayCount - 1)...0).compactMap { offset in
-            guard let date = calendar.date(byAdding:.day,value:offset,to:now) else { return nil }
-            let key = formatter.string(from:date)
-            return EnergyDayPoint(key:key,label:offset == 0 ? "Today" : String(calendar.component(.day,from:date)),
-                                  wattHours:values[key].map { $0 * 1000 })
+        VStack(alignment: .leading, spacing: 8) {
+            if let day = report?.days.last {
+                HStack {
+                    Text(EnergyPeriod.dayLabel(day.day, now: now)).foregroundStyle(.secondary)
+                    Spacer()
+                    Text(DisplayUnits.energy(day.kwh * 1000)).monospacedDigit()
+                }.font(.callout)
+            }
+            EnergyCharts(days: (report?.days ?? []).map {
+                EnergyDayPoint(key: $0.day, label: String($0.day.suffix(2)), wattHours: $0.kwh * 1000)
+            }, power: history.watts(for: device, now: now).map {
+                PowerPoint(time: Date(timeIntervalSince1970: $0.timestamp), watts: $0.watts)
+            }, powerIntervals: report.map { EnergyPeriod.powerIntervals($0, now: now) } ?? [])
+            if (report?.hours ?? []).isEmpty {
+                Text("TCL provides daily totals. Recent power is estimated from changes in consumption while Super Bar runs.")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
         }
     }
 }
-#endif

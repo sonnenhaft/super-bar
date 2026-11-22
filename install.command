@@ -34,8 +34,8 @@ step "Verifying the signature before installation" codesign --verify --deep --st
 plist="$stage/Super Bar.app/Contents/Info.plist"
 version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$plist")"
 build="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$plist")"
-expected="$(shasum -a 256 "$source_app/Contents/MacOS/SuperBar" | cut -d ' ' -f 1)"
-actual="$(shasum -a 256 "$stage/Super Bar.app/Contents/MacOS/SuperBar" | cut -d ' ' -f 1)"
+expected="$("$stage/lifecycle" checksum "$source_app/Contents/MacOS/SuperBar")"
+actual="$("$stage/lifecycle" checksum "$stage/Super Bar.app/Contents/MacOS/SuperBar")"
 [[ "$actual" == "$expected" ]] || { echo 'The build is damaged; installation cancelled.' >&2; exit 1; }
 step "Closing previous menu bar apps" "$stage/lifecycle" stop
 # The app migrates legacy credentials directly into Keychain after launch.
@@ -70,8 +70,7 @@ if ! step "Launching and verifying the new version" "$stage/lifecycle" launch "$
   rollback || true
   exit 1
 fi
-actual="$(shasum -a 256 "$dest/Contents/MacOS/SuperBar" | cut -d ' ' -f 1)"
-if [[ "$actual" != "$expected" ]]; then
+if ! actual="$("$stage/lifecycle" checksum "$dest/Contents/MacOS/SuperBar")" || [[ "$actual" != "$expected" ]]; then
   echo 'Installed build verification failed.' >&2
   rollback || true
   exit 1

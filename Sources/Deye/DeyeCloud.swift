@@ -35,6 +35,7 @@ actor DeyeCloud {
     private let ownsSession: Bool
     private var account: Session?
     private var recoveryFailed = false
+    private var renewal: Task<Void, Error>?
 
     init(file: URL, importFile: URL? = nil, network: URLSession? = nil, vault: any CredentialVault = CloudCredentialStore.defaultVault) {
         self.credentials = CloudCredentialStore(file: file, key: "deye-session", vault: vault)
@@ -88,7 +89,7 @@ actor DeyeCloud {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         }
         let data: Data, response: URLResponse
-        do { (data, response) = try await CloudResponse.data(for: request, using: network) }
+        do { (data, response) = try await CloudResponse.data(for: request, using: network, history: path.hasPrefix("/maintain-s/history/"), provider: .deye) }
         catch { if Task.isCancelled { throw CancellationError() }; throw DeyeError.message("Could not connect to Deye Cloud.") }
         guard let http = response as? HTTPURLResponse else { throw DeyeError.message("Invalid Deye response.") }
         if http.statusCode == 401 || (!authenticated && [400,403].contains(http.statusCode)) { throw DeyeError.unauthorized }
@@ -119,6 +120,13 @@ actor DeyeCloud {
         try acceptTokens(data, refreshing: false)
     }
     private func recover() async throws {
+        if let renewal { return try await renewal.value }
+        let task = Task { try await renewToken() }
+        renewal = task
+        defer { renewal = nil }
+        try await task.value
+    }
+    private func renewToken() async throws {
         guard !recoveryFailed else { throw DeyeError.unauthorized }
         if let token = account?.refresh_token, !token.isEmpty {
             do {
@@ -135,9 +143,10 @@ actor DeyeCloud {
         try load()
         guard !recoveryFailed else { throw DeyeError.unauthorized }
         if let expiry = account?.expires_at, expiry <= Date().timeIntervalSince1970 + 60 { try await recover() }
+        let token = account?.token
         do { return try await request(path, body: body, query: query) }
         catch DeyeError.unauthorized {
-            try await recover()
+            if account?.token == token { try await recover() }
             do { return try await request(path, body: body, query: query) }
             catch DeyeError.unauthorized { recoveryFailed = true; throw DeyeError.unauthorized }
         }
@@ -149,7 +158,7 @@ actor DeyeCloud {
             var request = URLRequest(url: URL(string: base + "/")!)
             request.setValue("Mozilla/5.0", forHTTPHeaderField: "User-Agent")
             let response: URLResponse
-            do { (_, response) = try await CloudResponse.data(for: request, using: network) }
+            do { (_, response) = try await CloudResponse.data(for: request, using: network, provider: .deye) }
             catch { throw DeyeError.message("Could not connect to Deye Cloud.") }
             guard let http = response as? HTTPURLResponse else { throw DeyeError.message("Invalid Deye response.") }
             if (300..<400).contains(http.statusCode), let target = http.value(forHTTPHeaderField: "Location"),
@@ -176,7 +185,7 @@ actor DeyeCloud {
         try? load()
         return (account?.email ?? "", account?.base)
     }
-    func snapshot(previous: DeyeReading?, includeHistory: Bool) async throws -> DeyeReading {
+    func current(previous: DeyeReading?) async throws -> DeyeReading {
         var stationID = previous?.id
         var name = previous?.name ?? "Deye"
         if stationID == nil {
@@ -190,54 +199,51 @@ actor DeyeCloud {
         guard let id = stationID, let current = try await call("/maintain-s/operating/system/\(id)") as? [String: Any] else { throw DeyeError.message("Invalid Deye readings.") }
         var stamp = Self.number(current["lastUpdateTime"] ?? current["collectionTime"])
         if let raw = stamp, raw > 1e12 { stamp = raw / 1000 }
-        var days = previous?.days ?? []
-        var curve = previous?.curve
-        if includeHistory {
-            days = []
-            var calendar = Calendar(identifier: .gregorian)
-            calendar.timeZone = TimeZone(identifier: "Asia/Manila")!
-            let formatter = DateFormatter()
-            formatter.calendar = calendar; formatter.timeZone = calendar.timeZone
-            formatter.locale = Locale(identifier: "en_US_POSIX"); formatter.dateFormat = "yyyy-MM-dd"
-            for ago in -(ChartHistory.accountingDayCount(calendar: calendar) - 1)...0 {
-                try Task.checkCancellation()
-                let day = calendar.date(byAdding: .day, value: ago, to: Date())!
-                let components = calendar.dateComponents([.year, .month, .day], from: day)
-                let key = formatter.string(from: day)
-                if ago < -1, let lastHistoryDay = previous?.historyDay, lastHistoryDay != key,
-                   let cached = previous?.days.first(where: { $0.day == key }), cached.kwh != nil {
-                    days.append(cached)
-                    continue
-                }
-                var value: Double?
-                do {
-                    let data = try await call("/maintain-s/history/batteryPower/\(id)/stats/daily", query: ["year":String(components.year!), "month":String(components.month!), "day":String(components.day!)]) as? [String: Any]
-                    value = Self.number((data?["statistics"] as? [String: Any])?["generationValue"])
-                    if ago >= -1, let rows = data?["records"] as? [[String: Any]] {
-                        let fetched: [PowerPoint] = rows.compactMap { row in
-                            guard let time = CloudValue.date(row["dateTime"]), calendar.isDate(time, inSameDayAs: day),
-                                  let watts = Self.number(row["generationPower"]) else { return nil }
-                            return PowerPoint(time: time, watts: watts)
-                        }.sorted { $0.time < $1.time }
-                        curve = (curve ?? []).filter { !calendar.isDate($0.time, inSameDayAs: day) } + fetched
-                    }
-                } catch is CancellationError { throw CancellationError() }
-                catch { value = nil }
-                days.append(DeyeDay(day: formatter.string(from: day), kwh: value))
-            }
-        }
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = TimeZone(identifier: "Asia/Manila")!
-        let formatter = DateFormatter(); formatter.calendar = calendar; formatter.timeZone = calendar.timeZone; formatter.dateFormat = "yyyy-MM-dd"
-        let today = formatter.string(from: Date())
-        if let value = Self.number(current["generationValue"]) {
-            days.removeAll { $0.day == today }
-            days.append(DeyeDay(day: today, kwh: value))
-        }
-        curve = curve?.filter { $0.time >= Date().addingTimeInterval(-90000) && $0.time <= Date() }.sorted { $0.time < $1.time }
-        return DeyeReading(id: stationID!, name: String(name.filter { !$0.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) }.prefix(160)),
+        return DeyeReading(id: id, name: String(name.filter { !$0.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) }.prefix(160)),
                            power_w: Self.number(current["generationPower"]), today_kwh: Self.number(current["generationValue"]),
-                           status: current["networkStatus"] as? String ?? "UNKNOWN", measured_at: stamp, days: days, curve: curve,
-                           historyDay: includeHistory ? today : previous?.historyDay)
+                           status: current["networkStatus"] as? String ?? "UNKNOWN", measured_at: stamp, days: [])
+    }
+
+    func history(for previous: DeyeReading) async throws -> DeyeReading {
+        let id = previous.id
+        var result = previous
+        result.days = []
+        result.curve = []
+        let calendar = ChartHistory.calendar
+        let formatter = ChartHistory.formatter("yyyy-MM-dd")
+        let now = Date()
+        for ago in -(ChartHistory.accountingDayCount(now: now) - 1)...0 {
+            try Task.checkCancellation()
+            let day = calendar.date(byAdding: .day, value: ago, to: now)!
+            let components = calendar.dateComponents([.year, .month, .day], from: day)
+            let key = formatter.string(from: day)
+            let cached = previous.days.first { $0.day == key }
+            let yesterdayCurveSaved = ago == -1 && previous.finalizedCurveDay == key
+            if (ago < -1 || yesterdayCurveSaved), let lastHistoryDay = previous.historyDay, lastHistoryDay > key,
+               let cached, cached.kwh != nil {
+                result.days.append(cached)
+                continue
+            }
+            var value: Double?
+            do {
+                let data = try await call("/maintain-s/history/batteryPower/\(id)/stats/daily", query: ["year":String(components.year!), "month":String(components.month!), "day":String(components.day!)]) as? [String: Any]
+                value = Self.number((data?["statistics"] as? [String: Any])?["generationValue"])
+                if ago >= -1, let rows = data?["records"] as? [[String: Any]] {
+                    let fetched: [PowerPoint] = rows.compactMap { row in
+                        guard let time = CloudValue.date(row["dateTime"]), calendar.isDate(time, inSameDayAs: day),
+                              let watts = Self.number(row["generationPower"]) else { return nil }
+                        return PowerPoint(time: time, watts: watts)
+                    }.sorted { $0.time < $1.time }
+                    if !fetched.isEmpty {
+                        result.curve?.append(contentsOf: fetched)
+                        if ago == -1 { result.finalizedCurveDay = key }
+                    }
+                }
+            } catch is CancellationError { throw CancellationError() }
+            catch { value = nil }
+            result.days.append(DeyeDay(day: key, kwh: value ?? cached?.kwh))
+        }
+        result.historyDay = formatter.string(from: now)
+        return result
     }
 }

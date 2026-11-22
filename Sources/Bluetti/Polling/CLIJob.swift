@@ -96,7 +96,7 @@ final class CLIJob {
     private var stopReason: String?
     private var finished = false
 
-    func run(executable: URL, arguments: [String],
+    func run(executable: URL, arguments: [String], sampleInterval: TimeInterval = 0,
              onSample: (([String: Any]) -> Void)? = nil, completion: @escaping (CLIResult) -> Void) {
         DispatchQueue.global(qos: .utility).async {
             let task = Process()
@@ -142,7 +142,10 @@ final class CLIJob {
             DispatchQueue.global(qos: .utility).async {
                 if let onSample = onSample {
                     outCapture.drainSamples(outPipe.fileHandleForReading, receive: { sample in
-                        if sample["ok"] as? Bool == true { watchdog.schedule(deadline: .now() + 13.5) }
+                        if sample["ok"] as? Bool == true {
+                            watchdog.schedule(deadline: .now() + sampleInterval + 13.5)
+                        }
+                        if sample["phase"] as? String == "reading" { watchdog.schedule(deadline: .now() + 13.5) }
                         onSample(sample)
                     }, invalid: { self.cancel(reason: "Invalid Bluetooth sample stream.") })
                 } else {
@@ -184,12 +187,11 @@ final class CLIJob {
         }
     }
 
-    func requestImmediateRead() {
+    func requestImmediateRead() -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        if stopReason == nil, let task = process, task.isRunning {
-            _ = Darwin.kill(task.processIdentifier, SIGUSR1)
-        }
+        guard stopReason == nil, let task = process, task.isRunning else { return false }
+        return Darwin.kill(task.processIdentifier, SIGUSR1) == 0
     }
 
     func forceStop() {

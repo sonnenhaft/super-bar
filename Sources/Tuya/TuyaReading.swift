@@ -1,5 +1,44 @@
 import Foundation
 
+struct TuyaPowerDP: Codable, Equatable {
+    let id: Int
+    /// Nil denotes the supported AC meter's packed eight-byte phase measurement.
+    let wattsPerUnit: Double?
+
+    static func reported(in schema: [[String: Any]], product: String?) -> Self? {
+        let units = ["W": 1.0, "w": 1, "kW": 1000, "kw": 1000, "KW": 1000, "mW": 0.001, "MW": 1_000_000]
+        let codes = schema.compactMap { $0["code"] as? String }
+        let phases = codes.filter { ["phase_a", "phase_b", "phase_c"].contains($0) }
+        var candidates = ["total_power", "total_active_power", "power_total", "cur_power", "active_power", "power"]
+        if !codes.contains("power_b") && !codes.contains("power_c") && !phases.contains("phase_b") && !phases.contains("phase_c") {
+            candidates += ["power_a", "phase_a"]
+        }
+        for code in candidates {
+            guard let field = schema.first(where: { $0["code"] as? String == code }),
+                  let id = CloudValue.number(field["id"]).flatMap(Int.init(exactly:)), (1..<10_000).contains(id) else { continue }
+            if code == "phase_a", product == "i5mqmxkho1vahdt2" {
+                return Self(id: id, wattsPerUnit: nil)
+            }
+            let property = CloudValue.object(field["property"])
+            if let unit = property["unit"] as? String, let factor = units[unit],
+               let scale = CloudValue.number(property["scale"]), (0...12).contains(scale), scale.rounded() == scale {
+                return Self(id: id, wattsPerUnit: factor / pow(10, scale))
+            }
+        }
+        return nil
+    }
+
+    func watts(_ raw: Any?) -> Double? {
+        if let wattsPerUnit {
+            guard let value = CloudValue.number(raw), value >= 0 else { return nil }
+            let watts = value * wattsPerUnit
+            return watts.isFinite && watts >= 0 ? watts : nil
+        }
+        guard let raw = raw as? String, let bytes = Data(base64Encoded: raw), bytes.count == 8 else { return nil }
+        return bytes.suffix(3).reduce(0.0) { $0 * 256 + Double($1) }
+    }
+}
+
 struct TuyaDevice: Codable, Identifiable {
     let id: String, name: String, category: String
     let online: Bool?
@@ -8,6 +47,7 @@ struct TuyaDevice: Codable, Identifiable {
     let measuredAt: Date?
     var timeZoneID: String? = nil
     var historyDP: Int? = nil
+    var powerDP: TuyaPowerDP? = nil
     var isMeter: Bool { ["zndb", "dlq"].contains(category) || watts != nil || voltage != nil }
     static func decode(_ row: [String: Any], schema info: [String: Any]) -> TuyaDevice? {
         guard let id = row["devId"] as? String, !id.isEmpty else { return nil }
@@ -24,7 +64,8 @@ struct TuyaDevice: Codable, Identifiable {
         func scaled(_ code: String, units: [String: Double]) -> Double? {
             guard let value = values[code], let raw = CloudValue.number(value.raw), let unit = value.spec["unit"] as? String,
                   let factor = units[unit], let scale = CloudValue.number(value.spec["scale"]), (0...12).contains(scale), scale.rounded() == scale else { return nil }
-            return raw / pow(10, scale) * factor
+            let scaled = raw / pow(10, scale) * factor
+            return scaled.isFinite ? scaled : nil
         }
         var phases: [String: (Double, Double, Double)] = [:]
         let phaseCodes = schema.compactMap { $0["code"] as? String }.filter { ["phase_a", "phase_b", "phase_c"].contains($0) }
@@ -65,7 +106,7 @@ struct TuyaDevice: Codable, Identifiable {
                               guard let value = CloudValue.number(field["id"]), value > 0, value < 10000,
                                     value.rounded() == value else { return nil }
                               return Int(value)
-                          } : nil)
+                          } : nil, powerDP: TuyaPowerDP.reported(in: schema, product: row["productId"] as? String))
     }
 }
 
@@ -75,22 +116,15 @@ struct TuyaHistory: Codable {
     var hours: [PowerInterval]
     let fetchedAt: Date
     var problem: String? = nil
+    var power: [PowerPoint]? = nil
+    var logsFetchedAt: Date? = nil
+    var logsCoveredFrom: Date? = nil
 
-    static var calendar: Calendar {
-        var value = Calendar(identifier: .gregorian)
-        value.timeZone = TimeZone(identifier: "Asia/Manila")!
-        return value
-    }
-    static func formatter(_ format: String, zone: TimeZone = calendar.timeZone) -> DateFormatter {
-        let value = DateFormatter()
-        value.locale = Locale(identifier: "en_US_POSIX")
-        value.calendar = calendar; value.timeZone = zone
-        value.dateFormat = format; value.isLenient = false
-        return value
-    }
     static func keys(now: Date) -> [String] {
-        let format = formatter("yyyyMMdd")
-        return (-(ChartHistory.accountingDayCount(now: now, calendar: calendar) - 1)...0).map { format.string(from: calendar.date(byAdding: .day, value: $0, to: now)!) }
+        let format = ChartHistory.formatter("yyyyMMdd")
+        return (-(ChartHistory.accountingDayCount(now: now) - 1)...0).map {
+            format.string(from: ChartHistory.calendar.date(byAdding: .day, value: $0, to: now)!)
+        }
     }
     static func daily(_ raw: Any, keys: [String]) -> [EnergyDayPoint] {
         let outer = CloudValue.object(raw)
@@ -101,7 +135,7 @@ struct TuyaHistory: Codable {
         }
     }
     static func hourly(_ raw: Any, zone: TimeZone, now: Date) -> [PowerInterval] {
-        let format = formatter("yyyyMMddHH", zone: zone)
+        let format = ChartHistory.formatter("yyyyMMddHH", zone: zone)
         return CloudValue.object(raw).compactMap { key, raw in
             guard key.count == 10, let start = format.date(from: key),
                   format.string(from: start) == key, let kwh = CloudValue.number(raw), kwh >= 0 else { return nil }
@@ -112,11 +146,11 @@ struct TuyaHistory: Codable {
         }.sorted { $0.start < $1.start }
     }
     var energyIntervals: [PowerInterval] {
-        let start = Self.calendar.startOfDay(for: fetchedAt)
-        let hourStart = Self.calendar.dateInterval(of: .hour, for: fetchedAt)!.start
+        let start = ChartHistory.calendar.startOfDay(for: fetchedAt)
+        let hourStart = ChartHistory.calendar.dateInterval(of: .hour, for: fetchedAt)!.start
         let completed = hours.filter { $0.start >= start && $0.end <= hourStart }
         let expected = Int(hourStart.timeIntervalSince(start) / 3600)
-        let key = Self.formatter("yyyyMMdd").string(from: fetchedAt)
+        let key = ChartHistory.formatter("yyyyMMdd").string(from: fetchedAt)
         guard completed.count == expected, fetchedAt > hourStart,
               let total = days.first(where: { $0.key == key })?.wattHours else { return hours }
         let remaining = total - completed.reduce(0) { $0 + $1.watts * $1.end.timeIntervalSince($1.start) / 3600 }
@@ -131,8 +165,15 @@ struct TuyaSnapshot: Codable {
     let fetchedAt: Date
     var meter: TuyaDevice? { meterID.flatMap { id in devices.first { $0.id == id } } }
     func consumption(now: Date = Date()) -> Double? {
-        guard now.timeIntervalSince(fetchedAt) < 90, let meter, meter.online == true, let watts = meter.watts else { return nil }
+        currentMeter(now: now)?.watts
+    }
+    func gridVoltage(now: Date = Date()) -> Double? {
+        guard let volts = currentMeter(now: now)?.voltage, volts.isFinite, volts >= 0 else { return nil }
+        return volts
+    }
+    private func currentMeter(now: Date) -> TuyaDevice? {
+        guard now.timeIntervalSince(fetchedAt) < 90, let meter, meter.online == true else { return nil }
         if let measured = meter.measuredAt, now.timeIntervalSince(measured) > 600 { return nil }
-        return watts
+        return meter
     }
 }

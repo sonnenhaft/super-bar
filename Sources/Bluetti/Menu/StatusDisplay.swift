@@ -9,7 +9,7 @@ extension BlueBarDelegate {
         let pinnedIsActive = defaults.string(forKey: "bluetti.pinnedStation") == nil || pinnedStationKey == selectedKnownStation?.key
         let now = Date()
         let stale = reading.map { now.timeIntervalSince($0.measuredAt) >= maximumAge } ?? false
-        let offline = !pinnedIsActive || sleeping || hasConnectionFailure || stale
+        let offline = stationIsOffline(pinnedStationKey) || sleeping || hasConnectionFailure || stale
         if pinnedIsActive && (offline || reading?.runtimeCarriedForward == true) { freezeRuntime() }
         let displayTime = pinnedIsActive ? (runtimeFrozenAt ?? now) : (pinned.frozenAt ?? reading?.measuredAt ?? now)
         let visibility = StatusVisibility(defaults: defaults, reading: reading, station: pinnedStationKey)
@@ -46,7 +46,7 @@ extension BlueBarDelegate {
         rebuildStationMenu(now: now)
         emptyRefreshItem.isHidden = hasStationRows
         let status = refreshState == .idle ? "Not connected" : refreshState.rawValue
-        refreshRow.update(status: status, loading: !hasStationRows && isLoadingReading, enabled: !sleeping && !quitting)
+        refreshRow.update(status: status, loading: !hasStationRows && isManuallyRefreshing, enabled: !sleeping && !quitting)
         loadGraphItem.isHidden = lastGood == nil
         graphBottomSeparator.isHidden = loadGraphItem.isHidden
         if lastGood != nil { loadGraph.update(points: loadHistory.visiblePoints(at: now), now: now) }

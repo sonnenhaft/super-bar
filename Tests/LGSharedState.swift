@@ -1,23 +1,14 @@
 import Foundation
 
 @main struct LGSharedStateCheck {
-    static func main() {
-        for region in ["kic", "eic", "aic"] {
-            let url = try! API.checkedURL(region: region, path: "devices")
-            precondition(url.scheme == "https" && url.host == "api-" + region + ".lgthinq.com")
-        }
-        for region in ["attacker.example/?", "kic@attacker.example/", "kic.lgthinq.com.attacker.example", "", "KIC"] {
-            do { _ = try API.checkedURL(region: region, path: "devices"); fatalError("Untrusted LG origin accepted") }
-            catch { }
-        }
+    @MainActor static func main() {
         for path in ["https://attacker.example/devices", "//attacker.example/devices", "devices/../control", "devices/%2e%2e/control", "devices#fragment"] {
-            do { _ = try API.checkedURL(region: "kic", path: path); fatalError("Untrusted LG request path accepted") }
+            do { _ = try API.validatePath(path); fatalError("Untrusted LG request path accepted") }
             catch { }
         }
         let component = try! API.deviceComponent("unit/with?query#fragment%")
-        let pathURL = try! API.checkedURL(region: "kic", path: "devices/" + component + "/state")
-        precondition(pathURL.query == nil && pathURL.fragment == nil && pathURL.host == "api-kic.lgthinq.com")
-        precondition(pathURL.absoluteString.contains("unit%2Fwith%3Fquery%23fragment%25/state"))
+        try! API.validatePath("devices/" + component + "/state")
+        precondition(component == "unit%2Fwith%3Fquery%23fragment%25")
         for identifier in ["", ".", "..", String(repeating: "x", count: 513)] {
             do { _ = try API.deviceComponent(identifier); fatalError("Invalid LG ID accepted") } catch { }
         }
@@ -68,14 +59,42 @@ import Foundation
             "airFlow": ["windStrengthDetail": "LOW"],
         ]
         let sample = LGSample(state)
-        precondition(sample.room == nil && sample.target == 22 && sample.powerOn == false, "Powered-off LG readings must not present cached room temperature as current")
+        precondition(sample.room == 25 && sample.target == 22 && sample.powerOn == false)
         precondition(LGSample(["online": false]).status == "Offline")
-        precondition(sample.value("current") == "OFF" && sample.value("sensor") == "—")
+        precondition(sample.value("current") == "OFF" && sample.value("sensor") == "25°")
         precondition(LGSample([:]).powerOn == nil)
         precondition(LGSample(["temperature": ["unit": "F", "currentTemperature": 77]]).room == nil)
         precondition(LGDeviceValues.value("temperature", "currentTemperature", in: state) == nil)
         let bounds = LGDeviceValues.temperatureBounds(temperatures: ["minTargetTemperature": 18], capability: temperature.details)
-        precondition(bounds.0 == 18 && bounds.1 == 30)
+        precondition(bounds.0 == 16 && bounds.1 == 30, "A stale snapshot minimum must not override cooling capabilities")
+        let windowProfile: [String: Any] = ["temperature": ["targetTemperature": ["writable": true, "min": 18, "max": 30, "step": 1]]]
+        let windowTemperature = LGCapability(profile: windowProfile, group: "temperature", key: "targetTemperature")
+        precondition(windowTemperature.allows(16) && windowTemperature.allows(17) && !windowTemperature.allows(15))
+        for preset in LGCoolingPreset.allCases {
+            let fields = preset.changes(windKey: "windStrength")
+            precondition(fields.count == 4 && fields[1].2 as? String == "COOL")
+            precondition(fields[2].2 as? Double == Double(preset.degrees) && fields[3].2 as? String == preset.speed)
+        }
+        let testPreferences = UserDefaults(suiteName: "SuperBar.LGHistory." + UUID().uuidString)!
+        let history = DevicePowerHistory(provider: "lg", preferences: testPreferences)
+        let midnight = ISO8601DateFormatter().date(from: "2026-11-12T16:00:00Z")!
+        history.record(600, for: "synthetic", at: midnight.addingTimeInterval(-30))
+        history.record(600, for: "synthetic", at: midnight.addingTimeInterval(30))
+        let observed = history.days["synthetic"]!
+        precondition(observed.map(\.key) == ["20261112", "20261113"])
+        precondition(observed.allSatisfy { abs(($0.wattHours ?? -1) - 5) < 0.001 })
+        history.record(600, for: "synthetic", at: midnight.addingTimeInterval(7200))
+        precondition(history.days["synthetic"]!.compactMap(\.wattHours).reduce(0, +) == 10,
+                     "An unobserved gap must not become invented monthly consumption")
+        let stations = DevicePowerHistory(provider: "bluetti", preferences: nil)
+        stations.record(0, for: "first", at: midnight)
+        stations.record(nil, for: "first", at: midnight.addingTimeInterval(60))
+        stations.record(800, for: "second", at: midnight)
+        precondition(stations.power["first"]?.map(\.watts) == [0] && stations.power["second"]?.map(\.watts) == [800],
+                     "Keep each station's genuine readings, including zero output")
+        let saver = EcoChoice(flag: nil, flagWrites: nil, writableFlag: false,
+            mode: "COOL", modes: ["COOL", "ENERGY_SAVER"], returnMode: "COOL")
+        precondition(saver.change?.2 as? String == "ENERGY_SAVER")
         print("LG shared state: Celsius selection, read-only controls, enum/range/step validation and missing readings verified.")
     }
 }

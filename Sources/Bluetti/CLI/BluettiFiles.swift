@@ -86,7 +86,7 @@ enum BluettiFiles {
         let maximumAge: UInt64
         if let interval = status.refreshIntervalSeconds {
             guard let seconds = Int(exactly: interval), PollInterval(rawValue: seconds) != nil else {
-                throw BluettiCommandError("invalid_data", "Invalid cached refresh interval; expected 1, 3, 5, 20, 30, 60 or 120 seconds.")
+                throw BluettiCommandError("invalid_data", "Invalid cached refresh interval; expected 1, 3, 5, 15, 20, 30, 60 or 120 seconds.")
             }
             maximumAge = 3 * interval
         } else { maximumAge = 90 }
@@ -95,7 +95,7 @@ enum BluettiFiles {
         }
         let age = now >= status.observedAt ? now - status.observedAt : 0
         guard age <= maximumAge else {
-            throw BluettiCommandError("stale", "Cached reading is \(age)s old (maximum \(maximumAge)s). Open BluettiBar to refresh the cache, or use bluetti status for a fresh reading.")
+            throw BluettiCommandError("stale", "Cached reading is \(age)s old (maximum \(maximumAge)s). Open Super Bar to refresh the cache, or use bluetti status for a fresh reading.")
         }
     }
 
@@ -103,14 +103,14 @@ enum BluettiFiles {
         let bytes: Data
         do { bytes = try Data(contentsOf: directory.appendingPathComponent("status.json")) }
         catch {
-            throw BluettiCommandError("cache", "No readable BluettiBar cache: \(error.localizedDescription). Open BluettiBar to refresh the cache, or use bluetti status for a fresh reading.")
+            throw BluettiCommandError("cache", "No readable Super Bar cache: \(error.localizedDescription). Open Super Bar to refresh the cache, or use bluetti status for a fresh reading.")
         }
         let value: Any
         do { value = try JSONSerialization.jsonObject(with: bytes) }
         catch { throw BluettiCommandError("cache", "Invalid cache JSON: \(error.localizedDescription)") }
         if let object = value as? [String: Any], let ok = object["ok"] as? NSNumber,
            CFGetTypeID(ok) == CFBooleanGetTypeID(), !ok.boolValue {
-            throw BluettiCommandError("cache", object["error"] as? String ?? "The last BluettiBar Bluetooth reading failed.")
+            throw BluettiCommandError("cache", object["error"] as? String ?? "The last Super Bar Bluetooth reading failed.")
         }
         var status: BluettiStatus
         do { status = try JSONDecoder().decode(BluettiStatus.self, from: bytes) }
